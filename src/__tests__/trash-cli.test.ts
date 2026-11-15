@@ -529,8 +529,10 @@ it("reports retained and failed refs from a batch drop", async () => {
 
   await expect(main()).resolves.toBeUndefined();
 
-  expect(stdout(log)).toContain("refs/sync-worktrees/keep/a");
-  expect(stderr(warnLog)).toContain("cannot lock ref");
+  // Short names, the form the commands accept, never full ref paths.
+  expect(stdout(log)).toContain("Retained a ");
+  expect(stdout(log)).not.toContain("refs/sync-worktrees/keep/");
+  expect(stderr(warnLog)).toContain("Could not delete b: cannot lock ref");
 });
 
 // --purge is a data-loss path, so it carries the same gate as --dropKeepRef and

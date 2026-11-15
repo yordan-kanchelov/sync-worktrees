@@ -44,6 +44,10 @@ function countKeyFor(action: SyncOutcomeAction): keyof SyncOutcomeCounts {
   }
 }
 
+function isFactAction(action: SyncOutcomeAction): boolean {
+  return action.kind !== "skipped" && action.kind !== "noop" && action.kind !== "failed";
+}
+
 export class SyncOutcomeAccumulator {
   private counts: SyncOutcomeCounts = cloneCounts(EMPTY_COUNTS);
   private actions: SyncOutcomeAction[] = [];
@@ -100,6 +104,10 @@ export class SyncOutcomeAccumulator {
     this.add({ kind: "failed", scope, error, ...details });
   }
 
+  hasFailureOutside(scope: SyncOutcomeScope): boolean {
+    return this.actions.some((action) => action.kind === "failed" && action.scope !== scope);
+  }
+
   getCounts(): SyncOutcomeCounts {
     return cloneCounts(this.counts);
   }
@@ -111,9 +119,13 @@ export class SyncOutcomeAccumulator {
     };
   }
 
+  // Rolls back for a retry. Facts recorded since the snapshot (created,
+  // removed, updated, preserved) already happened on disk, so they are kept.
   restore(snapshot: { counts: SyncOutcomeCounts; actions: SyncOutcomeAction[] }): void {
+    const facts = this.actions.slice(snapshot.actions.length).filter(isFactAction);
     this.counts = cloneCounts(snapshot.counts);
     this.actions = snapshot.actions.map(cloneAction);
+    for (const action of facts) this.add(action);
   }
 
   toOutcome(durationMs?: number): SyncOutcome {
@@ -128,21 +140,10 @@ export class SyncOutcomeAccumulator {
   }
 }
 
-export function createEmptySyncOutcome(mode: SyncOutcomeMode, repoName?: string, durationMs?: number): SyncOutcome {
-  return {
-    repoName,
-    mode,
-    started: true,
-    counts: cloneCounts(EMPTY_COUNTS),
-    actions: [],
-    durationMs,
-  };
-}
-
 export function cloneSkipToOutcomeAction(
   reason: CloneSkipReason,
   details: { branch?: string; path?: string } = {},
-): SyncOutcomeAction {
+): Extract<SyncOutcomeAction, { kind: "skipped" }> {
   const message = formatCloneSkipReason(reason);
   const branch =
     "branch" in reason ? reason.branch : reason.kind === "branch_mismatch" ? reason.expectedBranch : details.branch;

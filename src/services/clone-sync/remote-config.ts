@@ -201,20 +201,25 @@ async function deleteStaleRemoteTrackingRefs(
 // can't be read. Comparison is normalized so https/.git/trailing-slash
 // variants don't false-positive; the URLs are kept in the message and skip
 // descriptor with any embedded credentials stripped (both can carry one).
+// The stored value is read, not `remote get-url`, which applies insteadOf.
 export async function evaluateOriginMatch(
   ctx: CloneSyncContext,
   git: SimpleGit,
   worktreeDir: string,
 ): Promise<CloneSkipDescriptor | null> {
-  let originUrl: string;
+  // An unset key exits 1 with empty stderr, which simple-git resolves as "".
+  let originUrl = "";
   try {
-    originUrl = (await git.raw(["remote", "get-url", "origin"])).trim();
+    originUrl = (await git.raw(["config", "--local", "--get", "remote.origin.url"])).trim();
   } catch {
+    // handled below
+  }
+  if (!originUrl) {
     ctx.logger.warn(`Could not read 'origin' remote URL from existing clone at '${worktreeDir}'.`);
     return null;
   }
 
-  if (!originUrl || normalizeRepoUrlForComparison(originUrl) === normalizeRepoUrlForComparison(ctx.config.repoUrl)) {
+  if (normalizeRepoUrlForComparison(originUrl) === normalizeRepoUrlForComparison(ctx.config.repoUrl)) {
     return null;
   }
 

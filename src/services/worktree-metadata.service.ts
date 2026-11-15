@@ -112,19 +112,6 @@ export class WorktreeMetadataService {
     }
   }
 
-  async deleteMetadata(bareRepoPath: string, worktreeName: string): Promise<void> {
-    const metadataPath = await this.getMetadataPath(bareRepoPath, worktreeName);
-
-    try {
-      await fs.unlink(metadataPath);
-    } catch (error) {
-      // Ignore errors if file doesn't exist
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-    }
-  }
-
   async deleteMetadataFromPath(bareRepoPath: string, worktreePath: string): Promise<void> {
     const metadataPath = await this.getMetadataPathFromWorktreePath(bareRepoPath, worktreePath);
 
@@ -138,44 +125,7 @@ export class WorktreeMetadataService {
     }
   }
 
-  async updateLastSync(
-    bareRepoPath: string,
-    worktreeName: string,
-    commit: string,
-    action: "created" | "updated" | "fetched" = "updated",
-  ): Promise<void> {
-    const existing = await this.loadMetadata(bareRepoPath, worktreeName);
-
-    if (!existing) {
-      this.logger.warn(
-        `No metadata found for worktree ${worktreeName}; skipping update because upstream/parent context is unavailable`,
-      );
-      return;
-    }
-
-    existing.lastSyncCommit = commit;
-    existing.lastSyncDate = new Date().toISOString();
-
-    existing.syncHistory.push({
-      date: existing.lastSyncDate,
-      commit,
-      action,
-    });
-
-    if (existing.syncHistory.length > METADATA_CONSTANTS.MAX_HISTORY_ENTRIES) {
-      existing.syncHistory = existing.syncHistory.slice(-METADATA_CONSTANTS.MAX_HISTORY_ENTRIES);
-    }
-
-    await this.saveMetadata(bareRepoPath, worktreeName, existing);
-  }
-
-  async updateLastSyncFromPath(
-    bareRepoPath: string,
-    worktreePath: string,
-    commit: string,
-    action: "created" | "updated" | "fetched" = "updated",
-    defaultBranch?: string,
-  ): Promise<void> {
+  async updateLastSyncFromPath(bareRepoPath: string, worktreePath: string, commit: string): Promise<void> {
     const worktreeDirName = this.getWorktreeDirectoryName(worktreePath);
     const existing = await this.loadMetadataFromPath(bareRepoPath, worktreePath);
 
@@ -187,8 +137,11 @@ export class WorktreeMetadataService {
         const worktreeGit = createGitClient(worktreePath);
         const currentCommit = await worktreeGit.revparse(["HEAD"]);
 
-        const branchSummary = await worktreeGit.branch();
-        const actualBranchName = branchSummary.current;
+        // Not `branch()`: that runs `git branch -v -a`, a walk of every branch.
+        const headRef = (await worktreeGit.raw(["symbolic-ref", "-q", "HEAD"])).trim();
+        const actualBranchName = headRef.startsWith(GIT_CONSTANTS.REFS.HEADS)
+          ? headRef.slice(GIT_CONSTANTS.REFS.HEADS.length)
+          : "";
 
         if (!actualBranchName) {
           throw new Error("Could not determine current branch name");
@@ -208,15 +161,11 @@ export class WorktreeMetadataService {
           // No configured upstream, use constructed value
         }
 
-        const parentBranch = defaultBranch || GIT_CONSTANTS.DEFAULT_BRANCH;
-
         const created = await this.createInitialMetadataFromPath(
           bareRepoPath,
           worktreePath,
           currentCommit.trim(),
           upstreamBranch,
-          parentBranch,
-          currentCommit.trim(),
         );
         if (created) {
           this.logger.info(`  ✅ Created metadata for ${worktreeDirName}`);
@@ -233,16 +182,6 @@ export class WorktreeMetadataService {
     // Update metadata
     existing.lastSyncCommit = commit;
     existing.lastSyncDate = new Date().toISOString();
-
-    existing.syncHistory.push({
-      date: existing.lastSyncDate,
-      commit,
-      action,
-    });
-
-    if (existing.syncHistory.length > METADATA_CONSTANTS.MAX_HISTORY_ENTRIES) {
-      existing.syncHistory = existing.syncHistory.slice(-METADATA_CONSTANTS.MAX_HISTORY_ENTRIES);
-    }
 
     // Save using the directory name
     await this.saveMetadata(bareRepoPath, worktreeDirName, existing);
@@ -273,58 +212,17 @@ export class WorktreeMetadataService {
     await this.saveMetadata(bareRepoPath, worktreeDirName, existing);
   }
 
-  async createInitialMetadata(
-    bareRepoPath: string,
-    worktreeName: string,
-    commit: string,
-    upstreamBranch: string,
-    parentBranch: string,
-    parentCommit: string,
-  ): Promise<boolean> {
-    const metadata: SyncMetadata = {
-      lastSyncCommit: commit,
-      lastSyncDate: new Date().toISOString(),
-      upstreamBranch,
-      createdFrom: {
-        branch: parentBranch,
-        commit: parentCommit,
-      },
-      syncHistory: [
-        {
-          date: new Date().toISOString(),
-          commit,
-          action: "created",
-        },
-      ],
-    };
-
-    return this.saveMetadata(bareRepoPath, worktreeName, metadata);
-  }
-
   async createInitialMetadataFromPath(
     bareRepoPath: string,
     worktreePath: string,
     commit: string,
     upstreamBranch: string,
-    parentBranch: string,
-    parentCommit: string,
   ): Promise<boolean> {
     const worktreeDirName = this.getWorktreeDirectoryName(worktreePath);
     const metadata: SyncMetadata = {
       lastSyncCommit: commit,
       lastSyncDate: new Date().toISOString(),
       upstreamBranch,
-      createdFrom: {
-        branch: parentBranch,
-        commit: parentCommit,
-      },
-      syncHistory: [
-        {
-          date: new Date().toISOString(),
-          commit,
-          action: "created",
-        },
-      ],
     };
 
     return this.saveMetadata(bareRepoPath, worktreeDirName, metadata);

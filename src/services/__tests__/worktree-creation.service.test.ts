@@ -230,8 +230,6 @@ describe("WorktreeCreationService (through GitService)", () => {
         "/test/worktrees/feature-1",
         "f00dfeed",
         "origin/feature-1",
-        "main",
-        expect.any(String),
       );
 
       (fs.access as Mock<any>).mockResolvedValueOnce(undefined);

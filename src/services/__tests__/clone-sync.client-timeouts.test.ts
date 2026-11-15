@@ -65,7 +65,7 @@ describe("CloneSyncService git client timeouts", () => {
 
   const rawOutput = (args: string[]): string => {
     const key = args.join(" ");
-    if (key.startsWith("remote get-url origin")) return REPO_URL;
+    if (key.startsWith("config --local --get remote.origin.url")) return REPO_URL;
     if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
     if (key.startsWith("rev-parse --abbrev-ref HEAD")) return "main";
     if (key.startsWith("ls-remote")) return "aaaa\trefs/heads/main\n";

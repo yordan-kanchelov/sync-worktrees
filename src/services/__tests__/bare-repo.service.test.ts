@@ -174,7 +174,8 @@ describe("BareRepoService (through GitService)", () => {
       (mockGit.raw as Mock).mockImplementation((args: unknown) => {
         if (!Array.isArray(args)) return Promise.resolve("");
         const [command, subcommand] = args as string[];
-        if (command === "remote" && subcommand === "get-url") return Promise.resolve(TEST_URLS.github);
+        if (command === "config" && (args as string[])[3] === "remote.origin.url")
+          return Promise.resolve(TEST_URLS.github);
         if (command === "for-each-ref") return Promise.resolve("refs/heads/main\nrefs/heads/feature-1\n");
         if (command === "worktree" && subcommand === "list") {
           return Promise.resolve(
@@ -209,7 +210,7 @@ describe("BareRepoService (through GitService)", () => {
 
     it("rejects with both URLs and the set-url remedy when origin differs from repoUrl, before any fetch", async () => {
       gitService = new GitService(createMockConfig({ repoUrl: "https://gitlab.com/new-org/repo.git" }), mockLogger);
-      mockGit.raw.mockResolvedValueOnce("https://github.com/old-org/repo.git\n" as any); // remote get-url origin
+      mockGit.raw.mockResolvedValueOnce("https://github.com/old-org/repo.git\n" as any); // config remote.origin.url
 
       await expect(gitService.initialize()).rejects.toMatchObject({
         constructor: ConfigError,
@@ -220,7 +221,7 @@ describe("BareRepoService (through GitService)", () => {
           `repository>) or point bareRepoDir at a fresh directory.`,
       });
 
-      expect(mockGit.raw).toHaveBeenCalledWith(["remote", "get-url", "origin"]);
+      expect(mockGit.raw).toHaveBeenCalledWith(["config", "--local", "--get", "remote.origin.url"]);
       expect(mockGit.fetch).not.toHaveBeenCalled();
       expect(mockGit.clone).not.toHaveBeenCalled();
       expect(mockGit.addConfig).not.toHaveBeenCalled();
@@ -255,8 +256,9 @@ describe("BareRepoService (through GitService)", () => {
       ["with a different host case", "HTTPS://GitHub.COM/test/repo.git"],
     ])("proceeds to fetch when origin is repoUrl %s", async (_variant, originUrl) => {
       mockGit.raw
-        .mockResolvedValueOnce(`${originUrl}\n` as any) // remote get-url origin
+        .mockResolvedValueOnce(`${originUrl}\n` as any) // config remote.origin.url
         .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/ (none yet)
         .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
         .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
 
@@ -266,10 +268,28 @@ describe("BareRepoService (through GitService)", () => {
       expect(mockLogger.warn).not.toHaveBeenCalled();
     });
 
+    // `git config --get` of an unset key exits 1 with empty stderr, which simple-git resolves as "".
+    it("warns and proceeds when the bare repository has no origin URL configured", async () => {
+      mockGit.raw
+        .mockResolvedValueOnce("" as any) // config remote.origin.url (unset)
+        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/ (none yet)
+        .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
+        .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
+
+      await expect(gitService.initialize()).resolves.toBe(mockGit);
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        `Could not read 'origin' remote URL from existing bare repository at '${bareRepoPath}'.`,
+      );
+      expect(mockGit.fetch).toHaveBeenCalledWith(["--all", "--progress"]);
+    });
+
     it("warns and proceeds when the bare repository has no readable origin", async () => {
       mockGit.raw
-        .mockRejectedValueOnce(new Error("error: No such remote 'origin'")) // remote get-url origin
+        .mockRejectedValueOnce(new Error("error: No such remote 'origin'")) // config remote.origin.url
         .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/ (none yet)
         .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
         .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
 
@@ -392,8 +412,9 @@ describe("BareRepoService (through GitService)", () => {
     it("clears a stale marker next to a bare repo that has a HEAD, and clones nothing", async () => {
       const marker = mockBareRepoState({ head: true, marker: true, dir: true });
       mockGit.raw
-        .mockResolvedValueOnce(TEST_URLS.github as any) // remote get-url origin
+        .mockResolvedValueOnce(TEST_URLS.github as any) // config remote.origin.url
         .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
+        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/ (none yet)
         .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
         .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
 

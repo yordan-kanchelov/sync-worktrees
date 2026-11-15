@@ -100,13 +100,15 @@ export class BranchCreatedActionsService {
     logger.info(`Running ${config.hooks.onBranchCreated.length} hook(s) for branch '${branchName}'...`);
 
     hookExecutionService.executeOnBranchCreated(config.hooks, context, {
-      onStdout: (data) => logger.info(`[hook] ${data}`),
-      onStderr: (data) => logger.warn(`[hook] ${data}`),
+      onStdout: (line, command) => logger.info(`[hook: ${command}] ${line}`),
+      onStderr: (line, command) => logger.warn(`[hook: ${command}] ${line}`),
       onError: (command, error) => logger.error(`[hook] Failed to execute '${command}': ${error.message}`),
+      onSkipped: (commands) => {
+        for (const command of commands) logger.warn(`[hook] Skipped after an earlier hook failed: ${command}`);
+      },
       onComplete: (command, exitCode) => {
-        // Named, not counted: several hooks finish out of order and interleaved
-        // with each other's output, so "exited with code 1" on its own does not
-        // say which of them the user has to go and fix.
+        // Named, not counted: "exited with code 1" alone does not say which
+        // of several hooks the user has to go and fix.
         if (exitCode === 0) {
           logger.info(`[hook] Command completed successfully: ${command}`);
         } else if (exitCode !== null) {

@@ -6,6 +6,11 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { WorktreeSyncService } from "../../services/worktree-sync.service";
+import { createMockLogger } from "../test-utils";
+
+import type { RepositoryConfig, SyncOutcome } from "../../types";
+
 interface CliRun {
   status: number | null;
   stdout: string;
@@ -101,14 +106,14 @@ describe("Clone-mode sparse-checkout re-apply", () => {
 
   // A commit the clone can only reach by fast-forwarding, used to show the
   // sparse step never blocks the merge the sync exists for.
-  async function pushCommit(): Promise<string> {
+  async function pushCommit(file = "pkg/a.txt"): Promise<string> {
     const pushDir = path.join(tempDir, "push");
     await fs.rm(pushDir, { recursive: true, force: true });
     await simpleGit().clone(remote, pushDir);
     const push = simpleGit(pushDir);
     await push.addConfig("user.name", "Test User");
     await push.addConfig("user.email", "test@example.com");
-    await fs.writeFile(path.join(pushDir, "pkg", "a.txt"), "a2\n");
+    await fs.writeFile(path.join(pushDir, file), "changed\n");
     await push.add(".");
     await push.commit("Second commit");
     await push.push("origin", "main");
@@ -169,4 +174,71 @@ describe("Clone-mode sparse-checkout re-apply", () => {
     // Not fatal: the fast-forward still happened.
     expect((await simpleGit(worktreeDir).revparse(["HEAD"])).trim()).toBe(tip);
   }, 60_000);
+
+  describe("outcome records (in-process)", () => {
+    function makeConfig(include: string[], skipUpdateWhenOutsideSparse?: boolean): RepositoryConfig {
+      return {
+        name: "app",
+        repoUrl: `file://${remote}`,
+        worktreeDir,
+        mode: "clone",
+        branch: "main",
+        cronSchedule: "0 * * * *",
+        runOnce: true,
+        logger: createMockLogger(),
+        retry: { maxAttempts: 1, initialDelayMs: 0 },
+        sparseCheckout: {
+          include,
+          ...(skipUpdateWhenOutsideSparse !== undefined && { skipUpdateWhenOutsideSparse }),
+        },
+        __configFileDir: tempDir,
+      };
+    }
+
+    async function syncOnce(config: RepositoryConfig): Promise<SyncOutcome> {
+      const result = await new WorktreeSyncService(config).sync();
+      if (!result.started) throw new Error("sync did not start");
+      return result.outcome;
+    }
+
+    async function head(): Promise<string> {
+      return (await simpleGit(worktreeDir).revparse(["HEAD"])).trim();
+    }
+
+    // Worktree mode and a clone-mode dry run both report the re-apply.
+    it("records a sparse re-apply as an update", async () => {
+      await syncOnce(makeConfig(["pkg"]));
+      const outcome = await syncOnce(makeConfig(["other", "pkg"]));
+
+      expect(outcome.counts.failed).toBe(0);
+      expect(outcome.actions).toContainEqual(
+        expect.objectContaining({ kind: "updated", branch: "main", path: worktreeDir, reason: "sparse_checkout" }),
+      );
+      expect(await sparsePatterns()).toEqual(["other", "pkg"]);
+    }, 60_000);
+
+    it("leaves HEAD behind when the upstream change is outside the cone", async () => {
+      await syncOnce(makeConfig(["pkg"]));
+      const before = await head();
+      await pushCommit("other/b.txt");
+
+      const dryRun = await new WorktreeSyncService(makeConfig(["pkg"])).planSync();
+      if (!dryRun.started) throw new Error("dry run did not start");
+      expect(dryRun.plan.steps).toContainEqual(
+        expect.objectContaining({ kind: "skip", reason: "outside_sparse_checkout", branch: "main" }),
+      );
+
+      const skipped = await syncOnce(makeConfig(["pkg"]));
+      expect(skipped.actions).toContainEqual(
+        expect.objectContaining({ kind: "skipped", reason: "outside_sparse_checkout", branch: "main" }),
+      );
+      expect(skipped.counts).toMatchObject({ updated: 0, failed: 0 });
+      expect(await head()).toBe(before);
+
+      // Opting out fast-forwards, as does the next change inside the cone.
+      const forced = await syncOnce(makeConfig(["pkg"], false));
+      expect(forced.actions).toContainEqual(expect.objectContaining({ kind: "updated", reason: "fast_forward" }));
+      expect(await head()).not.toBe(before);
+    }, 60_000);
+  });
 });

@@ -211,6 +211,39 @@ describe("clone-mode fast-forward that dies on an LFS smudge", () => {
     await expect(fs.readFile(path.join(worktreeDir, "assets", "big.bin"), "utf8")).resolves.toBe(POINTER);
   }, 60_000);
 
+  // A rename lists only its new name under rename detection; the old path,
+  // deleted by the half-applied merge, must still be put back.
+  it("restores the old path of a rename that sorts before the failing path", async () => {
+    await installFakeLfsFilter(false);
+    const seed = simpleGit(seedDir);
+    const body = "line of text that git can match across a rename\n".repeat(20);
+    await fs.writeFile(path.join(seedDir, "0-a-old.txt"), body);
+    await seed.add(".");
+    await seed.commit("Add a file to rename");
+    await seed.push("origin", "main");
+
+    const clone = runCli();
+    expect(clone.status, clone.stdout + clone.stderr).toBe(0);
+    const before = git("rev-parse", "HEAD");
+
+    await seed.raw(["mv", "0-a-old.txt", "0-b-new.txt"]);
+    const tip = await pushLfsCommit();
+
+    const failed = runCli();
+    expect(failed.status, failed.stdout + failed.stderr).toBe(1);
+    expect(git("status", "--porcelain")).toBe("");
+    expect(git("rev-parse", "HEAD")).toBe(before);
+    await expect(fs.readFile(path.join(worktreeDir, "0-a-old.txt"), "utf8")).resolves.toBe(body);
+    await expect(fs.lstat(path.join(worktreeDir, "0-b-new.txt"))).rejects.toThrow();
+
+    await repairLfsFilter();
+    const repaired = runCli();
+    expect(repaired.status, repaired.stdout + repaired.stderr).toBe(0);
+    expect(repaired.stdout).toContain("Updated 'app' to origin/main");
+    expect(git("rev-parse", "HEAD")).toBe(tip);
+    expect(git("status", "--porcelain")).toBe("");
+  }, 60_000);
+
   // The cleanup only ever weighs paths the merge itself would have written, so
   // a clone somebody is working in still skips for the reason it always did.
   it("still skips with dirty_tree for a change of the user's own", async () => {

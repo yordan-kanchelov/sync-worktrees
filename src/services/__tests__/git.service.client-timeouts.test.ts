@@ -67,7 +67,7 @@ describe("GitService git client timeouts", () => {
   // Answers for the commands the flows under test issue; anything else is "".
   const defaultRawOutput = (args: string[]): string => {
     const key = args.join(" ");
-    if (key.startsWith("remote get-url origin")) return TEST_URLS.github;
+    if (key.startsWith("config --local --get remote.origin.url")) return TEST_URLS.github;
     if (key.startsWith("config --get-all remote.origin.fetch")) return GIT_CONSTANTS.FETCH_CONFIG;
     if (key.startsWith("worktree list")) {
       return createWorktreeListOutput([{ path: MAIN_WORKTREE_PATH, branch: "main", commit: "abc123" }]);
@@ -227,7 +227,7 @@ describe("GitService git client timeouts", () => {
       expect(fetchers).toHaveLength(1);
       expect(fetchers[0].baseDir).toBe(MAIN_WORKTREE_PATH);
       expect(fetchers[0].options.timeout).toEqual({ block: DEFAULT_CONFIG.FETCH_TIMEOUT_MS });
-      expect(onlyClientThatRan("fetch", "origin", "feature-1").options.timeout).toEqual({
+      expect(onlyClientThatRan("fetch", "origin", "refs/heads/feature-1").options.timeout).toEqual({
         block: DEFAULT_CONFIG.FETCH_TIMEOUT_MS,
       });
     });
@@ -264,7 +264,8 @@ describe("GitService git client timeouts", () => {
     it("asks origin whether a branch exists with the fetch block timeout", async () => {
       const service = newService();
 
-      await service.remoteBranchExists("feature-1");
+      const { branchRefs } = service as unknown as { branchRefs: { remoteBranchExists(b: string): Promise<boolean> } };
+      await branchRefs.remoteBranchExists("feature-1");
 
       const prober = onlyClientThatRan("ls-remote", "--heads", "origin");
       expect(prober.baseDir).toBe(TEST_PATHS.bareRepo);

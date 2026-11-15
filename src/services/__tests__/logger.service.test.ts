@@ -22,7 +22,7 @@ describe("Logger credential redaction", () => {
 
     logger.info(`Cloning from "${TOKEN_URL}" as bare repository...`);
     logger.warn(`Existing clone has origin '${TOKEN_URL}'`);
-    logger.debug("remote is %s", TOKEN_URL);
+    logger.debug(`remote is ${TOKEN_URL}`);
     logger.table(`| ${TOKEN_URL} |`);
 
     expect(console.log).toHaveBeenCalledWith(`[repo] Cloning from "${REDACTED_URL}" as bare repository...`);
@@ -80,17 +80,6 @@ describe("Logger credential redaction", () => {
 
     expect(console.error).toHaveBeenNthCalledWith(1, `[repo] remote rejected see ${REDACTED_URL}`);
     expect(console.error).toHaveBeenNthCalledWith(2, `[repo] unreachable: ${REDACTED_URL}`);
-  });
-
-  it("scrubs lines forwarded through withPassthrough", () => {
-    const passthrough = vi.fn();
-    const logger = new Logger({ repoName: "repo" }).withPassthrough(passthrough);
-
-    logger.warn(`origin '${TOKEN_URL}' is not 'https://github.com/org/repo.git'`);
-
-    const expected = `[repo] origin '${REDACTED_URL}' is not 'https://github.com/org/repo.git'`;
-    expect(console.warn).toHaveBeenCalledWith(expected);
-    expect(passthrough).toHaveBeenCalledWith(expected, "warn");
   });
 
   it("leaves lines without credentials untouched", () => {
@@ -190,17 +179,6 @@ describe("Logger quiet mode", () => {
     expect(console.warn).toHaveBeenCalledWith("[repo] ⚠️ skipped a dirty worktree");
     expect(console.error).toHaveBeenCalledTimes(1);
     expect(String(vi.mocked(console.error).mock.calls[0][0])).toContain("[repo] ❌ sync failed");
-  });
-
-  it("stays quiet through withPassthrough", () => {
-    const passthrough = vi.fn();
-    const logger = new Logger({ quiet: true }).withPassthrough(passthrough);
-
-    logger.info("routine");
-    logger.warn("needs attention");
-
-    expect(passthrough).toHaveBeenCalledTimes(1);
-    expect(passthrough).toHaveBeenCalledWith("needs attention", "warn");
   });
 
   it("is off by default", () => {

@@ -9,7 +9,8 @@ import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
 import { getWorktreeDirLockTarget } from "../../utils/lock-path";
 import { collectUnknownConfigKeys } from "../../utils/unknown-config-keys";
 import { KNOWN_CONFIG_KEYS } from "../config-schema";
-import { CLONE_MODE_CONFLICTING_FIELDS, ConfigLoaderService } from "../config-loader.service";
+import { ConfigLoaderService } from "../config-loader.service";
+import { CLONE_MODE_CONFLICTING_FIELDS } from "../config-schema";
 
 import type { RepositoryConfig } from "../../types";
 
@@ -132,7 +133,7 @@ describe("sync-worktrees.config.example.js", () => {
     // nested value is read back off the RESOLVED repository — the object the
     // services actually receive — rather than off the config file.
     const topLevelBlocksReachRepos = byName.get("my-main-project");
-    expect(topLevelBlocksReachRepos?.parallelism?.maxBranchFetches).toBe(3);
+    expect(topLevelBlocksReachRepos?.parallelism?.maxWorktreeUpdates).toBe(3);
     expect(topLevelBlocksReachRepos?.parallelism?.maxStatusChecks).toBe(20);
     expect(topLevelBlocksReachRepos?.retry?.jitterMs).toBe(500);
 

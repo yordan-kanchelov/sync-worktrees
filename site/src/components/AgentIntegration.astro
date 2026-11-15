@@ -68,7 +68,7 @@ const mcpTools = (await getCollection("mcpTools"))
             <CopyButton value={t.code} class="bg-ink-800 text-ink-200 hover:bg-ink-700" />
           </div>
           <div class="mt-3 overflow-x-auto rounded-xl border border-ink-800 bg-ink-950/80">
-            <Code code={t.code} lang={t.lang as any} theme="github-dark-default" wrap />
+            <Code code={t.code} lang={t.lang} theme="github-dark-default" wrap />
           </div>
         </div>
       ))}

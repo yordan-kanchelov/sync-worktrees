@@ -30,6 +30,9 @@ interface MaintenanceTarget {
 
 export type GitFactory = (cwd: string) => SimpleGit;
 
+/** Throws when the gc target is not a repository this tool may write to. */
+export type MaintenanceTargetGuard = () => Promise<void>;
+
 /**
  * Periodic `git gc` for the repository object store. Reclaims unreachable
  * objects (e.g. left by clone-mode single-branch ref narrowing and branch
@@ -42,6 +45,7 @@ export type GitFactory = (cwd: string) => SimpleGit;
 export class GitMaintenanceService {
   private logger: Logger;
   private gitFactory: GitFactory;
+  private targetGuard?: MaintenanceTargetGuard;
 
   constructor(
     private config: Config,
@@ -55,6 +59,10 @@ export class GitMaintenanceService {
 
   updateLogger(logger: Logger): void {
     this.logger = logger;
+  }
+
+  setTargetGuard(guard: MaintenanceTargetGuard): void {
+    this.targetGuard = guard;
   }
 
   isEnabled(): boolean {
@@ -173,6 +181,18 @@ export class GitMaintenanceService {
       } catch {
         // Repo not initialized yet — nothing to maintain.
         return false;
+      }
+
+      // A sync that soft-skipped never reached the write guard, so check here:
+      // gc in a linked worktree would rewrite the owning repository.
+      if (this.targetGuard) {
+        try {
+          await this.targetGuard();
+        } catch (error) {
+          this.logger.warn(`🧹 Skipping git gc: '${cwd}' is not a repository this tool manages.`);
+          this.logger.debug(getErrorMessage(error));
+          return false;
+        }
       }
 
       const statePath = this.getStatePath(gitDir);

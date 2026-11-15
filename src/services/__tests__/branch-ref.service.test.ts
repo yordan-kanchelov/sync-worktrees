@@ -253,9 +253,9 @@ describe("BranchRefService (through GitService)", () => {
 
     it("should return branches with their last activity dates", async () => {
       const mockOutput = [
-        "refs/remotes/origin/main 2024-01-15T10:30:00-05:00",
-        "refs/remotes/origin/feature-1 2024-01-10T14:20:00-05:00",
-        "refs/remotes/origin/feature-2 2023-12-25T08:15:00-05:00",
+        "refs/remotes/origin/main\x002024-01-15T10:30:00-05:00",
+        "refs/remotes/origin/feature-1\x002024-01-10T14:20:00-05:00",
+        "refs/remotes/origin/feature-2\x002023-12-25T08:15:00-05:00",
       ].join("\n");
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
@@ -293,10 +293,10 @@ describe("BranchRefService (through GitService)", () => {
 
     it("should skip invalid lines", async () => {
       const mockOutput = [
-        "refs/remotes/origin/main 2024-01-15T10:30:00-05:00",
+        "refs/remotes/origin/main\x002024-01-15T10:30:00-05:00",
         "invalid-line",
-        "refs/remotes/origin/feature-1 invalid-date",
-        "refs/remotes/origin/feature-2 2024-01-10T14:20:00-05:00",
+        "refs/remotes/origin/feature-1\x00invalid-date",
+        "refs/remotes/origin/feature-2\x002024-01-10T14:20:00-05:00",
       ].join("\n");
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
@@ -310,9 +310,9 @@ describe("BranchRefService (through GitService)", () => {
 
     it("should filter out origin/HEAD", async () => {
       const mockOutput = [
-        "refs/remotes/origin/main 2024-01-15T10:30:00-05:00",
-        "refs/remotes/origin/HEAD 2024-01-15T10:30:00-05:00",
-        "refs/remotes/origin/feature-1 2024-01-14T09:15:00-05:00",
+        "refs/remotes/origin/main\x002024-01-15T10:30:00-05:00",
+        "refs/remotes/origin/HEAD\x002024-01-15T10:30:00-05:00",
+        "refs/remotes/origin/feature-1\x002024-01-14T09:15:00-05:00",
       ].join("\n");
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
@@ -327,8 +327,8 @@ describe("BranchRefService (through GitService)", () => {
 
     it("keeps branches whose names contain '|' (legal refname character) (#review)", async () => {
       const mockOutput = [
-        "refs/remotes/origin/feature|wip 2024-01-15T10:30:00-05:00",
-        "refs/remotes/origin/main 2024-01-10T14:20:00-05:00",
+        "refs/remotes/origin/feature|wip\x002024-01-15T10:30:00-05:00",
+        "refs/remotes/origin/main\x002024-01-10T14:20:00-05:00",
       ].join("\n");
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
@@ -341,7 +341,7 @@ describe("BranchRefService (through GitService)", () => {
     });
 
     it("keeps a remote branch literally named 'origin' (#review)", async () => {
-      const mockOutput = ["refs/remotes/origin/origin 2024-01-15T10:30:00-05:00"].join("\n");
+      const mockOutput = ["refs/remotes/origin/origin\x002024-01-15T10:30:00-05:00"].join("\n");
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
 
@@ -353,9 +353,9 @@ describe("BranchRefService (through GitService)", () => {
 
     it("keeps a remote branch named 'feature/HEAD' and drops only the symref (#review)", async () => {
       const mockOutput = [
-        "refs/remotes/origin/HEAD 2024-01-15T10:30:00-05:00",
-        "refs/remotes/origin/feature/HEAD 2024-01-14T09:15:00-05:00",
-        "refs/remotes/origin/main 2024-01-10T14:20:00-05:00",
+        "refs/remotes/origin/HEAD\x002024-01-15T10:30:00-05:00",
+        "refs/remotes/origin/feature/HEAD\x002024-01-14T09:15:00-05:00",
+        "refs/remotes/origin/main\x002024-01-10T14:20:00-05:00",
       ].join("\n");
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
@@ -370,7 +370,7 @@ describe("BranchRefService (through GitService)", () => {
       // local branch literally named "origin/x" exists, and
       // refs/remotes/origin/feature/HEAD to "origin/feature" — both names this
       // parser would drop or misattribute. Full refnames never change shape.
-      mockGit.raw.mockResolvedValueOnce("refs/remotes/origin/x 2024-01-15T10:30:00-05:00" as any);
+      mockGit.raw.mockResolvedValueOnce("refs/remotes/origin/x\x002024-01-15T10:30:00-05:00" as any);
 
       const branches = await gitService.getRemoteBranchesWithActivity();
 
@@ -391,9 +391,9 @@ describe("BranchRefService (through GitService)", () => {
 
     it("maps full refnames to tips, keeping 'feature/HEAD' and dropping the symref (#review)", async () => {
       const mockOutput = [
-        "refs/remotes/origin/HEAD aaaaaaa",
-        "refs/remotes/origin/feature/HEAD bbbbbbb",
-        "refs/remotes/origin/main ccccccc",
+        "refs/remotes/origin/HEAD\x00aaaaaaa",
+        "refs/remotes/origin/feature/HEAD\x00bbbbbbb",
+        "refs/remotes/origin/main\x00ccccccc",
       ].join("\n");
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
@@ -412,7 +412,9 @@ describe("BranchRefService (through GitService)", () => {
     });
 
     it("keeps a remote branch named 'origin' and one whose name contains '|' (#review)", async () => {
-      const mockOutput = ["refs/remotes/origin/origin ddddddd", "refs/remotes/origin/feature|wip eeeeeee"].join("\n");
+      const mockOutput = ["refs/remotes/origin/origin\x00ddddddd", "refs/remotes/origin/feature|wip\x00eeeeeee"].join(
+        "\n",
+      );
 
       mockGit.raw.mockResolvedValueOnce(mockOutput as any);
 

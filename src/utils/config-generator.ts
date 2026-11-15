@@ -3,17 +3,14 @@ import * as path from "path";
 
 import { ConfigFileExistsError } from "../errors";
 
-import { resolveConfigPath } from "./config-discovery";
 import { extractRepoNameFromUrl } from "./git-url";
 
 import type { InitConfigInput, InitRepositoryInput } from "../types";
 
-export { ConfigFileExistsError };
-
 const CONFIG_CHEATSHEET = `
 // ─── More options (copy into a repository entry above) ────────────────
 // worktree mode (default):
-//   branchMaxAge: "14d",                    // ignore/remove branches older than N (d/h/w)
+//   branchMaxAge: "14d",                    // ignore/remove branches older than N (h/d/w/m/y)
 //   branchInclude: ["main", "release/*"],   // only sync matching branches
 //   branchExclude: ["dependabot/*"],
 //   sparseCheckout: { include: ["packages/app", "jenkins"] },
@@ -23,8 +20,8 @@ const CONFIG_CHEATSHEET = `
 //   depth: 10,                              // shallow clone; omit for full history
 // any repo, or under "defaults":
 //   debug: true,
-//   parallelism: { maxRepositories: 3, maxWorktreeUpdates: 3 },
-//   hooks: { onBranchCreated: ["<command>"] },  // see README for placeholders
+//   parallelism: { maxWorktreeUpdates: 3 },   // maxRepositories only at top level or in "defaults"
+//   hooks: { onBranchCreated: ["<command>"] },  // placeholders: docs/hooks-and-file-copying.md
 // Full reference: https://github.com/yordan-kanchelov/sync-worktrees#configuration
 `;
 
@@ -232,15 +229,4 @@ ${CONFIG_CHEATSHEET}`;
 
 export function getDefaultConfigPath(): string {
   return path.join(process.cwd(), "sync-worktrees.config.js");
-}
-
-/**
- * The config a command without `--config` loads: `SYNC_WORKTREES_CONFIG` when
- * set, otherwise the first config file in `cwd` or one of its parents.
- *
- * @deprecated The name predates the walk-up; use `resolveConfigPath`, which
- * also says where the path came from.
- */
-export async function findConfigInCwd(cwd: string = process.cwd()): Promise<string | null> {
-  return (await resolveConfigPath(undefined, { cwd }))?.path ?? null;
 }

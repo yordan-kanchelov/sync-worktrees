@@ -77,6 +77,17 @@ describe("ConfigLoaderService unknown-key warnings", () => {
     expect(repositories[0].updateExistingWorktrees).toBeUndefined();
   });
 
+  it("warns that a repository-level parallelism.maxRepositories has no effect", async () => {
+    const configPath = await writeConfig(repoBody("parallelism: { maxRepositories: 4 },"));
+
+    await new ConfigLoaderService({ logger }).buildRepositories(configPath);
+
+    expect(warnings).toEqual([
+      "[sync-worktrees] 'parallelism.maxRepositories' in repository 'reference' has no effect on a repository; " +
+        "set it at the top level or under defaults.",
+    ]);
+  });
+
   it("warns for the other spellings the audit collected", async () => {
     const configPath = await writeConfig(
       repoBody(`branchIncludes: ["main"], sparseCheckOut: { include: ["src"] }, maxAge: "30d", retries: 3,`),
@@ -125,6 +136,50 @@ describe("ConfigLoaderService unknown-key warnings", () => {
     ]);
   });
 
+  it("warns for the per-repository directory and URL keys under defaults, which nothing inherits", async () => {
+    const configPath = await writeConfig(`
+      export default {
+        defaults: { bareRepoDir: "./shared-bare", repoUrl: "${TEST_URLS.github}", worktreeDir: "./zzz" },
+        repositories: [
+          {
+            name: "reference",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "${path.join(tempDir, "worktrees")}"
+          }
+        ]
+      };
+    `);
+
+    const { repositories } = await new ConfigLoaderService({ logger }).buildRepositories(configPath);
+
+    expect(warnings).toEqual([
+      "[sync-worktrees] Unknown config key 'bareRepoDir' in defaults is ignored",
+      "[sync-worktrees] Unknown config key 'repoUrl' in defaults is ignored",
+      "[sync-worktrees] Unknown config key 'worktreeDir' in defaults is ignored",
+    ]);
+    expect(repositories[0].bareRepoDir).not.toContain("shared-bare");
+  });
+
+  it("loads a clone-mode repository beside a stray defaults.bareRepoDir, warning instead of rejecting", async () => {
+    const configPath = await writeConfig(`
+      export default {
+        defaults: { bareRepoDir: "./shared-bare" },
+        repositories: [
+          {
+            name: "reference",
+            mode: "clone",
+            repoUrl: "${TEST_URLS.github}",
+            worktreeDir: "${path.join(tempDir, "checkout")}"
+          }
+        ]
+      };
+    `);
+
+    await new ConfigLoaderService({ logger }).buildRepositories(configPath);
+
+    expect(warnings).toEqual(["[sync-worktrees] Unknown config key 'bareRepoDir' in defaults is ignored"]);
+  });
+
   /**
    * A clean config that exercises the whole inventory rather than a minimal
    * one: a fixture that sets three keys would pass this even if the inventory
@@ -137,7 +192,7 @@ describe("ConfigLoaderService unknown-key warnings", () => {
     const configPath = await writeConfig(`
       export default {
         retry: { maxAttempts: 3, maxLfsRetries: 2, initialDelayMs: 1000, maxDelayMs: 60000, backoffMultiplier: 2, jitterMs: 500 },
-        parallelism: { maxRepositories: 2, maxWorktreeCreation: 1, maxWorktreeUpdates: 3, maxWorktreeRemoval: 3, maxStatusChecks: 20, maxBranchFetches: 3 },
+        parallelism: { maxRepositories: 2, maxWorktreeCreation: 1, maxWorktreeUpdates: 3, maxWorktreeRemoval: 3, maxStatusChecks: 20 },
         defaults: {
           cronSchedule: "0 * * * *",
           runOnce: false,
@@ -180,7 +235,7 @@ describe("ConfigLoaderService unknown-key warnings", () => {
             maintenance: { interval: "1d" },
             trash: { enabled: false },
             retry: { jitterMs: 10 },
-            parallelism: { maxBranchFetches: 1 }
+            parallelism: { maxWorktreeUpdates: 1 }
           }
         ]
       };

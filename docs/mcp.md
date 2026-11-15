@@ -190,19 +190,23 @@ No config path is needed: the server runs in **auto-detect mode**.
   `sync-worktrees.config.{js,mjs,cjs,ts}` it finds, and when that directory sits inside a worktree managed by
   sync-worktrees it locates the bare repo, enumerates sibling worktrees and enables per-worktree operations.
 - Without a config it still serves `detect_context`, `list_worktrees`, `get_worktree_status`, `create_worktree` and
-  `update_worktree` for the repository it detected (the last two when the bare repository has an `origin` URL and the
-  registered worktrees agree on a `worktreeDir`; otherwise `capabilities` names the reason).
+  `update_worktree` for the repository it detected, when the bare repository has an `origin` URL (the last two also
+  need the registered worktrees to agree on a `worktreeDir`; otherwise `capabilities` names the reason). A bare
+  repository with no `origin` URL and no config listing it is not registered, so only `detect_context` serves it.
 - With a config that lists the repository it also serves `sync` and `initialize`. They stay unavailable for
   auto-detected repositories no matter which other tools have run.
 - A config that is not in the CWD or one of its parents is loaded at runtime with `load_config {configPath}`, or —
   while no config is loaded yet — found with `detect_context {path}`, which walks up from the path it is given. Once a
   config is loaded, `detect_context {path}` never loads another one; `load_config {configPath}` switches, and replaces
   the loaded repositories.
+- A loaded config is not re-read when the file changes: tools keep using the settings it had when it was loaded. Once
+  its contents change on disk, `detect_context` adds a note starting `CONFIG_CHANGED:`; call `load_config` to apply
+  the edit. Only the config file itself is compared, so an edit to a module it imports is not noticed.
 
 | Launched from | The server finds | What the agent should do |
 | --- | --- | --- |
 | A worktree under the directory holding the config | The config and the repository; every tool is available (worktree mode — a clone-mode repository gets `sync` and `initialize` but not `create_worktree` / `update_worktree`) | Nothing |
-| The directory holding the config, or any directory under it that is not a worktree (the workspace root, where `sync-worktrees` itself is run) | The config, auto-loaded, with every repository it lists; a single repository is selected. `detect_context` still answers `isWorktree: false` with every capability `available: false` — that block describes the probed path, not the server; read `configPath` and `configuredRepositories` instead, and every tool works | Nothing (`set_current_repository`, or pass `repoName`, when the config lists several repositories) |
+| The directory holding the config, or any directory under it that is not a worktree (the workspace root, where `sync-worktrees` itself is run) | The config, auto-loaded, with every repository it lists; with a single repository, calls that omit `repoName` target it (it is selected by the first such call, so the first `detect_context` still lists it `isCurrent: false`). `detect_context` answers `isWorktree: false`; while a repository is selected its `capabilities` are that repository's, with a note naming it (with several repositories and none selected, every capability is `available: false` — read `configPath` and `configuredRepositories`) | Nothing (`set_current_repository`, or pass `repoName`, when the config lists several repositories) |
 | A worktree from which no config is reachable by walking up (an absolute `worktreeDir` outside the config's tree, for example) | The repository only: the worktree tools work, `sync` and `initialize` are refused with code `CAPABILITY_UNAVAILABLE` ("no config file loaded (running in auto-detect mode)") | `load_config {configPath}` |
 | A directory with no config above it and no checkout above it (`~`, say) | Nothing: `detect_context` answers "No .git file found in path or any parent directory", every capability is `available: false`, and a bare `load_config` fails with "configPath required" | `detect_context {path: "<a worktree under the directory holding the config>"}` (walks up from that path, loads the config and selects the repository), or `load_config {configPath}` (required when the worktree lives outside the config's tree) |
 
@@ -211,12 +215,12 @@ No config path is needed: the server runs in **auto-detect mode**.
 | Tool                     | Purpose                                                                                                                                                                                                                           |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `detect_context`         | Inspect a path, resolve the bare repo, enumerate sibling worktrees, report config-driven sibling repositories and capabilities. With `includeStatus: true` each worktree carries `label`/`divergence`/`staleHint`, plus `statusError` when its status probe failed. Pass `includeAllWorktrees: true` to include every configured repo's worktrees keyed by repo name. |
-| `list_worktrees`         | List worktrees with status label (`clean`/`dirty`/`stale`/`current`/`unknown` — `stale` when the upstream the branch tracks, remote or local, no longer exists; `unknown` when the status probe failed, with the reason in `safeToRemove.reason`), divergence, `safeToRemove`, last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos.                        |
+| `list_worktrees`         | List worktrees with status label (`clean`/`dirty`/`stale`/`current`/`unknown` — `stale` when the upstream the branch tracks, remote or local, no longer exists; `unknown` when the status probe failed or the directory is gone, with the reason in `safeToRemove.reason`), divergence, `safeToRemove` (never safe for a locked, detached or missing worktree; those carry `locked`/`detached`/`prunable: true`), last sync. Without `repoName` and with a loaded config, results are grouped across all configured repos.                        |
 | `get_worktree_status`    | Detailed status for one worktree (dirty files, unpushed commits, stashes, operation in progress).                                                                                                                                 |
 | `create_worktree`        | Worktree mode only (a clone-mode repository answers `CAPABILITY_UNAVAILABLE` — use `sync`). Create a worktree for a branch; optionally create the branch from `baseBranch`. Newly created branches are pushed to origin unless `push=false`. `worktreeExisted` is true when the worktree was already there (a no-op retry). |
 | `update_worktree`        | Worktree mode only (a clone-mode repository answers `CAPABILITY_UNAVAILABLE` — use `sync`). Fast-forward one worktree to match upstream. `updated` is false when there was nothing to merge.                                     |
-| `sync`                   | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications. `success` is false (with `failed`/`failures` listed) when any action failed, matching the CLI's exit code 1.                     |
-| `initialize`             | Clone the bare repo and create the main worktree. Requires config. Streams progress.                                                                                                                                              |
+| `sync`                   | Full sync cycle (fetch, create, prune, update). Requires config. Streams progress notifications. `success` is false (with `failed`/`failures` listed) when any action failed, matching the CLI's exit code 1. `retry.maxAttempts: "unlimited"` is capped at 3 here so the call answers; a cancelled request stops retrying. |
+| `initialize`             | Worktree mode: clone the bare repo and create the main worktree. Clone mode: clone the checkout, or check an existing one's branch and origin. Requires config. Streams progress. `success` is false when an existing clone was refused (wrong branch or origin, unreadable HEAD), with the reason in `skips`. |
 | `load_config`            | Load or reload a config file at runtime.                                                                                                                                                                                          |
 | `set_current_repository` | Select the active repo when multiple are configured.                                                                                                                                                                              |
 
@@ -227,12 +231,16 @@ configured and none of those in force, the call fails and names the repositories
 Arguments are validated strictly: a key no tool declares is rejected by name (`Unrecognized key: "repo_name"`) rather
 than dropped, so a snake_case or misspelled `repoName` fails loudly instead of silently targeting the current repo.
 
-The same context is also served as the `sync-worktrees://workspace` resource (JSON, re-probed on every read, never
-cached) for clients that read resources instead of calling a tool.
+The same context is also served as the `sync-worktrees://workspace` resource (JSON) for clients that read resources
+instead of calling a tool. It shares `detect_context`'s discovery cache: a read may return a snapshot up to 5 s old,
+unless the worktree's `HEAD` or the worktree list changed or a mutating tool ran since. Clients are told not to cache it.
 
 ### Error codes
 
-Every failed call returns `{ error: true, code, message }` (with `isError`); branch on `code`:
+A tool that fails while running returns `{ error: true, code, message }` (with `isError`). Two failures happen before
+the tool runs and do not have that shape: arguments that fail validation come back as an `isError` result whose text is
+a plain message naming the tool and the offending key, and an unknown tool name is a JSON-RPC error (`-32602`). The
+codes below are the ones worth branching on:
 
 | Code                     | Meaning                                                                                                              | What to do                                                                 |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
@@ -242,10 +250,15 @@ Every failed call returns `{ error: true, code, message }` (with `isError`); bra
 | `TARGET_EXISTS`          | `create_worktree`'s target directory exists but is not a registered worktree                                         | Clean the path up, or let `sync` reconcile it                              |
 | `BRANCH_FILTERED`        | `create_worktree` refused a branch `branchInclude`/`branchExclude`/`branchMaxAge` would prune                        | Adjust the config, or pass `force: true` (the response then warns)         |
 | `DETACHED_HEAD`          | `update_worktree` on a worktree with no branch checked out                                                           | Check a branch out there and call again                                    |
+| `WORKTREE_MISSING`       | `update_worktree`/`get_worktree_status` on a registered worktree whose directory is gone                             | `git worktree prune` (unlock it first if locked), or let `sync` reconcile  |
 
-Anything else carries the underlying error's own code — `CONFIG_FILE_NOT_FOUND` or `CONFIG_VALIDATION_FAILED` from
-`load_config`, `GIT_*` from a git failure — with `INTERNAL_ERROR` for a plain thrown `Error` and `UNKNOWN_ERROR` for
-anything that is not an `Error`; read `message`.
+Anything else is not classified for branching; read `message`. A few failures carry their own code
+(`CONFIG_FILE_NOT_FOUND` or `CONFIG_VALIDATION_FAILED` from `load_config`, and some `GIT_*` / `WORKTREE_*` codes), but
+most — a failed clone, fetch, merge or push, an unknown repository, an invalid branch name, a path that is not a
+registered worktree — arrive as `INTERNAL_ERROR`, with `UNKNOWN_ERROR` for a thrown value that is not an `Error`.
+
+Set `SYNC_WORKTREES_MCP_DEBUG=1` in the server's environment to add a `stack` (credentials redacted) to every error
+payload.
 
 ## Safety
 

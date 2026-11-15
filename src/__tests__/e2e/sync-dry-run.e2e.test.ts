@@ -293,6 +293,47 @@ describe("sync --dry-run (E2E)", () => {
     await expect(fs.access(project)).rejects.toThrow();
   }, 60000);
 
+  function failedDryRun(configPath: string): string {
+    const result = run(["--config", configPath, "--dry-run", "--json"]);
+    expect(result.status).toBe(1);
+    const [report] = JSON.parse(result.stdout) as DryRunReport[];
+    expect(report?.status).toBe("failed");
+    return (report as Extract<DryRunReport, { status: "failed" }>).error;
+  }
+
+  it("fails the plan, as the sync fails, for a clone destination that is not empty and not a repository", async () => {
+    const cloneDir = path.join(tempDir, "project", "clone");
+    const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
+    await writeConfig(configPath, [
+      { name: "clone", mode: "clone", repoUrl: `file://${remote}`, worktreeDir: cloneDir },
+    ]);
+    await fs.mkdir(cloneDir, { recursive: true });
+    await fs.writeFile(path.join(cloneDir, "notes.txt"), "mine\n");
+
+    expect(failedDryRun(configPath)).toContain("directory exists and is not empty");
+    const sync = run(["--config", configPath, "--run-once"]);
+    expect(sync.status).not.toBe(0);
+    expect(sync.stdout + sync.stderr).toContain("directory exists and is not empty");
+  }, 60000);
+
+  it("fails the plan, as the sync fails, for a clone carrying the incomplete-clone marker", async () => {
+    const cloneDir = path.join(tempDir, "project", "clone");
+    const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
+    await writeConfig(configPath, [
+      { name: "clone", mode: "clone", repoUrl: `file://${remote}`, worktreeDir: cloneDir },
+    ]);
+    expect(run(["--config", configPath, "--run-once"]).status).toBe(0);
+    await fs.writeFile(
+      path.join(cloneDir, ".git", ".sync-worktrees-clone-incomplete"),
+      `${new Date().toISOString()}\ncheckout failed\n`,
+    );
+
+    expect(failedDryRun(configPath)).toContain("did not complete (checkout failed)");
+    const sync = run(["--config", configPath, "--run-once"]);
+    expect(sync.status).not.toBe(0);
+    expect(sync.stdout + sync.stderr).toContain("did not complete (checkout failed)");
+  }, 60000);
+
   it("plans a clone-mode fast-forward, honours --filter, and leaves the clone as it was", async () => {
     const project = path.join(tempDir, "project");
     const cloneDir = path.join(project, "clone");

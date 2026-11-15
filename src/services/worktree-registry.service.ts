@@ -1,7 +1,6 @@
-import * as path from "path";
-
 import { WorktreeNotCleanError } from "../errors";
 import { getErrorMessage } from "../utils/errors";
+import { findByWorktreePath } from "../utils/path-compare";
 import { parseWorktreeListPorcelain, readWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
 import type { GitServiceContext, RegisteredWorktree } from "./git-service.types";
@@ -66,16 +65,19 @@ export class WorktreeRegistryService {
       return { locked: false };
     }
 
-    const target = path.resolve(worktreePath);
-    const registered = worktrees.find((worktree) => path.resolve(worktree.path) === target);
+    const registered = await findByWorktreePath(worktrees, worktreePath);
     if (!registered?.locked) return { locked: false };
     return { locked: true, ...(registered.lockReason !== undefined && { reason: registered.lockReason }) };
   }
 
   async isRegisteredWorktree(bareGit: SimpleGit, worktreePath: string): Promise<boolean> {
-    const absoluteWorktreePath = path.resolve(worktreePath);
     const worktrees = await this.getWorktreesFromBare(bareGit, true);
-    return worktrees.some((w) => path.resolve(w.path) === absoluteWorktreePath && !w.isPrunable);
+    return (
+      (await findByWorktreePath(
+        worktrees.filter((w) => !w.isPrunable),
+        worktreePath,
+      )) !== undefined
+    );
   }
 
   // `bareGit` is the caller's client for the bare repository: worktree

@@ -7,19 +7,25 @@ const execFileAsync = promisify(execFile);
 
 const MCP_SERVER_NAME = "sync-worktrees";
 
-// The server auto-detects the bare repo and config from its CWD, so one entry
-// works across every repo.
-const MCP_ADD_ARGS = ["mcp", "add", MCP_SERVER_NAME, "--", "npx", "-y", "-p", "sync-worktrees", "sync-worktrees-mcp"];
+// The server auto-detects the bare repo and config from its CWD, so one
+// user-level entry works across every repo and worktree.
+const MCP_SERVER_COMMAND = [MCP_SERVER_NAME, "--", "npx", "-y", "-p", "sync-worktrees", "sync-worktrees-mcp"];
 
 interface McpClient {
   tool: string;
   label: string;
+  // Claude Code's default `local` scope is per directory, i.e. per worktree.
+  addFlags: string[];
 }
 
 const MCP_CLIENTS: McpClient[] = [
-  { tool: "claude", label: "Claude Code" },
-  { tool: "codex", label: "Codex" },
+  { tool: "claude", label: "Claude Code", addFlags: ["--scope", "user"] },
+  { tool: "codex", label: "Codex", addFlags: [] },
 ];
+
+function mcpAddArgs(client: McpClient): string[] {
+  return ["mcp", "add", ...client.addFlags, ...MCP_SERVER_COMMAND];
+}
 
 type ClientStatus = "absent" | "registered" | "unregistered" | "unknown";
 
@@ -49,17 +55,18 @@ async function probeClient(tool: string): Promise<ClientStatus> {
   }
 }
 
-function manualHint(tool: string): string {
-  return `   ${tool} mcp add ${MCP_SERVER_NAME} -- npx -y -p sync-worktrees sync-worktrees-mcp`;
+function manualHint(client: McpClient): string {
+  return `   ${client.tool} ${mcpAddArgs(client).join(" ")}`;
 }
 
-async function registerClient(tool: string, label: string): Promise<void> {
+async function registerClient(client: McpClient): Promise<void> {
+  const { tool, label } = client;
   try {
-    await execFileAsync(tool, MCP_ADD_ARGS, { timeout: 60_000 });
+    await execFileAsync(tool, mcpAddArgs(client), { timeout: 60_000 });
     console.log(`✅ Registered the sync-worktrees MCP server with ${label} (auto-detect mode).`);
   } catch {
     console.warn(`⚠️  Couldn't register automatically with ${label}. Run this yourself:`);
-    console.warn(manualHint(tool));
+    console.warn(manualHint(client));
   }
 }
 
@@ -76,7 +83,8 @@ export async function maybeRegisterMcpClients(): Promise<void> {
   // Best-effort: swallow anything (incl. an inquirer Ctrl-C rejection) so a
   // fully-written config never gets reported as a failed `init`.
   try {
-    for (const { tool, label } of MCP_CLIENTS) {
+    for (const client of MCP_CLIENTS) {
+      const { tool, label } = client;
       const status = await probeClient(tool);
       if (status !== "unregistered") {
         continue;
@@ -87,7 +95,7 @@ export async function maybeRegisterMcpClients(): Promise<void> {
         default: true,
       });
       if (proceed) {
-        await registerClient(tool, label);
+        await registerClient(client);
       }
     }
   } catch {

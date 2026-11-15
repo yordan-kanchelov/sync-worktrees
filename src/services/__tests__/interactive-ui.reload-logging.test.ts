@@ -9,6 +9,7 @@ import { WorktreeSyncService } from "../worktree-sync.service";
 import type { AppSyncProgress } from "../../utils/app-events";
 import type { RepositoryConfig } from "../../types";
 import type * as LoggerModule from "../logger.service";
+import type { LimitFunction } from "p-limit";
 import type { Mock } from "vitest";
 
 // Lines the real service emits while initialize() runs, through sub-services
@@ -64,6 +65,9 @@ const {
       trace: [] as string[],
       // What getRecordedSkips() reports after initialize().
       recordedSkips: [] as unknown[],
+      // The config file's `parallelism` / `defaults` blocks for the next reload.
+      parallelism: undefined as { maxRepositories?: number } | undefined,
+      defaults: undefined as { parallelism?: { maxRepositories?: number } } | undefined,
     },
   };
 });
@@ -150,7 +154,11 @@ vi.mock("../config-loader.service", () => ({
     return {
       buildRepositories: vi.fn(async () => ({
         repositories: syncControl.repositories.map((repo) => ({ ...repo })),
-        configFile: { repositories: syncControl.repositories },
+        configFile: {
+          repositories: syncControl.repositories,
+          parallelism: syncControl.parallelism,
+          defaults: syncControl.defaults,
+        },
         configDir: "",
       })),
     };
@@ -179,6 +187,8 @@ describe("InteractiveUIService reload logging", () => {
     syncControl.failInit = new Set<string>();
     syncControl.trace = [];
     syncControl.recordedSkips = [];
+    syncControl.parallelism = undefined;
+    syncControl.defaults = undefined;
     (ink.render as unknown as Mock).mockReturnValue({
       unmount: vi.fn(),
       waitUntilExit: vi.fn(() => new Promise<void>(() => {})),
@@ -215,6 +225,28 @@ describe("InteractiveUIService reload logging", () => {
       .onReload;
     await onReload();
   };
+
+  it("applies a changed parallelism.maxRepositories on reload", async () => {
+    const internals = uiService as unknown as {
+      limit: LimitFunction;
+      diskUsage: { limit: LimitFunction };
+    };
+    const progressLines: number[] = [];
+    events.on("updateMaxProgressLines", (lines: number) => progressLines.push(lines));
+    expect(internals.limit.concurrency).toBe(1);
+
+    syncControl.parallelism = { maxRepositories: 4 };
+    await reload();
+    expect(internals.limit.concurrency).toBe(4);
+    expect(internals.diskUsage.limit.concurrency).toBe(4);
+    expect(progressLines).toEqual([4]);
+
+    // `defaults` overrides the top level.
+    syncControl.defaults = { parallelism: { maxRepositories: 2 } };
+    await reload();
+    expect(internals.limit.concurrency).toBe(2);
+    expect(progressLines).toEqual([4, 2]);
+  });
 
   it("initializes the reloaded services without writing to the console", async () => {
     await reload();

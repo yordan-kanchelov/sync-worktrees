@@ -225,6 +225,16 @@ describe("SparseCheckoutService", () => {
       mockGit.raw.mockResolvedValue("# heading\n\napps\n");
       expect(await service.readCurrent("/wt")).toEqual(["apps"]);
     });
+
+    it("un-C-quotes the names cone mode still escapes", async () => {
+      mockGit.raw.mockResolvedValue('"a\\\\b"\n"q\\"x"\n"tab\\td"\n"caf\\303\\251"\napps\n');
+      expect(await service.readCurrent("/wt")).toEqual(["a\\b", 'q"x', "tab\td", "caf\u00e9", "apps"]);
+    });
+
+    it("leaves no-cone lines verbatim", async () => {
+      mockGit.raw.mockResolvedValue('"a\\\\b"\n');
+      expect(await service.readCurrent("/wt", "no-cone")).toEqual(['"a\\\\b"']);
+    });
   });
 
   describe("readCurrentMode", () => {
@@ -331,6 +341,24 @@ describe("SparseCheckoutService", () => {
 
     it("returns false when an exclude is removed (no-cone widening)", () => {
       expect(service.isNarrowing(["/*", "!docs", "!vendor"], ["/*", "!docs"])).toBe(false);
+    });
+
+    it("treats widening to a parent directory as not narrowing", () => {
+      expect(service.isNarrowing(["apps/web"], ["apps"])).toBe(false);
+      expect(service.isNarrowing(["apps/web", "docs"], ["apps", "docs"])).toBe(false);
+    });
+
+    it("treats narrowing to a subdirectory as narrowing", () => {
+      expect(service.isNarrowing(["apps"], ["apps/web"])).toBe(true);
+      expect(service.isNarrowing(["apps-web"], ["apps"])).toBe(true);
+    });
+
+    it("treats a switch from cone to no-cone as narrowing", () => {
+      expect(service.isNarrowing(["apps"], ["apps"], "cone", "no-cone")).toBe(true);
+    });
+
+    it("compares no-cone patterns as strings", () => {
+      expect(service.isNarrowing(["/apps/web/"], ["/apps/"], "no-cone", "no-cone")).toBe(true);
     });
 
     it("returns true when a positive include is removed but negatives are unchanged", () => {
@@ -450,7 +478,6 @@ describe("SparseCheckoutService", () => {
       ["apps//web", "a doubled slash"],
       ["apps/web/.", "a trailing . segment"],
       ["apps/../docs", "an interior .. that stays inside the repository"],
-      [".", "a lone dot, which git takes and matches nothing with"],
       ["deep/a/b/c/d", "a deeply nested directory"],
       ["nope/nothere", "a directory that does not exist yet"],
       ["a b", "a space"],
@@ -476,6 +503,14 @@ describe("SparseCheckoutService", () => {
       expect(only({ include: ["apps/we?"] })).toContain("'apps/we?'");
       expect(only({ include: ["apps/[a-z]"] })).toContain("'apps/[a-z]'");
       expect(only({ include: ["apps/web]"] })).toContain("'apps/web]'");
+    });
+
+    // git takes `.` but `sparse-checkout list` then prints nothing, so it could
+    // never compare equal and was re-applied on every sync.
+    it("rejects a lone dot, which selects only root files", () => {
+      expect(only({ include: ["."] })).toContain("'.'");
+      expect(only({ include: ["./"] })).toContain("(applied as '.')");
+      expect(findConeRuleViolations({ include: ["."], mode: "no-cone" })).toEqual([]);
     });
 
     it("rejects a path that climbs above the repository root", () => {

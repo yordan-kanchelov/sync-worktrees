@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
 import { isMouseSequence } from "../utils/mouse";
+import { sanitizePastedFilter } from "../utils/paste-filter";
 import { isListDown, isListUp, listRowsFor, listWindow, useModalLayout, wrappedRows } from "./layout";
 
 import type { WorktreeStatusResult } from "../services/worktree-status.service";
 import type { WorktreeStatusEntry, DivergedDirectoryInfo, RepositoryListEntry, RepositoryDiskUsage } from "../types";
 import { getErrorMessage } from "../utils/errors";
-
-export type { WorktreeStatusEntry };
 
 type ViewStep = "SELECT_PROJECT" | "VIEW_STATUS" | "ERROR";
 
@@ -212,17 +211,16 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const [step, setStep] = useState<ViewStep>(startsOnRepo >= 0 ? "VIEW_STATUS" : "SELECT_PROJECT");
   const [selectedProjectIndex, setSelectedProjectIndex] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
-  const selectedRepoIndexRef = useRef<number>(startsOnRepo);
+  const [selectedRepoIndex, setSelectedRepoIndex] = useState(startsOnRepo);
+  const startBranch = startsOnRepo >= 0 && startsOnRepo === initialRepoIndex ? initialBranch : undefined;
   // Consumed by the first load only; ESC back to the repository choice and a
   // second pick behave as they always have.
-  const initialBranchRef = useRef<string | undefined>(
-    startsOnRepo >= 0 && startsOnRepo === initialRepoIndex ? initialBranch : undefined,
-  );
+  const initialBranchRef = useRef<string | undefined>(startBranch);
 
   const [entries, setEntries] = useState<WorktreeStatusEntry[]>([]);
   const [divergedEntries, setDivergedEntries] = useState<DivergedDirectoryInfo[]>([]);
-  const [selectedEntryIndex, setSelectedEntryIndex] = useState(0);
-  const [entryFilter, setEntryFilter] = useState(initialBranchRef.current ?? "");
+  const [storedEntryIndex, setSelectedEntryIndex] = useState(0);
+  const [entryFilter, setEntryFilter] = useState(startBranch ?? "");
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   // What ends the "not loaded yet" state is a load that finished, not a
@@ -234,6 +232,8 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   // another project still loads exactly once, and reset when ESC goes back to
   // that choice.
   const loadedForRepoRef = useRef<number | null>(null);
+  // Bumped per load and on ESC; a load whose number is stale is dropped.
+  const loadGenRef = useRef(0);
   const [repoDiskUsage, setRepoDiskUsage] = useState<Record<number, RepositoryDiskUsageState>>({});
   const requestedDiskUsageRef = useRef<Set<number>>(new Set());
   const mountedRef = useRef(true);
@@ -290,12 +290,14 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
   const loadStatus = useCallback(
     async (repoIndex: number) => {
+      const gen = ++loadGenRef.current;
       setLoading(true);
       try {
         const [statusEntries, divergedDirs] = await Promise.all([
           getWorktreeStatusForRepo(repoIndex),
           getDivergedDirectoriesForRepo?.(repoIndex) ?? Promise.resolve([]),
         ]);
+        if (gen !== loadGenRef.current) return;
         setEntries(statusEntries);
         setDivergedEntries(divergedDirs);
         const branch = initialBranchRef.current;
@@ -312,6 +314,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         setExpandedEntry(target >= 0 ? target : null);
         setConfirmDelete(null);
       } catch (err) {
+        if (gen !== loadGenRef.current) return;
         setError(`Failed to load worktree status: ${String(err)}`);
         setStep("ERROR");
       }
@@ -363,29 +366,35 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   // identity of `loadStatus`, is what keeps it to one: a caller that hands in a
   // fresh `getWorktreeStatusForRepo` on every render must not re-run the load.
   useEffect(() => {
-    const repoIndex = selectedRepoIndexRef.current;
-    if (step !== "VIEW_STATUS" || repoIndex < 0) return;
-    if (loadedForRepoRef.current === repoIndex) return;
-    loadedForRepoRef.current = repoIndex;
-    void loadStatus(repoIndex);
-  }, [step, loadStatus]);
+    if (step !== "VIEW_STATUS" || selectedRepoIndex < 0) return;
+    if (loadedForRepoRef.current === selectedRepoIndex) return;
+    loadedForRepoRef.current = selectedRepoIndex;
+    void loadStatus(selectedRepoIndex);
+  }, [step, selectedRepoIndex, loadStatus]);
+
+  // The stored index can name the separator or a row past the end (no
+  // worktrees, a diverged-only filter, a delete): snap to a selectable row.
+  const snapToSelectable = useCallback(
+    (index: number): number =>
+      selectableIndices.find((i) => i >= index) ?? selectableIndices[selectableIndices.length - 1] ?? 0,
+    [selectableIndices],
+  );
+  const selectedEntryIndex = snapToSelectable(storedEntryIndex);
 
   const navigateUp = useCallback(() => {
     setSelectedEntryIndex((prev) => {
-      const currentSelectableIdx = selectableIndices.indexOf(prev);
-      if (currentSelectableIdx <= 0) return selectableIndices[0] ?? 0;
-      return selectableIndices[currentSelectableIdx - 1];
+      const pos = selectableIndices.indexOf(snapToSelectable(prev));
+      return pos <= 0 ? (selectableIndices[0] ?? 0) : selectableIndices[pos - 1];
     });
-  }, [selectableIndices]);
+  }, [selectableIndices, snapToSelectable]);
 
   const navigateDown = useCallback(() => {
     setSelectedEntryIndex((prev) => {
-      const currentSelectableIdx = selectableIndices.indexOf(prev);
-      if (currentSelectableIdx === -1) return selectableIndices[0] ?? 0;
-      if (currentSelectableIdx >= selectableIndices.length - 1) return prev;
-      return selectableIndices[currentSelectableIdx + 1];
+      const pos = selectableIndices.indexOf(snapToSelectable(prev));
+      if (pos === -1) return 0;
+      return selectableIndices[Math.min(pos + 1, selectableIndices.length - 1)];
     });
-  }, [selectableIndices]);
+  }, [selectableIndices, snapToSelectable]);
 
   const selectedItem = combinedList[selectedEntryIndex];
   const isDivergedSelected = selectedItem?.type === "diverged";
@@ -405,9 +414,9 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     if (confirmDelete !== null) {
       if (input === "y" || input === "Y") {
         const item = combinedList[confirmDelete];
-        if (item?.type === "diverged" && deleteDivergedDirectory && selectedRepoIndexRef.current >= 0) {
+        if (item?.type === "diverged" && deleteDivergedDirectory && selectedRepoIndex >= 0) {
           setDeleting(true);
-          deleteDivergedDirectory(selectedRepoIndexRef.current, item.entry.name)
+          deleteDivergedDirectory(selectedRepoIndex, item.entry.name)
             .then(() => {
               setDivergedEntries((prev) => prev.filter((d) => d.name !== item.entry.name));
               setConfirmDelete(null);
@@ -434,13 +443,16 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         onClose();
       } else if (step === "VIEW_STATUS") {
         if (repositories.length > 1) {
+          loadGenRef.current++;
+          initialBranchRef.current = undefined;
+          setLoading(false);
           setEntries([]);
           setDivergedEntries([]);
           setEntryFilter("");
           setExpandedEntry(null);
           setConfirmDelete(null);
           setDeleteError(null);
-          selectedRepoIndexRef.current = -1;
+          setSelectedRepoIndex(-1);
           loadedForRepoRef.current = null;
           setStep("SELECT_PROJECT");
         } else {
@@ -462,7 +474,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
       } else if (key.return && filteredProjects.length > 0) {
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
-          selectedRepoIndexRef.current = selectedRepo.index;
+          setSelectedRepoIndex(selectedRepo.index);
           // The effect owns the call; this only keeps the first frame of the
           // next step from claiming there are no worktrees before it runs.
           setLoading(true);
@@ -507,10 +519,10 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   usePaste((text) => {
     if (confirmDelete !== null) return;
     if (step === "SELECT_PROJECT") {
-      setProjectFilter((prev) => prev + text);
+      setProjectFilter((prev) => prev + sanitizePastedFilter(text));
       setSelectedProjectIndex(0);
     } else if (step === "VIEW_STATUS" && !loading) {
-      setEntryFilter((prev) => prev + text);
+      setEntryFilter((prev) => prev + sanitizePastedFilter(text));
       setSelectedEntryIndex(0);
       setExpandedEntry(null);
     }
@@ -610,9 +622,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   };
 
   const selectedRepo =
-    selectedRepoIndexRef.current >= 0
-      ? repositories.find((repo) => repo.index === selectedRepoIndexRef.current)
-      : undefined;
+    selectedRepoIndex >= 0 ? repositories.find((repo) => repo.index === selectedRepoIndex) : undefined;
 
   const renderStatusList = () => {
     if (loading) {

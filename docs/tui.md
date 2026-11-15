@@ -21,7 +21,7 @@ The screen opens on a table with one row per repository, the log under it and th
 | Column      | Shows                                                                                                                         |
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | STATE       | `● idle`, `⟳ syncing`, `✗ failed` (the sync threw, a sync action failed, or the repository lock could not be taken) or `⚠ skipped` (another sync or process held the repository) |
-| REPOSITORY  | The repository's `name` (or `repo-N`)                                                                                         |
+| REPOSITORY  | The repository's `name`                                                                                                       |
 | LAST RESULT | What the last sync did (`2 created, 1 removed`, `up to date`), why it failed (first line of the error) or why it was skipped  |
 | SYNCED      | How long ago the last sync ran to an end (`just now`, `3m ago`, `5h ago`); it keeps counting while the screen is open. A skip leaves it alone |
 | WT          | Worktrees the repository has, as of its last sync or status check                                                             |
@@ -128,7 +128,7 @@ same line. A launch that fails keeps the switcher open with the reason, too.
 
 ## Wizards
 
-- **Open wizard (`o`)** — select a worktree across all configured repos with live filtering (just type to narrow the
+- **Open wizard (`o`)** — pick a repository, then one of its worktrees, with live filtering (just type to narrow the
   list). Press `Tab` to flip between **Terminal** mode (launches a new terminal window attached to a `tmux` session in
   the worktree) and **Editor** mode (launches `$EDITOR` / `$VISUAL`, falling back to `code`). Re-opening the same
   worktree attaches to the existing tmux session instead of creating a duplicate. Editor mode needs a **GUI editor**:

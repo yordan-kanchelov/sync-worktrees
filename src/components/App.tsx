@@ -7,7 +7,7 @@ import OpenEditorWizard from "./OpenEditorWizard";
 import WorktreeStatusView from "./WorktreeStatusView";
 import ForceCleanModal from "./ForceCleanModal";
 import FuzzySwitcher from "./FuzzySwitcher";
-import LogPanel, { CollapsedLogLine } from "./LogPanel";
+import LogPanel, { CollapsedLogLine, useLogScroll } from "./LogPanel";
 import RepositoryDashboard from "./RepositoryDashboard";
 import { LOG_MIN_ROWS, LOG_RESIZE_STEP, homeLayout } from "./layout";
 import type { LogSizePreference } from "./layout";
@@ -30,8 +30,6 @@ import type {
   ForceCleanRepositoryResult,
   ForceCleanRepositorySelection,
 } from "../types";
-
-export type { HookContext, WorktreeStatusEntry };
 
 export interface AppProps {
   events: AppEventEmitter;
@@ -150,22 +148,34 @@ const App: React.FC<AppProps> = ({
   const [showOpenEditorWizard, setShowOpenEditorWizard] = useState(false);
   const [showWorktreeStatus, setShowWorktreeStatus] = useState(false);
   const [showForceClean, setShowForceClean] = useState(false);
-  const [status, setStatus] = useState<"idle" | "syncing">("idle");
+  const [status, setStatusState] = useState<"idle" | "syncing">("idle");
   // Interactive operations (branch/worktree creation) run independently of sync and
   // queue behind it. Tracked separately so they don't drive the sync `status` spinner.
   const [activeOps, setActiveOps] = useState<Array<{ id: number; label: string }>>([]);
   const opIdRef = useRef(0);
   const [syncProgressEntries, setSyncProgressEntries] = useState<AppSyncProgress[]>([]);
+  // Read synchronously by the progress listener: rows arriving while idle are
+  // dropped, and each new sync starts with none.
+  const statusRef = useRef<"idle" | "syncing">("idle");
+  const setStatus = (next: "idle" | "syncing"): void => {
+    if (next !== statusRef.current || next === "idle") setSyncProgressEntries([]);
+    statusRef.current = next;
+    setStatusState(next);
+  };
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
   const [lastSyncOutcome, setLastSyncOutcome] = useState<LastSyncOutcome | null>(null);
   const [diskSpaceUsed, setDiskSpaceUsed] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [repoCount, setRepoCount] = useState(repositoryCount);
+  const [progressLineLimit, setProgressLineLimit] = useState(maxProgressLines);
+  const [reloadGeneration, setReloadGeneration] = useState(0);
+  const reloadGenerationRef = useRef(0);
   const [schedule, setSchedule] = useState<CronScheduleDisplay>(cronSchedule);
   const [dashboardRows, setDashboardRows] = useState<readonly RepositoryDashboardRow[]>([]);
   // `l` folds the log to one line; `+` / `-` move the line between it and the
   // repository table. Null rows: the table takes what it needs first.
   const [logSize, setLogSize] = useState<LogSizePreference>({ collapsed: false, rows: null });
+  const logScroll = useLogScroll();
   // A key that cannot act right now says so here, for a moment, in place of
   // the key legend -- `s` during a sync used to do nothing at all.
   const [notice, setNotice] = useState<string | null>(null);
@@ -176,9 +186,14 @@ const App: React.FC<AppProps> = ({
 
   const { rows } = useWindowSize();
 
-  const progressLineCount = status === "syncing" ? Math.max(1, maxProgressLines) : 0;
-  const statusBarHeight = 5 + progressLineCount + activeOps.length;
   const terminalRows = rows ?? 24;
+  // No more rows than repositories, nor than leave the smallest log panel.
+  const progressLineCap = Math.max(
+    1,
+    Math.min(progressLineLimit, repoCount, terminalRows - 5 - activeOps.length - LOG_MIN_ROWS),
+  );
+  const progressLineCount = status === "syncing" ? progressLineCap : 0;
+  const statusBarHeight = 5 + progressLineCount + activeOps.length;
   const showModal =
     showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean || showSwitcher;
   // What the home screen, or a modal in its place, may take without pushing
@@ -186,6 +201,10 @@ const App: React.FC<AppProps> = ({
   const availableRows = Math.max(0, terminalRows - statusBarHeight);
   const modalRows = availableRows;
   const home = homeLayout(availableRows, dashboardRows.length, logSize);
+  // `l` only lifts the user's own fold; a log folded for want of room needs `+`.
+  const lFoldsOnly =
+    logSize.collapsed &&
+    !homeLayout(availableRows, dashboardRows.length, { ...logSize, collapsed: false }).logCollapsed;
 
   const pendingLogsRef = useRef<LogEntry[]>([]);
   const logFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -226,9 +245,6 @@ const App: React.FC<AppProps> = ({
     [],
   );
 
-  const addLogRef = useRef(addLog);
-  addLogRef.current = addLog;
-
   const showNotice = useCallback((message: string) => {
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     setNotice(message);
@@ -266,14 +282,7 @@ const App: React.FC<AppProps> = ({
     // them, and no shortcut here should fire off a stray click.
     if (isMouseSequence(input)) return;
 
-    if (showHelp) {
-      if (input === "?" || input === "h" || key.escape) {
-        setShowHelp(false);
-      }
-      return;
-    }
-
-    if (showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean || showSwitcher) {
+    if (showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean || showSwitcher) {
       return;
     }
 
@@ -302,7 +311,7 @@ const App: React.FC<AppProps> = ({
       // A log `l` folded comes back at the size it had; one folded for want
       // of room comes back as the smallest panel, at the table's expense.
       setLogSize(
-        logSize.collapsed
+        lFoldsOnly
           ? { ...logSize, collapsed: false }
           : {
               collapsed: false,
@@ -373,15 +382,13 @@ const App: React.FC<AppProps> = ({
       }),
       events.on("setStatus", (newStatus: "idle" | "syncing") => {
         setStatus(newStatus);
-        if (newStatus === "idle") {
-          setSyncProgressEntries([]);
-        }
       }),
       events.on("setSyncProgress", (progress: AppSyncProgress | null) => {
         if (progress === null) {
           setSyncProgressEntries([]);
           return;
         }
+        if (statusRef.current !== "syncing") return;
         setSyncProgressEntries((prev) => {
           if (progress.completed) {
             return prev.filter((entry) => entry.repo !== progress.repo);
@@ -399,10 +406,23 @@ const App: React.FC<AppProps> = ({
         setDiskSpaceUsed(diskSpace);
       }),
       events.on("addLog", ({ message, level }: { message: string; level: "info" | "warn" | "error" }) => {
-        addLogRef.current(message, level);
+        addLog(message, level);
       }),
       events.on("updateRepositoryCount", (count: number) => {
         setRepoCount(count);
+      }),
+      events.on("updateMaxProgressLines", (lines: number) => {
+        setProgressLineLimit(lines);
+      }),
+      // An open picker holds indexes into the old list; close it.
+      events.on("repositoriesReloaded", (generation: number) => {
+        reloadGenerationRef.current = generation;
+        setReloadGeneration(generation);
+        setShowBranchWizard(false);
+        setShowOpenEditorWizard(false);
+        setShowWorktreeStatus(false);
+        setShowSwitcher(false);
+        setStatusTarget(null);
       }),
       events.on("updateCronSchedule", (newSchedule: CronScheduleDisplay) => {
         setSchedule(newSchedule);
@@ -440,14 +460,13 @@ const App: React.FC<AppProps> = ({
 
   // One list per opened modal. Re-reading it on every render handed the modal
   // a fresh array for every log line and progress event, which re-ran every
-  // effect keyed on it. A reload that changes the repository count while a
-  // modal is open still refreshes it.
+  // effect keyed on it. A reload closes the pickers and re-keys the list.
   const showRepositoryPicker = showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showSwitcher;
   const repositories = useMemo(
     () => (showRepositoryPicker ? getRepositoryList() : []),
-    // `repoCount` is not read, only a signal that a reload changed the list.
+    // `reloadGeneration` is not read, only a signal that a reload changed the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [showRepositoryPicker, getRepositoryList, repoCount],
+    [showRepositoryPicker, getRepositoryList, reloadGeneration],
   );
   // StatusBar is memoised; a fresh array here would defeat that on every log flush.
   const activeOpLabels = useMemo(() => activeOps.map((op) => op.label), [activeOps]);
@@ -455,11 +474,11 @@ const App: React.FC<AppProps> = ({
   return (
     <Box flexDirection="column" minHeight={terminalRows}>
       {!showModal && home.dashboardRows > 0 && <RepositoryDashboard rows={dashboardRows} height={home.dashboardRows} />}
-      {!showModal && !home.logCollapsed && <LogPanel logs={logs} height={home.logRows} isActive={!showModal} />}
+      {!showModal && !home.logCollapsed && <LogPanel logs={logs} height={home.logRows} scroll={logScroll} />}
       {!showModal && home.logCollapsed && (
         <>
           <Box flexGrow={1} />
-          <CollapsedLogLine logs={logs} />
+          <CollapsedLogLine logs={logs} expandKey={lFoldsOnly ? "l" : "+"} />
         </>
       )}
 
@@ -475,25 +494,40 @@ const App: React.FC<AppProps> = ({
           createAndPushBranch={createAndPushBranch}
           onClose={() => setShowBranchWizard(false)}
           onBranchCreated={(context) => {
+            // context.repoIndex indexes the list of this render's generation.
+            // Each step re-resolves it, and after a reload it names another
+            // repository, so stop at the first step that would cross one.
+            const generation = reloadGeneration;
+            const reloaded = (skipped: string): boolean => {
+              if (reloadGenerationRef.current === generation) return false;
+              events.emit("addLog", {
+                message: `The configuration was reloaded; skipped ${skipped} for '${context.newBranch}'.`,
+                level: "error",
+              });
+              return true;
+            };
             const opId = ++opIdRef.current;
             setActiveOps((prev) => [...prev, { id: opId, label: `Creating worktree ${context.newBranch}` }]);
             (async () => {
               try {
+                if (reloaded("the worktree, file copy and hooks")) return;
                 await createWorktreeForBranch(context.repoIndex, context.newBranch);
                 if (copyBranchFiles) {
+                  if (reloaded("file copy and hooks")) return;
                   await copyBranchFiles(context.repoIndex, context.baseBranch, context.newBranch);
                 }
 
                 if (executeOnBranchCreatedHooks) {
+                  if (reloaded("hooks")) return;
                   const worktrees = await getWorktreesForRepo(context.repoIndex);
                   const worktree = worktrees.find((w) => w.branch === context.newBranch);
-                  if (worktree) {
+                  if (worktree && !reloaded("hooks")) {
                     const repos = getRepositoryList();
                     const repo = repos.find((r) => r.index === context.repoIndex);
                     executeOnBranchCreatedHooks(context.repoIndex, {
                       branchName: context.newBranch,
                       worktreePath: worktree.path,
-                      repoName: repo?.name || `repo-${context.repoIndex}`,
+                      repoName: repo?.name ?? "",
                       baseBranch: context.baseBranch,
                       repoUrl: repo?.repoUrl || "",
                     });
@@ -580,7 +614,7 @@ const App: React.FC<AppProps> = ({
         status={status}
         syncProgressEntries={syncProgressEntries}
         activeOps={activeOpLabels}
-        maxProgressLines={maxProgressLines}
+        maxProgressLines={progressLineCap}
         repositoryCount={repoCount}
         lastSyncTime={lastSyncTime}
         lastSyncOutcome={lastSyncOutcome}

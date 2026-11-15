@@ -121,7 +121,22 @@ describe("maybeRegisterMcpClients", () => {
     const addCalls = mockExecFile.mock.calls.filter((call) => call[1][1] === "add");
     expect(addCalls).toHaveLength(2);
     expect(addCalls[0][0]).toBe("claude");
+    // Claude Code's default `local` scope is per directory, so it would not reach other worktrees.
     expect(addCalls[0][1]).toEqual([
+      "mcp",
+      "add",
+      "--scope",
+      "user",
+      "sync-worktrees",
+      "--",
+      "npx",
+      "-y",
+      "-p",
+      "sync-worktrees",
+      "sync-worktrees-mcp",
+    ]);
+    expect(addCalls[1][0]).toBe("codex");
+    expect(addCalls[1][1]).toEqual([
       "mcp",
       "add",
       "sync-worktrees",
@@ -149,7 +164,12 @@ describe("maybeRegisterMcpClients", () => {
     mockConfirm.mockResolvedValue(true);
 
     await expect(maybeRegisterMcpClients()).resolves.toBeUndefined();
-    expect(console.warn).toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "   claude mcp add --scope user sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp",
+    );
+    expect(console.warn).toHaveBeenCalledWith(
+      "   codex mcp add sync-worktrees -- npx -y -p sync-worktrees sync-worktrees-mcp",
+    );
   });
 
   it("never throws when the user aborts the prompt (Ctrl-C)", async () => {

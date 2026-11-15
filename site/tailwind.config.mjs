@@ -3,7 +3,6 @@ import typography from "@tailwindcss/typography";
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./src/**/*.{astro,html,js,jsx,md,mdx,ts,tsx}"],
-  darkMode: "class",
   theme: {
     extend: {
       fontFamily: {
@@ -40,21 +39,6 @@ export default {
           green: "#22c55e",
           amber: "#f59e0b",
           red: "#ef4444",
-        },
-      },
-      backgroundImage: {
-        "grid-light":
-          "linear-gradient(to right, rgba(15,23,42,0.04) 1px, transparent 1px), linear-gradient(to bottom, rgba(15,23,42,0.04) 1px, transparent 1px)",
-        "grid-dark":
-          "linear-gradient(to right, rgba(148,163,184,0.07) 1px, transparent 1px), linear-gradient(to bottom, rgba(148,163,184,0.07) 1px, transparent 1px)",
-      },
-      animation: {
-        "fade-in": "fadeIn 0.6s ease-out",
-      },
-      keyframes: {
-        fadeIn: {
-          "0%": { opacity: "0", transform: "translateY(8px)" },
-          "100%": { opacity: "1", transform: "translateY(0)" },
         },
       },
     },

@@ -22,12 +22,13 @@ const config = {
     // (default: true). Set false to wait for the schedule instead. Whole-file
     // like `runOnce`, and ignored when `runOnce` is on.
     // syncOnStart: false,
-    // Maximum age of branches to sync (optional)
-    // branchMaxAge: "30d",  // Only sync branches active in last 30 days
+    // branchMaxAge and updateExistingWorktrees are worktree-mode only: set here,
+    // they would reach the clone-mode entries below and fail validation, so the
+    // example sets them on "my-main-project" instead.
     // Skip Git LFS downloads (optional)
     // skipLfs: true,  // Skip downloading large files tracked by Git LFS
-    // Auto-update worktrees that are behind upstream (optional)
-    // updateExistingWorktrees: true,  // Default: true, set to false to disable updates
+    // Log debug output and full git error details (optional; --debug overrides)
+    // debug: true,
     // Inactivity timeouts (optional) for the git commands that talk to the
     // remote. Each kills its command when no output arrives inside its window,
     // so a stalled connection ends the attempt instead of hanging the sync
@@ -80,7 +81,6 @@ const config = {
     maxWorktreeUpdates: 3, // Max concurrent worktree updates (default: 3)
     maxWorktreeRemoval: 3, // Max concurrent worktree removals (default: 3)
     maxStatusChecks: 20, // Max concurrent git processes for status probes (default: 20)
-    maxBranchFetches: 3, // Max concurrent per-branch fetches, bulk-fetch fallback (default: 3)
   },
 
   // Performance tuning tips:
@@ -93,11 +93,10 @@ const config = {
   //   `git submodule status` runs a helper script and a child per submodule,
   //   about 3 processes per call on an 8-submodule superproject.
   // - maxWorktreeUpdates: Can safely increase to 5-10 on fast systems
-  // - maxWorktreeCreation, maxWorktreeRemoval and maxBranchFetches each run
-  //   their main git command through one shared client that stops at 5
-  //   concurrent processes, so raising them far above 5 buys little: fetches
-  //   stop at 5 outright, while creation and removal grow a little past it for
-  //   the few commands they run on each worktree's own client
+  // - maxWorktreeCreation and maxWorktreeRemoval each run their main git
+  //   command through one shared client that stops at 5 concurrent processes,
+  //   so raising them far above 5 buys little: they grow only a little past it
+  //   for the few commands they run on each worktree's own client
   // - maxRepositories: Higher values speed up multi-repo syncs but use more resources
   // - A repository's phases run one after another (create, then prune, then
   //   update), so peak git processes = maxRepositories × the widest single
@@ -120,6 +119,11 @@ const config = {
 
       // Override default schedule for this repo (every 15 minutes)
       cronSchedule: "*/15 * * * *",
+
+      // Maximum age of branches to sync (optional)
+      // branchMaxAge: "30d",  // Only sync branches active in last 30 days
+      // Auto-update worktrees that are behind upstream (optional)
+      // updateExistingWorktrees: true,  // Default: true, set to false to disable updates
     },
 
     {

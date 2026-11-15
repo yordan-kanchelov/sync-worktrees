@@ -2,6 +2,7 @@ import pLimit from "p-limit";
 
 import { ConfigLoaderService } from "../services/config-loader.service";
 import { Logger } from "../services/logger.service";
+import { modeFor } from "../services/sparse-checkout.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 import { describeConfigPath } from "../utils/config-discovery";
 import { configLoadErrorMessage, getErrorMessage } from "../utils/errors";
@@ -112,7 +113,7 @@ export function toListedRepository(repo: RepositoryConfig, counts: RepositoryDis
       ? {
           include: sparse.include,
           exclude: sparse.exclude ?? [],
-          mode: sparse.mode ?? "cone",
+          mode: modeFor(sparse),
           skipUpdateWhenOutsideSparse: sparse.skipUpdateWhenOutsideSparse ?? true,
         }
       : null,

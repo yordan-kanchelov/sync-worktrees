@@ -17,7 +17,7 @@ which anything leaves your disk:
 
 | Removal path | Trigger | Gate | Trash on (the default) | With `trash.enabled: false` | Undo |
 | --- | --- | --- | --- | --- | --- |
-| Prune | The remote branch is gone, or `branchInclude`/`branchExclude`/`branchMaxAge` no longer match it | Clean only: no uncommitted changes, no unpushed commits, no stash of its own (made on its branch), no in-progress operation, no modified submodules, not detached. Re-checked immediately before removal; an audit record is written first, and an unwritable audit log blocks the removal | `.trash/<id>/` as `prune`, 30 days, a pin ref keeps the commits | `git worktree remove` — permanent | `sync-worktrees trash restore <id>` |
+| Prune | The remote branch is gone, or `branchInclude`/`branchExclude`/`branchMaxAge` no longer match it | Clean only: no uncommitted changes, no unpushed commits, no stash of its own (made on its branch), no in-progress operation, no modified submodules, not detached. Re-checked immediately before removal; an audit record is written first, and an unwritable audit log blocks the removal | `.trash/<id>/` as `prune`, 30 days, a pin ref keeps the commits | `git worktree remove` — permanent | `sync-worktrees trash restore <id>` — while the remote branch is still gone, a clean restore is pruned again by the next sync (see [Restoring](#restoring)) |
 | Fully pushed, then deleted upstream | As above, but the worktree holds commits on no remote *now* that were fully pushed before the remote branch was deleted (a squash merge) | Same gate; this is the one case with unpushed commits that is removable | `.trash/` with the pin promoted to a permanent keep ref on expiry | Kept with a warning, never removed | `trash restore`, or the keep ref |
 | Stale directory at a managed path | A directory sits where sync is about to create a worktree (its hashed name, or its plain name when the directory is a checkout of this repository; anything else at a plain name is left alone and the branch gets its hashed name), and git does not list it as a worktree | None is possible — it is not a checkout git can inspect | `.trash/<id>/` as `orphan` | Quarantined to a sibling `.removed/` folder; an empty directory is removed | `trash restore` (trash on only) |
 | Diverged branch (a force-push, or someone else pushed the branch) | The worktree has commits of its own *and* upstream has commits it lacks | Skipped while a stash is present (dirty worktrees never reach this point); reset in place instead of moved when its content already matches upstream or its HEAD is still the commit the last sync left it at (a reset that would touch ignored files, or a tree that is not clean, falls back to the move) | `.trash/<id>/` as `diverged-replace`, commits pinned, `Keep on reap`; a fresh checkout of upstream takes its place | `.diverged/<date>-<branch>-<id>/`, commit held by a keep ref | Recover the commits from the entry — see [Diverged branches](#diverged-branches-force-pushes) for the two cases (a teammate's push vs a force-push you mean to undo); `trash restore` is refused while the fresh checkout occupies the path |
@@ -53,9 +53,10 @@ first).
 
 ### Recovering the commits
 
-The moved copy is not a working checkout any more: its `.git` link points at a worktree registration the sync removed,
-so `git` inside it answers "not a git repository". Recover through the bare repository instead. The entry's
-`manifest.json` holds the `branch` and the `headOid`, and the pin ref keeps that commit alive:
+The moved copy is not a working checkout any more: its `.git` link is renamed to `.git.detached`, because the fresh
+worktree re-registers under the same name and git run inside the copy would act on the live branch. Do not run git
+there; recover through the bare repository instead. The entry's `manifest.json` holds the `branch` and the `headOid`
+(also in the `.diverged-info.json` beside it), and the pin ref keeps that commit alive:
 
 ```bash
 sync-worktrees trash list --filter <repository-name>               # find the entry's id
@@ -94,7 +95,7 @@ my-repo-worktrees/
 
 Recover the same way, from the keep ref named in `.diverged-info.json`
 (`git -C <bare-repo> branch feature-x-recovered refs/sync-worktrees/keep/<name>`); the copy itself is not a git
-checkout. The TUI's worktree status view (`w`) lists `.diverged/` directories and offers a guided delete (`Ctrl-D` with
+checkout (its `.git` link is renamed to `.git.detached`), so do not run git inside it. The TUI's worktree status view (`w`) lists `.diverged/` directories and offers a guided delete (`Ctrl-D` with
 `y`/`n` confirmation) once you've decided.
 
 ## Trash layout and pin refs
@@ -109,6 +110,8 @@ my-repo-worktrees/
 └── .trash/
     └── 2026-06-06T18-30-00-000Z-feature-x-a1b2c3/
         ├── manifest.json     # branch, reason, original path, HEAD commit, expiry
+        ├── .diverged-info.json  # diverged-replace entries only: the recovery steps
+        ├── commits.bundle    # Keep on reap entries only: a git bundle of the commits on no remote
         └── payload/          # the directory exactly as it was, including uncommitted work
 ```
 
@@ -116,6 +119,15 @@ When the removed directory was a branch worktree, a pin ref (`refs/sync-worktree
 the trashed HEAD's objects alive through `git gc` for the whole retention window — even though the local branch ref
 itself is deleted after trashing. Each entry expires on its own clock; maintenance runs the reaper after every sync
 attempt, including failed attempts.
+
+A `Keep on reap` entry whose commits are on no remote also gets `commits.bundle`, a self-contained backup of the pin
+ref written before the worktree is moved (if the bundle cannot be written, the removal is aborted and the worktree stays
+where it is). Nothing reads it back automatically; it is there for the case where the pin ref itself is lost, for
+example in a re-cloned bare repository. Recover from it with the `pinRef` from the entry's `manifest.json`:
+
+```bash
+git -C <bare-repo> fetch <worktreeDir>/.trash/<id>/commits.bundle '<pinRef>:refs/heads/<branch>-recovered'
+```
 
 ```javascript
 defaults: {
@@ -247,6 +259,11 @@ directory where its worktree belongs and moves it straight back to trash as a ne
 restore says so; copy what you need out of the directory, or exclude the branch, before the next tick. A
 `diverged-replace` entry is the exception described under [Diverged branches](#diverged-branches-force-pushes).
 
+A `prune` entry whose remote branch was deleted comes back as a worktree, but nothing has changed upstream: the next
+sync sees the same missing `origin/<branch>` and, if the worktree is still clean with no unpushed commits, moves it to
+trash again. The restore warns when it finds no `origin/<branch>` to track. To keep it, push the branch again, or leave
+uncommitted changes or commits that are on no remote in it, before the next tick.
+
 If you would rather do it by hand, read `manifest.json` for the entry's `branch`, `headOid`, and `originalPath`, then
 either copy `payload/` wherever you need the files, or rebuild the worktree yourself:
 
@@ -257,6 +274,7 @@ git -C <bare-repo> branch <branch> <headOid>
 git -C <bare-repo> worktree add --no-checkout <originalPath> <branch>
 cp -R payload/. <originalPath>/   # then restore the .git link git wrote:
 git -C <bare-repo> worktree repair <originalPath>
+rm -f <originalPath>/.git.detached <originalPath>/.diverged-info.json
 git -C <originalPath> reset       # index at HEAD, payload shows as unstaged changes
 ```
 

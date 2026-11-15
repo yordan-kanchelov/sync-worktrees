@@ -6,7 +6,10 @@ on:
       - "site/**"
       - "assets/demo.mp4"
       - "assets/demo-poster.webp"
+      - "assets/launch.mp4"
+      - "assets/launch-poster.jpg"
       - "README.md"
+      - "docs/**"
       - ".github/workflows/deploy-site.yml"
   push:
     branches: [main]
@@ -14,7 +17,10 @@ on:
       - "site/**"
       - "assets/demo.mp4"
       - "assets/demo-poster.webp"
+      - "assets/launch.mp4"
+      - "assets/launch-poster.jpg"
       - "README.md"
+      - "docs/**"
       - ".github/workflows/deploy-site.yml"
   workflow_dispatch:
   # release.yml calls this after publishing, so the site build and deploy steps exist only here.
@@ -48,6 +54,10 @@ jobs:
       - name: Install dependencies
         working-directory: site
         run: npm ci
+
+      - name: Type check
+        working-directory: site
+        run: npm run check
 
       - name: Build
         working-directory: site

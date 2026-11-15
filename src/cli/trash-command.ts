@@ -9,6 +9,7 @@ import { ConfigLoaderService } from "../services/config-loader.service";
 import { isWorktreeRestorable } from "../services/trash.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 import { formatBytes } from "../utils/disk-space";
+import { fileExists } from "../utils/file-exists";
 import { CONFIG_OPTION_DESCRIPTION } from "../utils/config-discovery";
 import { configLoadErrorMessage } from "../utils/errors";
 import { redactSecretsInText } from "../utils/git-url";
@@ -480,6 +481,16 @@ async function executeTrash(configPath: string, options: TrashCliOptions): Promi
     throw new TrashCliError("Trash operations are only available for worktree-mode repositories");
   }
   const { action } = options;
+  // Before the first sync there is no bare repo for simple-git to open.
+  const bareRepoDir = repositories[0].bareRepoDir;
+  if (bareRepoDir && !(await fileExists(path.join(bareRepoDir, "HEAD")))) {
+    if (action.kind !== "list") {
+      throw new TrashCliError(`Repository '${repositories[0].name}' has not been synced yet`);
+    }
+    if (action.json) printTrashJson([], [], []);
+    else console.log("No trash entries.");
+    return;
+  }
   // A bounded budget, never an open-ended block: see DEFAULT_CONFIG.LOCK_WAIT_MS.
   // Announced before the wait begins, and only for the operations that take
   // the lock — a listing takes none, so saying it would wait for one is a lie
@@ -563,9 +574,14 @@ async function dropAllKeepRefs(service: WorktreeSyncService, label: string): Pro
   const dropped = await service.deleteKeepRefs(names);
   console.log(`✅ Deleted ${dropped.deleted} keep ref(s)`);
   for (const ref of dropped.retained) {
-    console.log(`   Retained ${ref} — a '.diverged/' directory still depends on it`);
+    console.log(`   Retained ${shortKeepRef(ref)} — a '.diverged/' directory still depends on it`);
   }
-  for (const error of dropped.errors) console.warn(`⚠️ Could not delete ${error}`);
+  for (const error of dropped.errors) console.warn(`⚠️ Could not delete ${shortKeepRef(error)}`);
+}
+
+// Output uses the short names the commands accept, not full ref paths.
+function shortKeepRef(text: string): string {
+  return text.startsWith(GIT_CONSTANTS.KEEP_REF_PREFIX) ? text.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length) : text;
 }
 
 // Permanent deletion of one entry, gated exactly like the keep-ref drops: an

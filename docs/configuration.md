@@ -15,9 +15,9 @@ recovery](./trash-and-recovery.md) and [Hooks and file copying](./hooks-and-file
 ## File formats and discovery
 
 Discovery tries `sync-worktrees.config.js`, `.mjs`, `.cjs` and `.ts`, in that order, in each directory from the
-current one upwards; the first directory with a match wins. The CLI stops at your home directory when it starts inside
-it (like a git ceiling directory: a config in `~` is found, one in `/home` or `/` is not); the MCP server walks to the
-filesystem root. The CLI resolves its config in this order:
+current one upwards; the first directory with a match wins. The walk stops at your home directory when it starts
+inside it (like a git ceiling directory: a config in `~` is found, one in `/home` or `/` is not); the CLI and the MCP
+server share this rule. The CLI resolves its config in this order:
 
 1. `--config <path>`.
 2. The `SYNC_WORKTREES_CONFIG` environment variable, relative to the current directory. An empty value counts as unset;
@@ -88,6 +88,8 @@ tick.
   when the config loads, naming both entries and the path. A `worktreeDir` nested inside another entry's `worktreeDir`
   loads with a warning.
 - Repository-specific settings override `defaults`.
+- `debug` (default `false`), on a repository or under `defaults`, logs debug output and full error details (the stack,
+  git's whole output) for that repository. `--debug` turns it on for every repository.
 
 ### Worktree folder names
 
@@ -207,7 +209,8 @@ run `git lfs pull` in those worktrees, or fix LFS access and recreate them.
 ## Parallelism
 
 `parallelism` bounds concurrent **git processes**, not worktrees. It can sit at the top level (as below), under
-`defaults`, or on a single repository — each layer overrides the one before it:
+`defaults`, or on a single repository — each layer overrides the one before it. `maxRepositories` is the exception: it
+is read from the top level and `defaults` only, and a repository-level one is ignored with a warning:
 
 ```javascript
 parallelism: {
@@ -216,7 +219,6 @@ parallelism: {
   maxWorktreeUpdates: 3,
   maxWorktreeRemoval: 3,
   maxStatusChecks: 20,     // git processes spent on read-only status probes
-  maxBranchFetches: 3,     // per-branch fetches, used only as a bulk-fetch fallback
 }
 ```
 
@@ -234,12 +236,11 @@ processes.
 Two things sit outside that count. Git spawns children of its own — `git submodule status` runs a helper script and a
 child per submodule, measured on git 2.43 at roughly 1.5 git processes and 3 processes in total per call on an
 eight-submodule superproject — so a budget spent entirely on superproject probes costs about three times its size. And
-`maxWorktreeCreation`, `maxWorktreeRemoval` and `maxBranchFetches` each run their main git command through a single
-shared client whose scheduler stops at 5, so setting them higher than 5 buys little: the per-branch fetch fallback stops
-at 5 outright, while creation and removal grow a little past it for the few commands each unit runs on the worktree's
-own client. That fetch fallback only runs when a bulk fetch fails on LFS errors, and is left out of the peak entirely,
-so a config the loader reports as well inside the limit can still spawn about five fetches per repository if every
-repository hits the fallback at once.
+`maxWorktreeCreation` and `maxWorktreeRemoval` each run their main git command through a single shared client whose
+scheduler stops at 5, so setting them higher than 5 buys little: they grow only a little past it, for the few commands
+each unit runs on the worktree's own client.
+
+`maxBranchFetches` is deprecated and has no effect; a config that still sets it loads with a warning.
 
 ## Maintenance
 

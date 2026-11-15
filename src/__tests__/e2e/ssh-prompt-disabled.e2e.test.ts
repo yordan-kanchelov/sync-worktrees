@@ -22,7 +22,7 @@ interface CliRun {
 // The ssh here is a stand-in, reached through the user's own GIT_SSH_COMMAND:
 // at the prompt it does what OpenSSH 8.4+ does — asks the askpass program when
 // SSH_ASKPASS_REQUIRE=force, and otherwise waits on the terminal.
-describe.skipIf(process.platform === "win32")("CLI fails fast when ssh would prompt", () => {
+describe("CLI fails fast when ssh would prompt", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   let tempDir: string;
   let fakeSshPath: string;

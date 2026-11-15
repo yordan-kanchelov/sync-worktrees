@@ -1,0 +1,48 @@
+name: Network E2E
+
+# The end-to-end suites with the network cases on (RUN_NETWORK_E2E=true): clones from
+# github.com that pr.yml leaves out. A separate workflow, so a GitHub outage fails this
+# check and not the main test job.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    # Same filter as pr.yml: skip only documentation-only changes.
+    paths-ignore:
+      - "*.md"
+      - "LICENSE"
+      - "assets/**"
+      - "site/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to the same PR supersedes the run in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  network-e2e:
+    name: Network E2E (Node ${{ matrix.node-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [24]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Environment
+        uses: ./.github/actions/setup-node-pnpm
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      # Builds first: the e2e suites run the bundled CLI in dist/.
+      - name: Run E2E Tests (with network)
+        run: pnpm test:e2e:network

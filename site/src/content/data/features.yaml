@@ -1,30 +1,24 @@
 - id: worktree-mode
-  icon: git-branch
   title: Worktree mode
   body: "Every remote branch that passes your filters gets its own directory, all sharing one Git database. History is stored once, but each branch still costs a working tree. That is what the filters are for."
   order: 1
 - id: clone-mode
-  icon: clone
   title: Clone mode
   body: "When one checkout is enough, get a single branch checked out at a fixed path: no `.bare/`, no per-branch subfolders. Use it for a dependency sibling that expects a fixed relative path."
   order: 2
 - id: tui
-  icon: monitor
   title: Interactive TUI
   body: "Ink-based terminal UI with wizards for opening worktrees in editor or terminal, creating branches, and inspecting multi-repo status."
   order: 3
 - id: filtering
-  icon: filter
   title: Filtering
   body: "Glob include/exclude, age-based pruning, sparse checkout for monorepos, per-repo overrides."
   order: 4
 - id: safety
-  icon: shield
   title: Safety by default
   body: "It won't touch work in progress: a worktree with uncommitted changes is never removed or replaced, and a sync leaves it alone instead of updating it. Nothing is merged or rebased for you, and removals are recoverable by default."
   order: 5
 - id: mcp-server
-  icon: command
   title: Optional MCP server
   body: "A second binary, sync-worktrees-mcp, speaks MCP over stdio if a client wants it. The folders are ordinary directories either way."
   order: 6

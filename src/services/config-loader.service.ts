@@ -3,24 +3,25 @@ import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { Worker } from "worker_threads";
 
-import { CONFIG_FILE_NAMES, DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, GIT_CONSTANTS } from "../constants";
 import { ConfigFileNotFoundError, ConfigValidationError, SyncWorktreesError } from "../errors";
 import { matchesPattern } from "../utils/branch-filter";
 import { fileExists } from "../utils/file-exists";
-import { getDefaultBareRepoDir, parseGitUrl, redactRepoUrl, redactSecretsInText } from "../utils/git-url";
+import {
+  getDefaultBareRepoDir,
+  normalizeRepoUrlForComparison,
+  parseGitUrl,
+  redactRepoUrl,
+  redactSecretsInText,
+} from "../utils/git-url";
 import { isPathEqualOrInside, isPathStrictlyInside, normalizePathForCompare, pathsEqual } from "../utils/path-compare";
 import { REPOSITORY_MODES } from "../utils/repo-mode";
 import { sanitizeNameForPath } from "../utils/sanitize-name";
 import { collectUnknownConfigKeys, formatUnknownConfigKey } from "../utils/unknown-config-keys";
-import { KNOWN_CONFIG_KEYS, validateConfigFile } from "./config-schema";
+import { KNOWN_CONFIG_KEYS, definedOnly, validateConfigFile } from "./config-schema";
 
 import type { Logger } from "./logger.service";
 import type { Config, ConfigFile, RepositoryConfig, RepositoryMode } from "../types";
-
-// Validation lives in the config schema; these are re-exported for the
-// callers that have always imported them from here.
-export { CLONE_MODE_CONFLICTING_FIELDS, computeParallelismPeak } from "./config-schema";
-export type { ParallelismPeak } from "./config-schema";
 
 const require = createRequire(import.meta.url);
 
@@ -287,7 +288,10 @@ function evaluateConfigInWorker(absolutePath: string, timeoutMs: number): Promis
       // when it was evaluated on the main thread, and the option can only
       // append to an array the worker built for itself.
       workerData: { configPath: absolutePath, token: Date.now(), argv: process.argv },
+      // A config's stdout goes to stderr: stdout is the MCP JSON-RPC stream.
+      stdout: true,
     });
+    worker.stdout.on("data", (chunk: Buffer) => process.stderr.write(chunk));
 
     let settled = false;
     const settle = (deliver: () => void): void => {
@@ -335,24 +339,6 @@ export class ConfigLoaderService {
       this.logger.warn(message);
     } else {
       console.warn(message);
-    }
-  }
-
-  async findConfigUpward(startDir: string): Promise<string | null> {
-    let current = path.resolve(startDir);
-    const root = path.parse(current).root;
-
-    while (true) {
-      for (const name of CONFIG_FILE_NAMES) {
-        const candidate = path.join(current, name);
-        if (await fileExists(candidate)) {
-          return candidate;
-        }
-      }
-      if (current === root) return null;
-      const parent = path.dirname(current);
-      if (parent === current) return null;
-      current = parent;
     }
   }
 
@@ -421,6 +407,22 @@ export class ConfigLoaderService {
     validateConfigFile(config);
     this.warnOnDuplicateRepoUrls(config.repositories);
     this.warnOnUnknownConfigKeys(config);
+    this.warnOnDeprecatedConfigKeys(config);
+  }
+
+  private warnOnDeprecatedConfigKeys(config: ConfigFile): void {
+    const blocks = [config.parallelism, config.defaults?.parallelism, ...config.repositories.map((r) => r.parallelism)];
+    if (blocks.some((block) => block?.maxBranchFetches !== undefined)) {
+      this.warn("[sync-worktrees] 'parallelism.maxBranchFetches' is deprecated and has no effect; remove it.");
+    }
+    for (const repo of config.repositories) {
+      if (repo.parallelism?.maxRepositories !== undefined) {
+        this.warn(
+          `[sync-worktrees] 'parallelism.maxRepositories' in repository '${repo.name}' has no effect on a repository; ` +
+            "set it at the top level or under defaults.",
+        );
+      }
+    }
   }
 
   // Everything the schema never looked at. Why it warns rather than rejects,
@@ -458,13 +460,14 @@ export class ConfigLoaderService {
   }
 
   private warnOnDuplicateRepoUrls(repositories: RepositoryConfig[]): void {
-    const seen = new Map<string, string[]>();
+    const seen = new Map<string, { url: string; names: string[] }>();
     for (const repo of repositories) {
-      const list = seen.get(repo.repoUrl) ?? [];
-      list.push(repo.name);
-      seen.set(repo.repoUrl, list);
+      const key = normalizeRepoUrlForComparison(repo.repoUrl);
+      const entry = seen.get(key) ?? { url: repo.repoUrl, names: [] };
+      entry.names.push(repo.name);
+      seen.set(key, entry);
     }
-    for (const [url, names] of seen) {
+    for (const { url, names } of seen.values()) {
       if (names.length > 1) {
         this.warn(
           `[sync-worktrees] repoUrl '${redactRepoUrl(url)}' appears in multiple entries (${names.join(", ")}). ` +
@@ -624,9 +627,9 @@ export class ConfigLoaderService {
 
     if (repo.retry || defaults?.retry || globalRetry) {
       resolved.retry = {
-        ...(globalRetry || {}),
-        ...(defaults?.retry || {}),
-        ...(repo.retry || {}),
+        ...definedOnly(globalRetry),
+        ...definedOnly(defaults?.retry),
+        ...definedOnly(repo.retry),
       };
     }
 
@@ -636,9 +639,9 @@ export class ConfigLoaderService {
     // repository at all, so per-repo limits silently stayed at their defaults.
     if (repo.parallelism || defaults?.parallelism || globalParallelism) {
       resolved.parallelism = {
-        ...(globalParallelism || {}),
-        ...(defaults?.parallelism || {}),
-        ...(repo.parallelism || {}),
+        ...definedOnly(globalParallelism),
+        ...definedOnly(defaults?.parallelism),
+        ...definedOnly(repo.parallelism),
       };
     }
 
@@ -650,8 +653,8 @@ export class ConfigLoaderService {
 
     if (repo.hooks || defaults?.hooks) {
       resolved.hooks = {
-        ...(defaults?.hooks || {}),
-        ...(repo.hooks || {}),
+        ...definedOnly(defaults?.hooks),
+        ...definedOnly(repo.hooks),
       };
     }
 
@@ -662,15 +665,15 @@ export class ConfigLoaderService {
 
     if (repo.maintenance || defaults?.maintenance) {
       resolved.maintenance = {
-        ...(defaults?.maintenance || {}),
-        ...(repo.maintenance || {}),
+        ...definedOnly(defaults?.maintenance),
+        ...definedOnly(repo.maintenance),
       };
     }
 
     if (repo.trash || defaults?.trash) {
       resolved.trash = {
-        ...(defaults?.trash || {}),
-        ...(repo.trash || {}),
+        ...definedOnly(defaults?.trash),
+        ...definedOnly(repo.trash),
       };
     }
 
@@ -696,9 +699,10 @@ export class ConfigLoaderService {
   }
 
   private isDuplicateRepoUrl(repo: RepositoryConfig, all: RepositoryConfig[], defaults?: Partial<Config>): boolean {
+    const url = normalizeRepoUrlForComparison(repo.repoUrl);
     const firstIndex = all.findIndex((r) => {
       const mode = r.mode ?? defaults?.mode ?? REPOSITORY_MODES.WORKTREE;
-      return r.repoUrl === repo.repoUrl && mode === REPOSITORY_MODES.WORKTREE;
+      return normalizeRepoUrlForComparison(r.repoUrl) === url && mode === REPOSITORY_MODES.WORKTREE;
     });
     const myIndex = all.indexOf(repo);
     return firstIndex !== -1 && myIndex !== -1 && myIndex !== firstIndex;
@@ -730,10 +734,13 @@ export class ConfigLoaderService {
     }
 
     if (a.bareRepoDir && b.bareRepoDir && pathsEqual(a.bareRepoDir, b.bareRepoDir)) {
+      const sameUrl = normalizeRepoUrlForComparison(a.repoUrl) === normalizeRepoUrlForComparison(b.repoUrl);
       throw new ConfigValidationError(
         `Repositories '${a.name}' and '${b.name}' bareRepoDir`,
         `resolve to the same bareRepoDir '${path.resolve(a.bareRepoDir)}'. ` +
-          `Set distinct 'bareRepoDir' values for duplicate repoUrl entries.`,
+          (sameUrl
+            ? `Set distinct 'bareRepoDir' values for duplicate repoUrl entries.`
+            : `Set 'bareRepoDir' explicitly so each repository gets its own directory.`),
       );
     }
 

@@ -131,7 +131,7 @@ describe("TrashService payload sizing", () => {
     expect(again.entries[0].manifest.sizeBytes).toBe(entries[0].manifest.sizeBytes);
   });
 
-  it("leaves a valid, unsized entry when the scan fails and measures it on a later pass", async () => {
+  it("leaves a valid, unsized entry when the scan fails and does not walk it again in this process", async () => {
     const entry = await service.trashDirectory({
       dirPath: await makeSourceDir("feature-z"),
       branch: "feature-z",
@@ -149,8 +149,9 @@ describe("TrashService payload sizing", () => {
     await expect(fs.readFile(path.join(entry.payloadPath, "file.txt"), "utf-8")).resolves.toBe("data");
 
     probe.override = null;
-    const retried = await service.listEntriesWithSizes();
-    expect(retried.entries[0].manifest.sizeBytes).toBeGreaterThan(0);
+    const again = await service.listEntriesWithSizes();
+    expect(probe.scans).toHaveLength(1);
+    expect(again.entries[0].manifest.sizeBytes).toBeNull();
   });
 
   it("does not scan a payload that has already been set aside for deletion", async () => {

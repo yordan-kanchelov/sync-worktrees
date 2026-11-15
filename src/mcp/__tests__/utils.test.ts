@@ -140,18 +140,36 @@ describe("credential redaction", () => {
     );
   });
 
-  it("formatErrorResponse scrubs the stack it attaches under DEBUG", () => {
-    const previous = process.env.DEBUG;
-    process.env.DEBUG = "1";
+  const withEnv = (vars: Record<string, string | undefined>, fn: () => void): void => {
+    const previous = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+    const apply = (values: Record<string, string | undefined>) => {
+      for (const [k, v] of Object.entries(values)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    };
+    apply(vars);
     try {
+      fn();
+    } finally {
+      apply(previous);
+    }
+  };
+
+  it("formatErrorResponse scrubs the stack it attaches under SYNC_WORKTREES_MCP_DEBUG", () => {
+    withEnv({ SYNC_WORKTREES_MCP_DEBUG: "1", DEBUG: undefined }, () => {
       const result = formatErrorResponse(new Error(`fatal: could not read from remote repository ${TOKEN_URL}`));
       const body = JSON.parse((result.content[0] as { text: string }).text);
       expect(body.stack).toContain(REDACTED_URL);
       expect((result.content[0] as { text: string }).text).not.toContain("s3cr3t-token");
-    } finally {
-      if (previous === undefined) delete process.env.DEBUG;
-      else process.env.DEBUG = previous;
-    }
+    });
+  });
+
+  it("formatErrorResponse attaches no stack for the generic DEBUG variable", () => {
+    withEnv({ SYNC_WORKTREES_MCP_DEBUG: undefined, DEBUG: "*" }, () => {
+      const body = JSON.parse((formatErrorResponse(new Error("boom")).content[0] as { text: string }).text);
+      expect(body.stack).toBeUndefined();
+    });
   });
 
   it("wrapHandler returns a redacted error response for a thrown git error", async () => {

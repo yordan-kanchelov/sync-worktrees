@@ -105,7 +105,9 @@ describe("GitService.initialize with a stale default-branch directory", () => {
     expect(entries).toHaveLength(1);
     const container = path.join(trashRoot, entries[0]);
     const payload = path.join(container, TRASH_CONSTANTS.PAYLOAD_DIRNAME);
-    await expect(fs.readFile(path.join(payload, ".git"), "utf8")).resolves.toBe(originalGitFile);
+    // Its stale .git link is detached so git no longer resolves inside it.
+    await expect(fs.readFile(path.join(payload, ".git.detached"), "utf8")).resolves.toBe(originalGitFile);
+    await expect(fs.access(path.join(payload, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.readFile(path.join(payload, "notes.txt"), "utf8")).resolves.toBe("keep me");
     const manifest = JSON.parse(await fs.readFile(path.join(container, TRASH_CONSTANTS.MANIFEST_FILENAME), "utf8"));
     expect(manifest).toMatchObject({ originalPath: mainPath, reason: "orphan" });

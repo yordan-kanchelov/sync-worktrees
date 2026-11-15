@@ -25,6 +25,10 @@ export class DiskUsageCache {
     this.limit = pLimit(Math.max(1, maxParallel));
   }
 
+  setMaxParallel(maxParallel: number): void {
+    this.limit.concurrency = Math.max(1, maxParallel);
+  }
+
   async size(dirPath: string): Promise<number> {
     // The status view's reader. It walked the same bare repository and worktree
     // directory again on every single open, duplicating the walk the header had

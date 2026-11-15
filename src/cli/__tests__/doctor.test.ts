@@ -27,6 +27,7 @@ import {
 
 import type { AddressInfo } from "net";
 import type { RepositoryConfig } from "../../types";
+import type { ResolvedConfigPath } from "../../utils/config-discovery";
 import type { DoctorCheck, DoctorDeps, GitRunResult } from "../doctor";
 
 const ok = (stdout = ""): GitRunResult => ({ code: 0, stdout, stderr: "", timedOut: false });
@@ -80,7 +81,10 @@ function deps(overrides: Partial<DoctorDeps> & { existing?: string[]; readOnly?:
       if (readOnly.has(target)) throw Object.assign(new Error(`EACCES: ${target}`), { code: "EACCES" });
     }),
     freeBytes: vi.fn(async () => 50 * 1024 * 1024 * 1024),
-    findConfig: vi.fn(async () => "/work/sync-worktrees.config.js"),
+    findConfig: vi.fn(async (): Promise<ResolvedConfigPath | null> => ({
+      path: "/work/sync-worktrees.config.js",
+      source: "discovered",
+    })),
     loadRepositories: vi.fn(async () => [repo()]),
   };
   const { existing: _e, readOnly: _r, files: _f, ...rest } = overrides;
@@ -358,6 +362,23 @@ describe("runDoctorChecks", () => {
     expect(byCheck(checks, "config")?.message).toBe("Config file not found: /nope.js");
   });
 
+  it("names SYNC_WORKTREES_CONFIG when the file it points to is missing", async () => {
+    const checks = await runDoctorChecks(
+      {},
+      deps({
+        findConfig: async () => ({ path: "/nonexistent/x.js", source: "env" }),
+        loadRepositories: async () => {
+          throw new ConfigFileNotFoundError("/nonexistent/x.js");
+        },
+      }),
+    );
+    const config = byCheck(checks, "config");
+    expect(config?.status).toBe("fail");
+    expect(config?.message).toBe("SYNC_WORKTREES_CONFIG points to a file that does not exist: /nonexistent/x.js");
+    expect(config?.hint).toContain("SYNC_WORKTREES_CONFIG");
+    expect(config?.hint).not.toContain("init --config");
+  });
+
   it("fails an invalid config with the loader's reason, redacted", async () => {
     const checks = await runDoctorChecks(
       {},
@@ -382,6 +403,18 @@ describe("runDoctorChecks", () => {
   it("stops after the config check when git cannot run, instead of failing every repository check", async () => {
     const checks = await runDoctorChecks({}, deps({ runGit: async () => enoent() }));
     expect(checks.map((item) => item.check)).toEqual(["node", "git", "config"]);
+    expect(doctorExitCode(checks)).toBe(1);
+  });
+
+  it("turns a repository whose checks throw into a failed check and keeps checking the others", async () => {
+    const d = deps({
+      loadRepositories: async () => [repo({ name: "..", __configFileDir: "/work" }), repo({ name: "web" })],
+    });
+    const checks = await runDoctorChecks({}, d);
+    const broken = byCheck(checks, "repository", "..");
+    expect(broken?.status).toBe("fail");
+    expect(broken?.message).toContain("empty path segment");
+    expect(byCheck(checks, "remote", "web")).toBeDefined();
     expect(doctorExitCode(checks)).toBe(1);
   });
 

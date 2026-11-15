@@ -11,19 +11,19 @@ const steps = [
     title: "Install",
     body: "Global npm install. Node 24+, Git (and `git-lfs` for LFS repos), macOS or Linux; `tmux` only for the TUI's open-in-terminal wizard.",
     code: commands.npmInstall,
-    lang: "bash",
+    lang: "bash" as const,
   },
   {
     title: "Run the init wizard",
     body: "Writes `sync-worktrees.config.js` where you run it, with your first repository in it. Add more by editing the file.",
     code: `cd ~/projects/my-sync-dir\n${commands.init}`,
-    lang: "bash",
+    lang: "bash" as const,
   },
   {
     title: "Launch the TUI, or sync once",
-    body: "Plain command = TUI that syncs now, then hourly. `--runOnce` for CI or a cron/systemd timer.",
+    body: "Plain command = TUI that syncs now, then hourly. `--run-once` for CI or a cron/systemd timer.",
     code: `# interactive TUI + cron\n${commands.runTui}\n# one-shot\n${commands.runOnce}`,
-    lang: "bash",
+    lang: "bash" as const,
   },
 ];
 ---
@@ -49,7 +49,7 @@ const steps = [
                 <CopyButton value={s.code} class="text-ink-600 hover:bg-white" />
               </div>
               <div class="[&_pre]:m-0! [&_pre]:bg-transparent! [&_pre]:px-4! [&_pre]:py-3! [&_pre]:text-[13px] [&_pre]:leading-6">
-                <Code code={s.code} lang={s.lang as any} theme="github-light" wrap />
+                <Code code={s.code} lang={s.lang} theme="github-light" wrap />
               </div>
             </div>
           </div>

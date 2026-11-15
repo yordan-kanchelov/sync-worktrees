@@ -44,6 +44,7 @@ describe("WorktreeStatusService git process budget", () => {
       created: [],
       conflicted: [],
       not_added: [],
+      files: [],
       current: "main",
       detached: false,
       tracking: "origin/main",

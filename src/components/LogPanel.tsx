@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useReducer } from "react";
+import type { Dispatch } from "react";
 import { Box, Text, useInput } from "ink";
 import { parseWheelEvent } from "../utils/mouse";
 import type { LogEntry } from "./App";
@@ -16,9 +17,9 @@ const WHEEL_LINES = 3;
 // `offset` is only meaningful while parked. In follow mode the render derives the
 // offset from the current maxOffset, so a resize or a burst of new entries can
 // never leave the view pointing past the end.
-type ScrollState = { follow: boolean; offset: number };
+export type ScrollState = { follow: boolean; offset: number };
 
-type ScrollAction =
+export type ScrollAction =
   { type: "by"; delta: number; maxOffset: number } | { type: "top" } | { type: "bottom"; maxOffset: number };
 
 function scrollReducer(state: ScrollState, action: ScrollAction): ScrollState {
@@ -36,14 +37,20 @@ function scrollReducer(state: ScrollState, action: ScrollAction): ScrollState {
   }
 }
 
+export type LogScroll = [ScrollState, Dispatch<ScrollAction>];
+
+/** Held by the App so the position outlives the panel being unmounted under a modal. */
+export function useLogScroll(): LogScroll {
+  return useReducer(scrollReducer, { follow: true, offset: 0 });
+}
+
 export interface LogPanelProps {
   logs: LogEntry[];
   height: number;
-  isActive: boolean;
+  scroll: LogScroll;
 }
 
-const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
-  const [scroll, dispatch] = useReducer(scrollReducer, { follow: true, offset: 0 });
+const LogPanel: React.FC<LogPanelProps> = ({ logs, height, scroll: [scroll, dispatch] }) => {
   const [pendingG, setPendingG] = useState(false);
   const gTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -90,56 +97,51 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
     }
   };
 
-  useInput(
-    (input, key) => {
-      if (!isActive) return;
+  useInput((input, key) => {
+    // Vim motions and arrows suit some people; the wheel is for everyone
+    // else. Ink delivers the whole mouse report as one `input` string, so it
+    // is parsed here rather than through a separate stdin listener.
+    const wheel = parseWheelEvent(input);
+    if (wheel === "up") {
+      scrollBy(-WHEEL_LINES);
+      cancelPendingG();
+      return;
+    }
+    if (wheel === "down") {
+      scrollBy(WHEEL_LINES);
+      cancelPendingG();
+      return;
+    }
 
-      // Vim motions and arrows suit some people; the wheel is for everyone
-      // else. Ink delivers the whole mouse report as one `input` string, so it
-      // is parsed here rather than through a separate stdin listener.
-      const wheel = parseWheelEvent(input);
-      if (wheel === "up") {
-        scrollBy(-WHEEL_LINES);
+    if (key.upArrow || input === "k") {
+      scrollBy(-1);
+      cancelPendingG();
+    } else if (key.downArrow || input === "j") {
+      scrollBy(1);
+      cancelPendingG();
+    } else if (key.pageUp) {
+      scrollBy(-visibleLines);
+      cancelPendingG();
+    } else if (key.pageDown) {
+      scrollBy(visibleLines);
+      cancelPendingG();
+    } else if (input === "g") {
+      if (pendingG) {
+        // gg - go to top
+        dispatch({ type: "top" });
         cancelPendingG();
-        return;
+      } else {
+        setPendingG(true);
+        gTimeoutRef.current = setTimeout(() => {
+          setPendingG(false);
+          gTimeoutRef.current = null;
+        }, 500);
       }
-      if (wheel === "down") {
-        scrollBy(WHEEL_LINES);
-        cancelPendingG();
-        return;
-      }
-
-      if (key.upArrow || input === "k") {
-        scrollBy(-1);
-        cancelPendingG();
-      } else if (key.downArrow || input === "j") {
-        scrollBy(1);
-        cancelPendingG();
-      } else if (key.pageUp) {
-        scrollBy(-visibleLines);
-        cancelPendingG();
-      } else if (key.pageDown) {
-        scrollBy(visibleLines);
-        cancelPendingG();
-      } else if (input === "g") {
-        if (pendingG) {
-          // gg - go to top
-          dispatch({ type: "top" });
-          cancelPendingG();
-        } else {
-          setPendingG(true);
-          gTimeoutRef.current = setTimeout(() => {
-            setPendingG(false);
-            gTimeoutRef.current = null;
-          }, 500);
-        }
-      } else if (input === "G") {
-        dispatch({ type: "bottom", maxOffset });
-        cancelPendingG();
-      }
-    },
-    { isActive },
-  );
+    } else if (input === "G") {
+      dispatch({ type: "bottom", maxOffset });
+      cancelPendingG();
+    }
+  });
 
   const getLogColor = (level: LogEntry["level"]): "red" | "yellow" | undefined => {
     switch (level) {
@@ -171,12 +173,10 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
         <Text bold wrap="truncate-end">
           📋 Logs {logs.length > 0 && <Text dimColor>({logs.length} entries)</Text>}
         </Text>
-        {isActive && (
-          <Text dimColor wrap="truncate-end">
-            {hasMoreAbove || hasMoreBelow ? "↑/↓ scroll " : ""}
-            {autoScroll ? "(auto) " : ""}l hide
-          </Text>
-        )}
+        <Text dimColor wrap="truncate-end">
+          {hasMoreAbove || hasMoreBelow ? "↑/↓ scroll " : ""}
+          {autoScroll ? "(auto) " : ""}l hide
+        </Text>
       </Box>
 
       {indicatorLines === 2 && hasMoreAbove && <Text dimColor>↑ {aboveCount} more above</Text>}
@@ -205,16 +205,20 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, isActive }) => {
 };
 
 /**
- * The log folded to one line (`l`): its count and the latest entry, so an
- * error still shows up while the repository table has the screen.
+ * The log folded to one line: its count and the latest entry, so an error
+ * still shows up while the repository table has the screen. `expandKey` is
+ * `l` when the user folded it, `+` when it was folded for want of room.
  */
-export const CollapsedLogLine: React.FC<{ logs: LogEntry[] }> = React.memo(({ logs }) => {
+export const CollapsedLogLine: React.FC<{ logs: LogEntry[]; expandKey: string }> = React.memo(({ logs, expandKey }) => {
   const latest = logs[logs.length - 1];
   const color = latest?.level === "error" ? "red" : latest?.level === "warn" ? "yellow" : undefined;
   return (
     <Box height={1} flexShrink={0} paddingX={1}>
       <Text wrap="truncate-end">
-        <Text bold>📋 Logs</Text> <Text dimColor>({logs.length} entries, l to expand)</Text>
+        <Text bold>📋 Logs</Text>{" "}
+        <Text dimColor>
+          ({logs.length} entries, {expandKey} to expand)
+        </Text>
         {latest && (
           <>
             {" "}
@@ -235,6 +239,6 @@ CollapsedLogLine.displayName = "CollapsedLogLine";
 // handler (`gg` stopped working). With a comparator React keeps this component
 // an ordinary function fiber under the memo boundary.
 const samePanelProps = (prev: LogPanelProps, next: LogPanelProps): boolean =>
-  prev.logs === next.logs && prev.height === next.height && prev.isActive === next.isActive;
+  prev.logs === next.logs && prev.height === next.height && prev.scroll[0] === next.scroll[0];
 
 export default React.memo(LogPanel, samePanelProps);

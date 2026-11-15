@@ -5,11 +5,7 @@ import * as path from "path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const shouldSkip = process.env.SKIP_E2E_TESTS === "true";
-
-const describeOrSkip = shouldSkip ? describe.skip : describe;
-
-describeOrSkip("Config file loading E2E tests", () => {
+describe("Config file loading E2E tests", () => {
   const cliPath = path.join(process.cwd(), "dist", "index.js");
   const tmpBase = path.join(process.cwd(), "tmp-e2e-config-test");
 
@@ -98,55 +94,6 @@ export default {
     expect(run.stderr.split(expected).length - 1).toBe(1);
     expect(run.stdout).toContain("reference");
     expect(run.stdout).not.toContain("Unknown config key");
-  });
-
-  it.skip("should sync a single repository from config file with runOnce", async () => {
-    const configPath = path.join(tmpBase, "single-repo.config.js");
-    const worktreeDir = path.join(tmpBase, "single-worktrees");
-    const bareRepoDir = path.join(tmpBase, "single-bare");
-
-    await fs.mkdir(tmpBase, { recursive: true });
-
-    const configContent = `
-export default {
-  defaults: {
-    cronSchedule: "0 * * * *",
-    runOnce: true
-  },
-  repositories: [
-    {
-      name: "hello-world",
-      repoUrl: "https://github.com/octocat/Hello-World.git",
-      worktreeDir: "${worktreeDir.replace(/\\/g, "/")}",
-      bareRepoDir: "${bareRepoDir.replace(/\\/g, "/")}"
-    }
-  ]
-};
-`;
-
-    await fs.writeFile(configPath, configContent);
-
-    console.log("Running sync-worktrees with config file...");
-    const output = execSync(`node "${cliPath}" --config "${configPath}"`, {
-      encoding: "utf-8",
-      timeout: 60000,
-    });
-
-    expect(output).toContain("Syncing 1 repository...");
-    expect(output).toContain("Repository: hello-world");
-    expect(output).toContain("Clone successful");
-    expect(output).toContain("Synchronization finished");
-
-    const bareExists = await fs
-      .access(bareRepoDir)
-      .then(() => true)
-      .catch(() => false);
-    expect(bareExists).toBe(true);
-
-    const worktrees = await fs.readdir(worktreeDir);
-    console.log("Created worktrees:", worktrees);
-    expect(worktrees.length).toBeGreaterThanOrEqual(2);
-    expect(worktrees).toContain("master");
   });
 
   it("should handle config file with relative paths", async () => {

@@ -4,16 +4,21 @@ const reactHooks = require("eslint-plugin-react-hooks");
 const globals = require("globals");
 const tseslint = require("typescript-eslint");
 
-const testFiles = [
-  "src/**/__tests__/**/*.{ts,tsx}",
-  "src/**/__mocks__/**/*.{ts,tsx}",
-  "src/**/*.test.{ts,tsx}",
-  "src/**/*.spec.{ts,tsx}",
-];
+const testFiles = ["src/**/__tests__/**/*.{ts,tsx}", "src/**/*.test.{ts,tsx}"];
 
 module.exports = defineConfig([
   {
-    ignores: ["**/dist/", "**/coverage/", "**/node_modules/", "**/.astro/", "**/.git/", "**/build/", "site/"],
+    ignores: [
+      "**/dist/",
+      "**/coverage/",
+      "**/node_modules/",
+      "**/.astro/",
+      "**/.git/",
+      "**/build/",
+      "site/",
+      "tmp-e2e-*/",
+      ".mcp-stdio-test-*/",
+    ],
   },
   js.configs.recommended,
   {
@@ -29,7 +34,7 @@ module.exports = defineConfig([
     extends: [tseslint.configs.recommendedTypeChecked],
     languageOptions: {
       parserOptions: {
-        // tsconfig.json covers the src/ sources, tsconfig.spec.json covers tests and mocks.
+        // tsconfig.json covers the src/ sources, tsconfig.spec.json covers tests.
         project: ["./tsconfig.json", "./tsconfig.spec.json"],
         tsconfigRootDir: __dirname,
       },
@@ -78,12 +83,6 @@ module.exports = defineConfig([
     // Ink components and their tests.
     files: ["src/components/**/*.{ts,tsx}"],
     extends: [reactHooks.configs.flat.recommended],
-    rules: {
-      // React Compiler rules: the existing ref-during-render and setState-in-effect patterns predate the linter
-      // and changing them alters render behaviour, so they are off until those components are reworked.
-      "react-hooks/refs": "off",
-      "react-hooks/set-state-in-effect": "off",
-    },
   },
   {
     // Root-level TypeScript config files belong to no tsconfig project.

@@ -45,6 +45,7 @@ describe("WorktreeModeSyncRunner phase item progress", () => {
 
     gitService = {
       ensureAnchorWorktree: vi.fn().mockResolvedValue(false),
+      getMainWorktreePath: vi.fn().mockReturnValue(mainPath),
       fetchAll: vi.fn().mockResolvedValue(undefined),
       getRemoteBranches: vi.fn().mockResolvedValue(["main"]),
       getDefaultBranch: vi.fn().mockReturnValue("main"),
@@ -241,6 +242,8 @@ describe("WorktreeModeSyncRunner phase item progress", () => {
     gitService.getSparseCheckoutService = vi.fn().mockReturnValue({
       buildPatterns: vi.fn().mockReturnValue(["src/"]),
       readCurrent: vi.fn().mockResolvedValue(null),
+      readCurrentMode: vi.fn().mockResolvedValue(null),
+      resolveMode: vi.fn().mockReturnValue("cone"),
       patternsEqual: vi.fn().mockReturnValue(false),
       isNarrowing: vi.fn().mockReturnValue(false),
       applyToWorktree: vi.fn().mockResolvedValue(undefined),

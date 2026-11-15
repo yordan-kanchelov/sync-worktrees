@@ -241,6 +241,27 @@ describe("TrashReaperService", () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("leaving unrecognized entry"));
   });
 
+  it("removes an invalid container that is empty or holds only *.tmp leftovers, and leaves other manifest-less dirs alone", async () => {
+    const root = trashService.getTrashRoot();
+    const empty = path.join(root, "crashed-before-manifest");
+    const tmpOnly = path.join(root, "crashed-mid-write");
+    const kept = path.join(root, "manifest-less-with-content");
+    await fs.mkdir(empty, { recursive: true });
+    await fs.mkdir(tmpOnly, { recursive: true });
+    await fs.writeFile(path.join(tmpOnly, "manifest.json.123.456.tmp"), "{");
+    await fs.mkdir(kept, { recursive: true });
+    await fs.writeFile(path.join(kept, "payload.txt"), "data");
+
+    const result = await reaper.reapExpiredUnlocked();
+
+    expect(result.errors).toEqual([]);
+    await expect(fs.access(empty)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(tmpOnly)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.readFile(path.join(kept, "payload.txt"), "utf-8")).resolves.toBe("data");
+    expect(warningsMatching(/crashed-/)).toEqual([]);
+    expect(warningsMatching(/manifest-less-with-content/)).toHaveLength(1);
+  });
+
   it("does not age out entries when trash is disabled — disabling means hands off, not silent cleanup", async () => {
     const expired = await makeEntry("kept-when-disabled", { ageDays: 31 });
 
@@ -341,7 +362,12 @@ describe("TrashReaperService", () => {
   // on an hourly tick buries the lines that do need attention.
   it("warns once per process about unrecognized content and legacy flat refs, and again only when they change", async () => {
     const junkDir = path.join(trashService.getTrashRoot(), "manually-placed");
-    await fs.mkdir(junkDir, { recursive: true });
+    // Non-empty: an empty invalid container is removed, not warned about.
+    const makeJunk = async (dir: string) => {
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, "keep.txt"), "x");
+    };
+    await makeJunk(junkDir);
     gitStub.listRefs.mockResolvedValue(["refs/sync-worktrees/trash/legacy-flat-id"]);
 
     await reaper.reapExpiredUnlocked();
@@ -351,7 +377,7 @@ describe("TrashReaperService", () => {
     expect(warningsMatching(/legacy flat trash pin refs/)).toHaveLength(1);
 
     const secondJunkDir = path.join(trashService.getTrashRoot(), "another-manually-placed");
-    await fs.mkdir(secondJunkDir, { recursive: true });
+    await makeJunk(secondJunkDir);
     await reaper.reapExpiredUnlocked();
 
     expect(warningsMatching(/another-manually-placed/)).toHaveLength(1);
@@ -360,7 +386,7 @@ describe("TrashReaperService", () => {
     // Repaired and broken again is a new situation, not a suppressed one.
     await fs.rm(junkDir, { recursive: true, force: true });
     await reaper.reapExpiredUnlocked();
-    await fs.mkdir(junkDir, { recursive: true });
+    await makeJunk(junkDir);
     await reaper.reapExpiredUnlocked();
 
     expect(warningsMatching(/'.*manually-placed'/)).toHaveLength(3);

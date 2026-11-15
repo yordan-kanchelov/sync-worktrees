@@ -63,7 +63,6 @@ const mcpTools = defineCollection({
 const features = defineCollection({
   loader: file("./src/content/data/features.yaml"),
   schema: z.object({
-    icon: z.string(),
     title: z.string(),
     body: z.string(),
     order: z.number(),

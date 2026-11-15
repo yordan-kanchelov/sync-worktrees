@@ -112,9 +112,10 @@ describe("config key inventory", () => {
     expect([...KNOWN_REPOSITORY_KEYS].sort()).toEqual(Object.keys(EVERY_REPOSITORY_KEY).sort());
   });
 
-  it("lists exactly the keys `defaults` can carry, which is a repository entry without its name", () => {
-    const withoutName = Object.keys(EVERY_REPOSITORY_KEY).filter((key) => key !== "name");
-    expect([...KNOWN_DEFAULTS_KEYS].sort()).toEqual(withoutName.sort());
+  it("lists exactly the keys `defaults` can carry, which is a repository entry without its own identity", () => {
+    const repositoryOnly = ["name", "repoUrl", "worktreeDir", "bareRepoDir"];
+    const inheritable = Object.keys(EVERY_REPOSITORY_KEY).filter((key) => !repositoryOnly.includes(key));
+    expect([...KNOWN_DEFAULTS_KEYS].sort()).toEqual(inheritable.sort());
   });
 
   it("lists exactly the top-level blocks the config file declares", () => {

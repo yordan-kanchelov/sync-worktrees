@@ -1,7 +1,7 @@
 import pLimit from "p-limit";
 
-import { DEFAULT_CONFIG } from "../constants";
 import { Logger } from "../services/logger.service";
+import { resolveMaxRepositories } from "../services/config-schema";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 import { getErrorMessage } from "../utils/errors";
 import { redactSecretsInText } from "../utils/git-url";
@@ -34,10 +34,7 @@ export async function runDryRun(
   repositories: RepositoryConfig[],
   options: DryRunOptions,
 ): Promise<number> {
-  const maxParallel =
-    configFile.parallelism?.maxRepositories ??
-    configFile.defaults?.parallelism?.maxRepositories ??
-    DEFAULT_CONFIG.PARALLELISM.MAX_REPOSITORIES;
+  const maxParallel = resolveMaxRepositories(configFile);
   const limit = pLimit(maxParallel);
 
   const reports = await Promise.all(

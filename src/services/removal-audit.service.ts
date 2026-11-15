@@ -5,12 +5,9 @@ import type { WorktreeStatusResult } from "./worktree-status.service";
 
 export type RemovalAuditAction =
   | "prune_remove"
-  | "orphan_delete"
-  | "orphan_quarantine"
   | "diverged_replace"
   | "diverged_discard"
   | "keep_ref_delete"
-  | "manual_remove"
   | "trash_create"
   | "trash_adopt"
   | "trash_restore"
@@ -29,8 +26,8 @@ export interface RemovalAuditEntry {
   error?: string;
 }
 
-// Append-only JSONL log of every destructive worktree operation. Console logs
-// die with the terminal; this record survives the process.
+// Append-only JSONL log of destructive worktree operations (not the stale-dir
+// rmdir/quarantine at worktree creation). It outlives the terminal's logs.
 export class RemovalAuditService {
   constructor(private readonly logFilePath: string) {}
 

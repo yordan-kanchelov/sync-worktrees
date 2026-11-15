@@ -74,7 +74,7 @@ export function formatErrorResponse(error: unknown): CallToolResult {
     message: redactSecretsInText(message),
   };
 
-  if (process.env.DEBUG && error instanceof Error && error.stack) {
+  if (process.env.SYNC_WORKTREES_MCP_DEBUG && error instanceof Error && error.stack) {
     body.stack = redactSecretsInText(error.stack);
   }
 
@@ -129,6 +129,17 @@ export class WorktreeDetachedError extends SyncWorktreesError {
     super(
       `Worktree at '${worktreePath}' is on a detached HEAD${head ? ` (${head})` : ""}; check out a branch before fast-forwarding`,
       "DETACHED_HEAD",
+    );
+  }
+}
+
+// A registration whose checkout directory is gone: nothing to run git in.
+export class WorktreeMissingError extends SyncWorktreesError {
+  constructor(worktreePath: string, locked: boolean) {
+    super(
+      `Worktree at '${worktreePath}' is registered but its directory is missing; ` +
+        (locked ? "unlock it and run 'git worktree prune'" : "run 'git worktree prune' or sync"),
+      "WORKTREE_MISSING",
     );
   }
 }

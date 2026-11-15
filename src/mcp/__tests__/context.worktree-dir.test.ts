@@ -344,11 +344,10 @@ describe("auto-detected worktreeDir", () => {
     expect(result.capabilities.updateWorktree.available).toBe(false);
   });
 
-  // `git worktree add` canonicalizes its target, and isCurrent is matched
-  // lexically, so a cwd reached through a symlink matches no registered entry
-  // at all. There is then nothing to corroborate with, which is not a reason to
-  // refuse: the count stands alone.
-  it("falls back to the count when the probe is not in the registered list", async () => {
+  // `git worktree add` canonicalizes its target. The probe is realpathed
+  // before matching, so a cwd reached through a symlink is still the current
+  // entry and corroborates the count (it used to match nothing).
+  it("matches a probe reached through a symlink to its canonical entry", async () => {
     await seedOrigin("main", "feature/x");
     const real = path.join(tempDir, "real-wt");
     const link = path.join(tempDir, "linked-wt");
@@ -359,8 +358,8 @@ describe("auto-detected worktreeDir", () => {
 
     const result = await new RepositoryContext().detectFromPath(path.join(link, "main"));
 
-    expect(result.currentBranch).toBeNull();
-    expect(result.allWorktrees.every((w) => !w.isCurrent)).toBe(true);
+    expect(result.currentBranch).toBe("main");
+    expect(result.allWorktrees.filter((w) => w.isCurrent).map((w) => w.path)).toEqual([path.join(real, "main")]);
     expect(result.worktreeDir).toBe(real);
     expect(result.capabilities.createWorktree.available).toBe(true);
   });

@@ -1,10 +1,16 @@
+import { DEFAULT_CONFIG } from "../constants";
+
 import { isGitAuthErrorFromError } from "./git-auth-error";
 import { isLfsErrorFromError } from "./lfs-error";
 
 interface ErrorWithCode {
   code?: string;
   message?: string;
+  plugin?: string;
 }
+
+// What git prints for DNS, refused and timed-out connections (https and ssh).
+const NETWORK_ERROR_MESSAGES = ["Could not resolve host", "Connection refused", "Connection timed out"];
 
 export interface LfsErrorContext {
   isLfsError: boolean;
@@ -28,15 +34,19 @@ export interface RetryOptions {
   shouldRetry?: (error: unknown, context?: LfsErrorContext) => boolean;
   onRetry?: (error: unknown, attempt: number, context?: LfsErrorContext) => void;
   lfsRetryHandler?: (context: LfsErrorContext) => void;
+  /** Stops retrying once aborted: no new attempt starts and a pending backoff ends early. */
+  signal?: AbortSignal;
 }
 
-const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttempts: number | "unlimited" } = {
-  maxAttempts: "unlimited",
-  maxLfsRetries: 2,
-  initialDelayMs: 1000,
-  maxDelayMs: 600000, // 10 minutes
-  backoffMultiplier: 2,
-  jitterMs: 0,
+const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts" | "signal">> & {
+  maxAttempts: number | "unlimited";
+} = {
+  maxAttempts: DEFAULT_CONFIG.RETRY.MAX_ATTEMPTS,
+  maxLfsRetries: DEFAULT_CONFIG.RETRY.MAX_LFS_RETRIES,
+  initialDelayMs: DEFAULT_CONFIG.RETRY.INITIAL_DELAY_MS,
+  maxDelayMs: DEFAULT_CONFIG.RETRY.MAX_DELAY_MS,
+  backoffMultiplier: DEFAULT_CONFIG.RETRY.BACKOFF_MULTIPLIER,
+  jitterMs: DEFAULT_CONFIG.RETRY.JITTER_MS,
   shouldRetry: (error, context) => {
     const err = error as ErrorWithCode;
 
@@ -48,7 +58,8 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
       return true;
     }
 
-    if (err.code === "ENOTFOUND" || err.code === "ECONNREFUSED" || err.code === "ETIMEDOUT") {
+    // simple-git's inactivity kill (fetchTimeoutMs / cloneTimeoutMs).
+    if (err.plugin === "timeout" || err.message?.includes("block timeout reached")) {
       return true;
     }
 
@@ -66,6 +77,10 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts">> & { maxAttemp
     // and costs minutes of backoff.
     if (isGitAuthErrorFromError(error)) {
       return false;
+    }
+
+    if (NETWORK_ERROR_MESSAGES.some((m) => err.message?.includes(m))) {
+      return true;
     }
 
     if (err.message?.includes("Could not read from remote repository")) {
@@ -92,7 +107,9 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
   let lfsAttempt = 0;
   const lfsContext: LfsErrorContext = { isLfsError: false };
 
+  const signal = opts.signal;
   while (true) {
+    signal?.throwIfAborted();
     try {
       return await fn();
     } catch (error) {
@@ -100,7 +117,7 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
       lfsContext.isLfsError = false;
 
       // Check if we should retry
-      if (!opts.shouldRetry(error, lfsContext)) {
+      if (signal?.aborted || !opts.shouldRetry(error, lfsContext)) {
         throw error;
       }
 
@@ -138,8 +155,29 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
 
       opts.onRetry(error, attempt, lfsContext);
 
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      if (await sleepUnlessAborted(delay, signal)) {
+        throw error;
+      }
       attempt++;
     }
   }
+}
+
+/** Resolves true when the signal aborted before the delay elapsed. */
+function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve(true);
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(false);
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }

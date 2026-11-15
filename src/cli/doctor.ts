@@ -7,8 +7,7 @@ import pLimit from "p-limit";
 
 import { ConfigFileNotFoundError } from "../errors";
 import { ConfigLoaderService } from "../services/config-loader.service";
-import { CONFIG_PATH_ENV_VAR } from "../utils/config-discovery";
-import { findConfigInCwd } from "../utils/config-generator";
+import { CONFIG_PATH_ENV_VAR, resolveConfigPath } from "../utils/config-discovery";
 import { formatBytes } from "../utils/disk-space";
 import { getErrorMessage } from "../utils/errors";
 import { getGitAuthHint } from "../utils/git-auth-error";
@@ -20,6 +19,7 @@ import { resolveMode, REPOSITORY_MODES } from "../utils/repo-mode";
 import { colorsEnabled } from "../utils/terminal";
 
 import type { RepositoryConfig } from "../types";
+import type { ResolvedConfigPath } from "../utils/config-discovery";
 
 /**
  * The Node.js major that package.json `engines.node` names. bin/node-version.js
@@ -81,7 +81,7 @@ export interface DoctorDeps {
   accessWritable(target: string): Promise<void>;
   /** Free bytes available to this user on the filesystem holding `target`. */
   freeBytes(target: string): Promise<number>;
-  findConfig(): Promise<string | null>;
+  findConfig(): Promise<ResolvedConfigPath | null>;
   loadRepositories(configPath: string, filter?: string): Promise<RepositoryConfig[]>;
 }
 
@@ -157,7 +157,7 @@ export function createDefaultDoctorDeps(): DoctorDeps {
       const stats = await fs.statfs(target);
       return stats.bavail * stats.bsize;
     },
-    findConfig: () => findConfigInCwd(),
+    findConfig: () => resolveConfigPath(undefined),
     loadRepositories: async (configPath, filter) =>
       (await new ConfigLoaderService().buildRepositories(configPath, { filter })).repositories,
   };
@@ -437,7 +437,10 @@ export async function runDoctorChecks(options: DoctorOptions, deps: DoctorDeps):
   checks.push(git);
 
   let repositories: RepositoryConfig[] = [];
-  const configPath = options.config ? path.resolve(options.config) : await deps.findConfig();
+  const resolved: ResolvedConfigPath | null = options.config
+    ? { path: path.resolve(options.config), source: "flag" }
+    : await deps.findConfig();
+  const configPath = resolved?.path;
   let configCheck: DoctorCheck;
   if (!configPath) {
     configCheck = check(
@@ -464,21 +467,29 @@ export async function runDoctorChecks(options: DoctorOptions, deps: DoctorDeps):
       }
     } catch (error) {
       configCheck =
-        error instanceof ConfigFileNotFoundError
+        error instanceof ConfigFileNotFoundError && resolved?.source === "env"
           ? check(
               "config",
               null,
               "fail",
-              `Config file not found: ${configPath}`,
-              `Run 'sync-worktrees init --config ${configPath}' to create one.`,
+              `${CONFIG_PATH_ENV_VAR} points to a file that does not exist: ${configPath}`,
+              `Fix or unset ${CONFIG_PATH_ENV_VAR}, or pass --config <path>.`,
             )
-          : check(
-              "config",
-              null,
-              "fail",
-              `${configPath} does not load: ${getErrorMessage(error).replace(/^Failed to load config file: /, "")}`,
-              "Fix the reported setting; docs/configuration.md lists every key.",
-            );
+          : error instanceof ConfigFileNotFoundError
+            ? check(
+                "config",
+                null,
+                "fail",
+                `Config file not found: ${configPath}`,
+                `Run 'sync-worktrees init --config ${configPath}' to create one.`,
+              )
+            : check(
+                "config",
+                null,
+                "fail",
+                `${configPath} does not load: ${getErrorMessage(error).replace(/^Failed to load config file: /, "")}`,
+                "Fix the reported setting; docs/configuration.md lists every key.",
+              );
     }
   }
 
@@ -493,7 +504,15 @@ export async function runDoctorChecks(options: DoctorOptions, deps: DoctorDeps):
   checks.push(configCheck);
 
   const limit = pLimit(REMOTE_CHECK_CONCURRENCY);
-  const perRepository = await Promise.all(repositories.map((repo) => limit(() => checkRepository(repo, deps))));
+  const perRepository = await Promise.all(
+    repositories.map((repo) =>
+      limit(() =>
+        checkRepository(repo, deps).catch((error: unknown) => [
+          check("repository", repo.name, "fail", getErrorMessage(error)),
+        ]),
+      ),
+    ),
+  );
   for (const repoChecks of perRepository) checks.push(...repoChecks);
   return checks;
 }

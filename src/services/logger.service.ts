@@ -51,9 +51,9 @@ export class Logger {
     return this.repoName ? `[${this.repoName}] ` : "";
   }
 
-  debug(message: string, ...args: unknown[]): void {
+  debug(message: string): void {
     if (!this.debugEnabled || this.quiet) return;
-    const formattedMessage = this.scrub(this.prefix() + this.formatMessage(message, args));
+    const formattedMessage = this.scrub(this.prefix() + message);
     if (this.outputFn) {
       this.outputFn(formattedMessage, "debug");
     } else {
@@ -61,9 +61,9 @@ export class Logger {
     }
   }
 
-  info(message: string, ...args: unknown[]): void {
+  info(message: string): void {
     if (this.quiet) return;
-    const formattedMessage = this.scrub(this.prefix() + this.formatMessage(message, args));
+    const formattedMessage = this.scrub(this.prefix() + message);
     if (this.outputFn) {
       this.outputFn(formattedMessage, "info");
     } else {
@@ -71,8 +71,8 @@ export class Logger {
     }
   }
 
-  warn(message: string, ...args: unknown[]): void {
-    const formattedMessage = this.scrub(this.prefix() + this.formatMessage(message, args));
+  warn(message: string): void {
+    const formattedMessage = this.scrub(this.prefix() + message);
     if (this.outputFn) {
       this.outputFn(formattedMessage, "warn");
     } else {
@@ -114,43 +114,7 @@ export class Logger {
     }
   }
 
-  private formatMessage(message: string, args: unknown[]): string {
-    if (args.length === 0) {
-      return message;
-    }
-
-    return args.reduce((msg, arg) => (msg as string).replace("%s", String(arg)), message) as string;
-  }
-
   static createDefault(repoName?: string, debug?: boolean, options: { quiet?: boolean } = {}): Logger {
     return new Logger({ repoName, debug, quiet: options.quiet });
   }
-
-  withPassthrough(passthrough: LogOutputFn): Logger {
-    const upstream = this.outputFn;
-    return new Logger({
-      repoName: this.repoName,
-      debug: this.debugEnabled,
-      disableColors: this.disableColors,
-      quiet: this.quiet,
-      outputFn: (msg: string, level: LogLevel): void => {
-        if (upstream) {
-          upstream(msg, level);
-        } else {
-          defaultConsoleOutput(msg, level);
-        }
-        try {
-          passthrough(msg, level);
-        } catch {
-          // swallow - passthrough must never break primary logging
-        }
-      },
-    });
-  }
-}
-
-function defaultConsoleOutput(msg: string, level: LogLevel): void {
-  if (level === "warn") console.warn(msg);
-  else if (level === "error") console.error(msg);
-  else console.log(msg);
 }

@@ -217,7 +217,7 @@ describe("update_worktree on a detached-HEAD worktree (real git)", () => {
   // like a live detached one. That is git's documented reason to lock (a
   // worktree on media that is not always mounted), and DETACHED_HEAD there
   // names a remedy — check out a branch — in a directory that is not present.
-  it("refuses a locked detached registration whose checkout is gone, not as detached", async () => {
+  it("refuses a locked detached registration whose checkout is gone as WORKTREE_MISSING", async () => {
     const target = pathResolution.getBranchWorktreePath(worktreeDir, "feature/x");
     expect((await call(handleCreateWorktree, { branchName: "feature/x" })).success).toBe(true);
     await simpleGit(target).raw(["checkout", "--detach", await headOf(target)]);
@@ -237,8 +237,7 @@ describe("update_worktree on a detached-HEAD worktree (real git)", () => {
     const result = await call(handleUpdateWorktree, { path: target });
 
     expect(result.isError).toBe(true);
-    expect(result.code).not.toBe("DETACHED_HEAD");
-    expect(result.message).toContain("not a registered worktree");
+    expect(result.code).toBe("WORKTREE_MISSING");
     expect(fetchBranch).not.toHaveBeenCalled();
   });
 

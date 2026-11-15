@@ -9,9 +9,10 @@ import { ConfigLoaderService } from "../services/config-loader.service";
 import { Logger } from "../services/logger.service";
 import { PathResolutionService } from "../services/path-resolution.service";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
+import { findConfigUpTree } from "../utils/config-discovery";
 import { createGitClient } from "../utils/git-client";
 import { redactRepoUrl } from "../utils/git-url";
-import { normalizePathForCompare, pathsEqual } from "../utils/path-compare";
+import { normalizePathForCompare, pathsEqual, resolveRealPathAsync } from "../utils/path-compare";
 import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import { parseWorktreeListPorcelain, readWorktreeListPorcelain } from "../utils/worktree-list-parser";
 
@@ -40,6 +41,9 @@ export interface DiscoveredWorktree {
   divergence?: Divergence | null;
   staleHint?: boolean;
   statusError?: string;
+  prunable?: boolean;
+  locked?: boolean;
+  detached?: boolean;
 }
 
 export interface SiblingRepository {
@@ -111,6 +115,9 @@ interface RepoEntry {
   // (RepoEntry is not exported, but __registerForTest names it, so tsc emits
   // this interface into the .d.ts -- a /** */ comment here would ship too.)
   worktreeDirUndetermined?: boolean;
+  // Config entries: bareRepoDir/worktreeDir realpathed at load, since git
+  // reports canonical paths.
+  realPaths?: { bareRepoDir: string | null; worktreeDir: string };
 }
 
 type RepositorySelectionDecision =
@@ -163,6 +170,9 @@ const DISCOVERY_CACHE_TTL_MS = 5000;
 const DISCOVERY_CACHE_LIMIT = 64;
 const NO_REMOTE_URL_REASON = "no remote origin URL detected";
 const NO_CONFIG_NO_URL_REASON = "no config and no remote URL";
+const NOT_REGISTERED_NO_URL_REASON =
+  "repository is not registered: no remote origin URL detected and no loaded config lists it; " +
+  "add an origin remote, or list it in a config and call load_config";
 const CLONE_MODE_REASON = "clone-mode repositories have a single checkout; use sync for clone-mode updates";
 const UNDETERMINED_WORKTREE_DIR_REASON =
   "cannot determine worktreeDir: the registered worktrees and the worktree this call came from do not agree on " +
@@ -219,6 +229,9 @@ export class RepositoryContext {
   private configLoader = new ConfigLoaderService({ logger: createStderrLogger() });
   private discoveryCache = new Map<string, CachedDiscovery>();
   private lastConfigLoadFailure: ConfigLoadFailure | null = null;
+  private loadedConfigFingerprint: ConfigFingerprint | null = null;
+  private loadedConfigCheckedMtimeMs: number | null = null;
+  private loadedConfigChanged = false;
   private readonly launchCwd: string;
 
   constructor(options: { launchCwd?: string } = {}) {
@@ -229,31 +242,16 @@ export class RepositoryContext {
     return this.launchCwd;
   }
 
-  async findConfigUpward(startDir: string): Promise<string | null> {
-    return this.configLoader.findConfigUpward(startDir);
+  async findConfigUpTree(startDir: string): Promise<string | null> {
+    return findConfigUpTree(startDir);
   }
 
   async loadConfig(configPath: string, options: { setDefaultCurrent?: boolean } = {}): Promise<RepositoryConfig[]> {
     const setDefaultCurrent = options.setDefaultCurrent ?? true;
     const absolutePath = path.resolve(configPath);
-    const configFile = await this.configLoader.loadConfigFile(absolutePath);
-
-    const configDir = path.dirname(absolutePath);
-    const globalDefaults = configFile.defaults;
-
-    const resolvedAll: RepositoryConfig[] = [];
-    for (const repo of configFile.repositories) {
-      const resolved = this.configLoader.resolveRepositoryConfig(
-        repo,
-        globalDefaults,
-        configDir,
-        configFile.retry,
-        configFile.repositories,
-        configFile.parallelism,
-      );
-      resolvedAll.push(resolved);
-    }
-    this.configLoader.detectPathCollisions(resolvedAll);
+    const fingerprint = await configFileFingerprint(absolutePath);
+    const { repositories: resolvedAll, configFile } = await this.configLoader.buildRepositories(absolutePath);
+    const realPaths = await Promise.all(resolvedAll.map(realRepoPaths));
 
     for (const [name, entry] of this.repos) {
       if (entry.source === "config") {
@@ -265,15 +263,19 @@ export class RepositoryContext {
     // Reached only past every throw in this method, so it marks a config that
     // is genuinely loaded -- from the auto-load below or from load_config.
     this.lastConfigLoadFailure = null;
-    for (const resolved of resolvedAll) {
+    this.loadedConfigFingerprint = fingerprint;
+    this.loadedConfigCheckedMtimeMs = fingerprint.mtimeMs;
+    this.loadedConfigChanged = false;
+    resolvedAll.forEach((resolved, i) => {
       this.repos.set(resolved.name, {
         name: resolved.name,
         config: resolved,
         source: "config",
+        realPaths: realPaths[i],
       });
-    }
+    });
 
-    this.reselectDetectedCurrentRepoIfConfigured();
+    this.dropDetectedEntriesCoveredByConfig();
 
     if (this.currentRepo && !this.repos.has(this.currentRepo)) {
       this.currentRepo = null;
@@ -289,7 +291,10 @@ export class RepositoryContext {
   }
 
   async detectFromPath(dirPath: string): Promise<DiscoveredRepoContext> {
-    const absolutePath = path.resolve(dirPath);
+    const lexicalPath = path.resolve(dirPath);
+    // Agents pass $PWD, which keeps symlinks; git lists canonical paths.
+    const absolutePath = await resolveRealPathAsync(lexicalPath);
+    await this.checkLoadedConfigChanged();
 
     const cached = this.discoveryCache.get(absolutePath);
     if (cached && (await this.isCacheFresh(cached))) {
@@ -301,7 +306,7 @@ export class RepositoryContext {
     }
 
     if (this.configPath === null) {
-      const found = await this.configLoader.findConfigUpward(absolutePath);
+      const found = await findConfigUpTree(lexicalPath);
       if (found === null) {
         this.lastConfigLoadFailure = null;
       } else {
@@ -403,11 +408,12 @@ export class RepositoryContext {
 
     const configCandidates = Array.from(this.repos.values())
       .filter((entry) => entry.source === "config" && !!entry.config.bareRepoDir)
+      .filter((entry) => !configPathMatches(entry, "bareRepoDir", currentBareRepoPath))
       .map((entry) => {
         const bareRepoPath = path.resolve(entry.config.bareRepoDir as string);
-        return { entry, bareRepoPath, foldedBare: normalizePathForCompare(bareRepoPath) };
-      })
-      .filter((c) => c.foldedBare !== currentBare);
+        const realBare = entry.realPaths?.bareRepoDir ?? bareRepoPath;
+        return { entry, bareRepoPath, foldedBare: normalizePathForCompare(realBare) };
+      });
 
     const configPresence = await Promise.all(configCandidates.map((c) => isDirectory(c.bareRepoPath)));
     configCandidates.forEach(({ entry, bareRepoPath, foldedBare }, i) => {
@@ -475,13 +481,14 @@ export class RepositoryContext {
     this.currentRepo = candidate;
   }
 
-  private reselectDetectedCurrentRepoIfConfigured(): void {
-    if (!this.currentRepo) return;
-    const current = this.repos.get(this.currentRepo);
-    if (current?.source !== "detected") return;
-    const match = this.findConfiguredEntryForDetected(current);
-    if (match) {
-      this.currentRepo = match.name;
+  private dropDetectedEntriesCoveredByConfig(): void {
+    // One entry (and one service) per repository: the config entry wins.
+    for (const [name, entry] of this.repos) {
+      if (entry.source !== "detected") continue;
+      const match = this.findConfiguredEntryForDetected(entry);
+      if (!match) continue;
+      this.repos.delete(name);
+      if (this.currentRepo === name) this.currentRepo = match.name;
     }
   }
 
@@ -492,23 +499,33 @@ export class RepositoryContext {
 
     for (const entry of this.repos.values()) {
       if (entry.source !== "config") continue;
-      if (
-        detectedBare &&
-        entry.config.bareRepoDir &&
-        normalizePathForCompare(path.resolve(entry.config.bareRepoDir)) ===
-          normalizePathForCompare(path.resolve(detectedBare))
-      ) {
+      if (detectedBare && configPathMatches(entry, "bareRepoDir", detectedBare)) {
         return entry;
       }
       if (
         resolveMode(entry.config) === REPOSITORY_MODES.CLONE &&
-        normalizePathForCompare(path.resolve(entry.config.worktreeDir)) ===
-          normalizePathForCompare(path.resolve(detectedWorktree))
+        configPathMatches(entry, "worktreeDir", detectedWorktree)
       ) {
         return entry;
       }
     }
     return null;
+  }
+
+  private async checkLoadedConfigChanged(): Promise<void> {
+    // A stat per detect; the file is hashed only when its mtime moves, so a
+    // bare `touch` does not raise CONFIG_CHANGED.
+    const loaded = this.loadedConfigFingerprint;
+    if (this.configPath === null || loaded === null || loaded.contentHash === null) return;
+    const mtimeMs = await safeMtimeMs(this.configPath);
+    if (mtimeMs !== null && mtimeMs === this.loadedConfigCheckedMtimeMs) return;
+    const current = await configFileFingerprint(this.configPath);
+    const changed = current.contentHash !== loaded.contentHash;
+    this.loadedConfigCheckedMtimeMs = mtimeMs;
+    if (changed !== this.loadedConfigChanged) {
+      this.loadedConfigChanged = changed;
+      this.discoveryCache.clear();
+    }
   }
 
   private shouldReimportConfig(configPath: string, fingerprint: ConfigFingerprint): boolean {
@@ -550,6 +567,11 @@ export class RepositoryContext {
           `Fix it and call load_config.`,
       );
     }
+    if (this.loadedConfigChanged && this.configPath !== null) {
+      notes.push(
+        `CONFIG_CHANGED: ${this.configPath} changed on disk since it was loaded; call load_config to apply it.`,
+      );
+    }
 
     const located = await findEnclosingCheckout(absolutePath, (dir) => this.findConfiguredCloneEntry(dir));
     // When the walk found nothing, report the deepest .git it stepped over as
@@ -560,7 +582,10 @@ export class RepositoryContext {
     const worktreeRoot =
       located.found?.worktreeRoot ?? located.skipped[0]?.path ?? located.undetermined?.path ?? absolutePath;
 
-    const unsupported = (reason: string): { result: DiscoveredRepoContext; adminDir: string | null } => {
+    const unsupported = (
+      reason: string,
+      capabilities: Capabilities = emptyCapabilities(reason),
+    ): { result: DiscoveredRepoContext; adminDir: string | null } => {
       notes.push(reason);
       return {
         result: {
@@ -575,7 +600,7 @@ export class RepositoryContext {
           siblingRepositories: [],
           configPath: this.configPath,
           repoName: null,
-          capabilities: emptyCapabilities(reason),
+          capabilities,
           notes,
         },
         adminDir: null,
@@ -588,7 +613,21 @@ export class RepositoryContext {
       // false, so the exhausted answer enumerates what the walk passed. It is
       // the only note in this case, which is why the per-skip notes below are
       // not also pushed here.
-      return unsupported(describeExhaustedWalk(absolutePath, located));
+      const reason = describeExhaustedWalk(absolutePath, located);
+      // Not a checkout, but tools without repoName still act on the default
+      // repository: report what they will do there. An unreadable .git stops
+      // short of answering for any enclosing repository.
+      const decision = located.undetermined === null ? this.selectDefaultRepository() : null;
+      const selected = decision?.kind === "selected" ? this.repos.get(decision.repoName) : undefined;
+      if (selected) {
+        const result = unsupported(reason, this.computeBaseCapabilities(selected));
+        notes.push(
+          `Path is not inside a checkout; capabilities are those of repository '${selected.name}', ` +
+            `which tools act on when repoName is omitted`,
+        );
+        return result;
+      }
+      return unsupported(reason);
     }
     for (const skip of located.skipped) {
       notes.push(`Walked past ${skip.reason} at ${skip.path}`);
@@ -600,7 +639,7 @@ export class RepositoryContext {
       };
     }
 
-    const bareRepoPath = located.found.bareRepoPath;
+    const bareRepoPath = await resolveRealPathAsync(located.found.bareRepoPath);
     const adminDir = located.found.adminDir;
 
     let repoUrl: string | null = null;
@@ -649,14 +688,11 @@ export class RepositoryContext {
 
     const derivedWorktreeDir = deriveWorktreeDir(worktrees);
 
-    const foldedBare = normalizePathForCompare(bareRepoPath);
     let matchedConfig: RepoEntry | null = null;
     for (const entry of this.repos.values()) {
-      if (entry.source === "config" && entry.config.bareRepoDir) {
-        if (normalizePathForCompare(entry.config.bareRepoDir) === foldedBare) {
-          matchedConfig = entry;
-          break;
-        }
+      if (entry.source === "config" && configPathMatches(entry, "bareRepoDir", bareRepoPath)) {
+        matchedConfig = entry;
+        break;
       }
     }
 
@@ -717,20 +753,20 @@ export class RepositoryContext {
 
     // Start from the entry's durable capabilities so that discovery can only
     // narrow them, never widen them (see computeBaseCapabilities).
+    // No entry means nothing is registered for this repository, so no tool can
+    // select it.
     const capabilities: Capabilities = entry
       ? this.computeBaseCapabilities(entry)
       : {
-          listWorktrees: { available: true },
-          getStatus: { available: true },
-          createWorktree: { available: false, reason: NO_REMOTE_URL_REASON },
-          updateWorktree: { available: true },
+          ...emptyCapabilities(NOT_REGISTERED_NO_URL_REASON),
           sync: { available: false, reason: NO_CONFIG_NO_URL_REASON },
           initialize: { available: false, reason: NO_CONFIG_NO_URL_REASON },
         };
     if (repoUrl === null) {
-      // A bare repo without an origin URL cannot create worktrees, even when a
-      // loaded config lists one for it.
+      // Without an origin URL there is nothing to create from or fast-forward
+      // to, even when a loaded config lists the repository.
       capabilities.createWorktree = { available: false, reason: NO_REMOTE_URL_REASON };
+      capabilities.updateWorktree = { available: false, reason: NO_REMOTE_URL_REASON };
     }
     if (worktreeDir === null) {
       // Both tools resolve a target under worktreeDir — createWorktree through
@@ -788,8 +824,14 @@ export class RepositoryContext {
     }
     if (!entry.service) {
       const logger = createStderrLogger(entry.name);
+      // A tool call has to answer: "unlimited" would retry an unreachable
+      // remote forever while holding the repository lock.
+      const retry = entry.config.retry;
       entry.service = new WorktreeSyncService({
         ...entry.config,
+        ...(retry?.maxAttempts === "unlimited"
+          ? { retry: { ...retry, maxAttempts: DEFAULT_CONFIG.RETRY.MAX_ATTEMPTS } }
+          : {}),
         logger,
       });
     }
@@ -974,11 +1016,17 @@ export class RepositoryContext {
     this.currentRepo = repoName;
   }
 
-  getRepositoryList(): Array<{ name: string; repoUrl: string; worktreeDir: string; source: "config" | "detected" }> {
+  getRepositoryList(): Array<{
+    name: string;
+    repoUrl: string;
+    worktreeDir: string | null;
+    source: "config" | "detected";
+  }> {
     return Array.from(this.repos.values()).map((e) => ({
       name: e.name,
       repoUrl: redactRepoUrl(e.config.repoUrl),
-      worktreeDir: e.config.worktreeDir,
+      // null, as detect_context reports it, not the placeholder.
+      worktreeDir: e.worktreeDirUndetermined ? null : e.config.worktreeDir,
       source: e.source,
     }));
   }
@@ -1029,7 +1077,8 @@ export class RepositoryContext {
 
           if (entry.config.bareRepoDir) {
             summary.bareRepoDir = path.resolve(entry.config.bareRepoDir);
-            summary.localReady = await isDirectory(summary.bareRepoDir);
+            // HEAD, not the dir: the repo lock creates the dir before any clone.
+            summary.localReady = await pathExists(path.join(summary.bareRepoDir, "HEAD"));
           } else {
             summary.localReady = false;
           }
@@ -1098,10 +1147,9 @@ export class RepositoryContext {
   }
 
   private findConfiguredCloneEntry(worktreeRoot: string): RepoEntry | null {
-    const foldedRoot = normalizePathForCompare(path.resolve(worktreeRoot));
     for (const entry of this.repos.values()) {
       if (entry.source !== "config" || resolveMode(entry.config) !== REPOSITORY_MODES.CLONE) continue;
-      if (normalizePathForCompare(path.resolve(entry.config.worktreeDir)) === foldedRoot) {
+      if (configPathMatches(entry, "worktreeDir", worktreeRoot)) {
         return entry;
       }
     }
@@ -1161,9 +1209,7 @@ export class RepositoryContext {
           {
             path: worktreePath,
             branch,
-            isCurrent:
-              currentWorktreePath !== null &&
-              normalizePathForCompare(worktreePath) === normalizePathForCompare(currentWorktreePath),
+            isCurrent: currentWorktreePath !== null && configPathMatches(entry, "worktreeDir", currentWorktreePath),
           },
         ],
       };
@@ -1174,6 +1220,23 @@ export class RepositoryContext {
 }
 
 const pathResolution = new PathResolutionService();
+
+async function realRepoPaths(config: Config): Promise<NonNullable<RepoEntry["realPaths"]>> {
+  const [bareRepoDir, worktreeDir] = await Promise.all([
+    config.bareRepoDir ? resolveRealPathAsync(config.bareRepoDir) : null,
+    resolveRealPathAsync(config.worktreeDir),
+  ]);
+  return { bareRepoDir, worktreeDir };
+}
+
+// True when the entry's configured path, as written or realpathed, is `target`.
+function configPathMatches(entry: RepoEntry, key: "bareRepoDir" | "worktreeDir", target: string): boolean {
+  const configured = entry.config[key];
+  if (!configured) return false;
+  if (pathsEqual(configured, target)) return true;
+  const real = entry.realPaths?.[key];
+  return !!real && pathsEqual(real, target);
+}
 
 // Where a registered worktree says its parent directory is, or null when its
 // path is not one this tool would have produced.
@@ -1223,9 +1286,8 @@ function worktreeDirCandidate(worktree: DiscoveredWorktree): string | null {
 // and an agent is most likely to be standing in exactly the hand-placed
 // worktree that disagrees, so it confirms rather than overrides: letting it
 // override put a new worktree beside one stray while five tool-made ones said
-// otherwise. When it is absent from the list (git stores canonical paths, so a
-// symlinked cwd matches none of them) or abstains (a detached entry), the count
-// stands alone -- there is nothing to corroborate with, not a reason to refuse.
+// otherwise. When it is absent from the list or abstains (a detached entry),
+// the count stands alone -- there is nothing to corroborate with, not a reason to refuse.
 //
 // A single vote still wins: the shape it matched already fixes how many
 // components its branch name contributed, which is the fact a probe path cannot
@@ -1271,6 +1333,9 @@ function parseWorktreeList(output: string, currentPath: string | null): Discover
       path: resolved,
       branch,
       isCurrent: foldedCurrent !== null && normalizePathForCompare(resolved) === foldedCurrent,
+      ...(wt.prunable && { prunable: true }),
+      ...(wt.locked && { locked: true }),
+      ...(wt.detached && { detached: true }),
     });
   }
   return results;
@@ -1342,13 +1407,17 @@ async function isDirectory(filePath: string): Promise<boolean> {
   }
 }
 
-async function hasGitMetadata(worktreePath: string): Promise<boolean> {
+async function pathExists(filePath: string): Promise<boolean> {
   try {
-    await fs.stat(path.join(worktreePath, ".git"));
+    await fs.stat(filePath);
     return true;
   } catch {
     return false;
   }
+}
+
+async function hasGitMetadata(worktreePath: string): Promise<boolean> {
+  return pathExists(path.join(worktreePath, ".git"));
 }
 
 async function isGitCheckout(checkoutPath: string): Promise<boolean> {

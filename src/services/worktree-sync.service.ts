@@ -133,6 +133,8 @@ export class WorktreeSyncService {
           this.skipsAccumulator.push(reason);
         },
       });
+      const cloneSync = this.cloneSyncService;
+      this.maintenanceService.setTargetGuard(() => cloneSync.assertPrimaryCheckout());
     }
   }
 
@@ -173,16 +175,16 @@ export class WorktreeSyncService {
     return this.gitService.getRemoteBranches();
   }
 
-  async checkoutBranch(branchName: string, options: { allowConfigDrift?: boolean } = {}): Promise<void> {
+  async checkoutBranch(branchName: string): Promise<void> {
     if (!this.cloneSyncService) {
       throw new ConfigError("checkoutBranch is only available for clone-mode repositories", "CLONE_MODE_REQUIRED");
     }
-    await this.cloneSyncService.checkoutBranch(branchName, options);
+    await this.cloneSyncService.checkoutBranch(branchName);
   }
 
   // Clone mode's answer to GitService.createBranch + pushBranch, which have no
   // bare repository to run in here. The TUI's branch wizard calls this and then
-  // checkoutBranch(branchName, { allowConfigDrift: true }) to switch to it.
+  // checkoutBranch(branchName) to switch to it.
   async createAndPushBranch(baseBranch: string, branchName: string): Promise<void> {
     if (!this.cloneSyncService) {
       throw new ConfigError("createAndPushBranch is only available for clone-mode repositories", "CLONE_MODE_REQUIRED");
@@ -481,7 +483,7 @@ export class WorktreeSyncService {
   private async getDivergedDirectoryNames(): Promise<Set<string>> {
     const divergedRoot = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
     try {
-      return new Set((await fs.readdir(divergedRoot)) ?? []);
+      return new Set(await fs.readdir(divergedRoot));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set();
       throw new Error(
@@ -531,30 +533,7 @@ export class WorktreeSyncService {
     const selected = new Set(names.map((name) => `${GIT_CONSTANTS.KEEP_REF_PREFIX}${name}`));
     const result = await this.runExclusiveRepoOperation<KeepRefDropResult>(
       async () => {
-        const dropped: KeepRefDropResult = { deleted: 0, retained: [], errors: [] };
-        // Intersecting the live listing with the selection covers both
-        // directions: a ref minted since the listing is never in `selected`, and
-        // a selected ref already gone never shows up here.
-        const present = (await this.listKeepRefs()).filter((ref) => selected.has(ref));
-        const reservedNames = await this.getDivergedDirectoryNames();
-        for (const ref of present) {
-          if (this.isKeepRefReserved(ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length), reservedNames)) {
-            dropped.retained.push(ref);
-            continue;
-          }
-          try {
-            await this.removalAudit.record({ action: "keep_ref_delete", result: "attempt", path: ref });
-            await this.gitService.deleteRef(ref);
-            dropped.deleted++;
-            await this.removalAudit.record({ action: "keep_ref_delete", result: "success", path: ref });
-          } catch (error) {
-            const message = getErrorMessage(error);
-            dropped.errors.push(`${ref}: ${message}`);
-            await this.removalAudit
-              .record({ action: "keep_ref_delete", result: "failure", path: ref, error: message })
-              .catch(() => undefined);
-          }
-        }
+        const { missing: _missing, ...dropped } = await this.dropKeepRefsUnlocked(selected);
         return dropped;
       },
       { wait: true },
@@ -573,18 +552,55 @@ export class WorktreeSyncService {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error(`Invalid keep ref name '${name}'`);
   }
 
+  private async dropKeepRefsUnlocked(selected: Set<string>): Promise<KeepRefDropResult & { missing: string[] }> {
+    const dropped: KeepRefDropResult & { missing: string[] } = { deleted: 0, retained: [], errors: [], missing: [] };
+    // Intersecting the live listing with the selection covers both
+    // directions: a ref minted since the listing is never in `selected`, and
+    // a selected ref already gone never shows up here.
+    const listed = new Set(await this.listKeepRefs());
+    const present = [...selected].filter((ref) => listed.has(ref));
+    dropped.missing = [...selected].filter((ref) => !listed.has(ref));
+    const reservedNames = await this.getDivergedDirectoryNames();
+    for (const ref of present) {
+      if (this.isKeepRefReserved(ref.slice(GIT_CONSTANTS.KEEP_REF_PREFIX.length), reservedNames)) {
+        dropped.retained.push(ref);
+        continue;
+      }
+      try {
+        await this.removalAudit.record({ action: "keep_ref_delete", result: "attempt", path: ref });
+        await this.gitService.deleteRef(ref);
+        dropped.deleted++;
+        await this.removalAudit.record({ action: "keep_ref_delete", result: "success", path: ref });
+      } catch (error) {
+        const message = getErrorMessage(error);
+        dropped.errors.push(`${ref}: ${message}`);
+        await this.removalAudit
+          .record({ action: "keep_ref_delete", result: "failure", path: ref, error: message })
+          .catch(() => undefined);
+      }
+    }
+    return dropped;
+  }
+
+  // Same checks as the batch: `update-ref -d` exits 0 for a missing ref.
   async deleteKeepRef(name: string): Promise<void> {
     this.assertKeepRefName(name);
     const ref = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${name}`;
-    const result = await this.runExclusiveRepoOperation(
-      async () => {
-        await this.removalAudit.record({ action: "keep_ref_delete", result: "attempt", path: ref });
-        await this.gitService.deleteRef(ref);
-        await this.removalAudit.record({ action: "keep_ref_delete", result: "success", path: ref });
-      },
-      { wait: true },
-    );
+    const result = await this.runExclusiveRepoOperation(() => this.dropKeepRefsUnlocked(new Set([ref])), {
+      wait: true,
+    });
     if (!result.started) throw new TrashError(`Cannot delete keep ref: ${describeNotStarted(result)}`, "KEEP_REF_DROP");
+    const dropped = result.value;
+    if (dropped.missing.length > 0) throw new TrashError(`No keep ref named '${name}'`, "KEEP_REF_DROP");
+    if (dropped.retained.length > 0) {
+      throw new TrashError(
+        `Keep ref '${name}' retained: a '.diverged/' directory still depends on it`,
+        "KEEP_REF_DROP",
+      );
+    }
+    if (dropped.errors.length > 0) {
+      throw new TrashError(`Could not delete keep ref '${name}': ${dropped.errors.join("; ")}`, "KEEP_REF_DROP");
+    }
   }
 
   async discardDivergedDirectory(targetPath: string, keepRef?: string): Promise<void> {
@@ -725,7 +741,7 @@ export class WorktreeSyncService {
     this.progressEmitter.emit(event);
   }
 
-  async sync(): Promise<SyncResult> {
+  async sync(options: { signal?: AbortSignal } = {}): Promise<SyncResult> {
     // Set as the first statement inside the exclusive operation so the `finally`
     // below can tell "the operation ran" from "it never started". The result
     // object cannot answer that on the failure path: a sync that trashes a
@@ -753,13 +769,24 @@ export class WorktreeSyncService {
           repoName: (this.config as { name?: string }).name,
         });
         const syncContext = this.retryPolicy.createContext();
-        const retryOptions = this.retryPolicy.createOptions(syncContext);
+        const retryOptions = { ...this.retryPolicy.createOptions(syncContext), signal: options.signal };
         let durationMs: number | undefined;
+        // An init that failed never printed "Starting", so it prints no "finished".
+        let syncStarted = false;
 
         try {
           let clonedThisOperation = false;
           if (!this.isInitialized()) {
-            await this.initializeUnlocked(outcome);
+            // Under the same retry policy as the sync attempt: init fetches or
+            // clones, so a briefly unreachable remote is retried here too.
+            const initBaseline = outcome.snapshot();
+            await retry(() => this.initializeUnlocked(outcome), {
+              ...retryOptions,
+              onRetry: (error: unknown, attempt: number, context?: LfsErrorContext): void => {
+                outcome.restore(initBaseline);
+                retryOptions.onRetry?.(error, attempt, context);
+              },
+            });
             // `outcome` was constructed a few lines up and nothing else has
             // written to it, so a `created` action in it can only be the clone
             // this init just made — not an adopted existing clone, which records
@@ -768,7 +795,7 @@ export class WorktreeSyncService {
             // branch, so the sync attempt below would fetch a ref it already has
             // and scan a working tree git checked out moments ago. The check is
             // deliberately scoped to an init that ran *inside this operation*:
-            // a standalone `initialize()` (the run-once CLI, the TUI, the MCP
+            // a standalone `initialize()` (the TUI reload, the MCP
             // `initialize` tool) can be followed by a sync at any distance, and
             // a flag carried across that boundary cannot tell a sync a second
             // later from one an hour later — a sync that silently does nothing
@@ -777,10 +804,11 @@ export class WorktreeSyncService {
             // reads the working tree, a post-clone tick ends `up_to_date`
             // without a status scan, so what those callers still pay for is one
             // no-op fetch.
-            clonedThisOperation = this.cloneSyncService !== undefined && outcome.getCounts().created > 0;
+            clonedThisOperation = this.cloneSyncService !== null && outcome.getCounts().created > 0;
           }
 
           this.logger.info(`[${new Date().toISOString()}] Starting worktree synchronization...`);
+          syncStarted = true;
 
           const retryOutcomeBaseline = outcome.snapshot();
           const retryOptionsWithOutcomeReset = {
@@ -812,14 +840,15 @@ export class WorktreeSyncService {
           // A credential / ssh failure carries its remedy hint from here on:
           // the outcome, this log line and the rejection every consumer reports.
           const error = withGitAuthHint(rawError);
-          if (outcome.getCounts().failed === 0) {
+          // Sparse failures are caught and never what ends the tick.
+          if (!outcome.hasFailureOutside("sparse-checkout")) {
             outcome.recordFailed("repo", getErrorMessage(error), { reason: "sync_failed" });
           }
           this.logger.error("\n❌ Error during worktree synchronization after all retry attempts:", error);
           throw error;
         } finally {
           this.retryPolicy.resetLfsSkipIfNeeded(syncContext);
-          this.logger.info(`[${new Date().toISOString()}] Synchronization finished.\n`);
+          if (syncStarted) this.logger.info(`[${new Date().toISOString()}] Synchronization finished.\n`);
           durationMs = totalTimer.stop();
           this.lastOutcome = outcome.toOutcome(durationMs);
 

@@ -4,9 +4,10 @@ import * as path from "path";
 
 import pLimit from "p-limit";
 
-import { DEFAULT_CONFIG, GIT_CONSTANTS, PATH_CONSTANTS, TRASH_CONSTANTS } from "../constants";
+import { DEFAULT_CONFIG, GIT_CONSTANTS, METADATA_CONSTANTS, PATH_CONSTANTS, TRASH_CONSTANTS } from "../constants";
 import { TrashOperationError, WorktreeNotCleanError } from "../errors";
 import { atomicWriteFile } from "../utils/atomic-write";
+import { detachGitLink, dropDetachedGitLink } from "../utils/detach-git-link";
 import { calculateDirectorySize } from "../utils/disk-space";
 import { probePathExists } from "../utils/file-exists";
 import { filenameTimestamp } from "../utils/filename-timestamp";
@@ -66,7 +67,6 @@ export interface TrashSummary {
   itemCount: number;
   totalSizeBytes: number;
   unknownSizeCount: number;
-  soonestExpiresAt: string | null;
 }
 
 export function isWorktreeRestorable(manifest: Pick<TrashManifest, "branch" | "headOid" | "pinRef">): boolean {
@@ -76,7 +76,6 @@ export function isWorktreeRestorable(manifest: Pick<TrashManifest, "branch" | "h
 export function summarizeTrashEntries(entries: TrashEntry[]): TrashSummary {
   let totalSizeBytes = 0;
   let unknownSizeCount = 0;
-  let soonest: string | null = null;
 
   for (const { manifest } of entries) {
     if (manifest.sizeBytes === null) {
@@ -84,12 +83,9 @@ export function summarizeTrashEntries(entries: TrashEntry[]): TrashSummary {
     } else {
       totalSizeBytes += manifest.sizeBytes;
     }
-    if (soonest === null || manifest.expiresAt < soonest) {
-      soonest = manifest.expiresAt;
-    }
   }
 
-  return { itemCount: entries.length, totalSizeBytes, unknownSizeCount, soonestExpiresAt: soonest };
+  return { itemCount: entries.length, totalSizeBytes, unknownSizeCount };
 }
 
 export interface TrashDirectoryOptions {
@@ -113,6 +109,9 @@ export interface TrashDirectoryOptions {
 // Reversible removal: directories land in <worktreeDir>/.trash/<id>/payload
 // with a manifest sidecar and (when a commit is known) a pin ref that keeps
 // the trashed HEAD's objects alive through `git gc` until the reaper runs.
+// Payloads whose `du` failed; re-walking them every sync tick would be wasted I/O.
+const unsizablePayloads = new Set<string>();
+
 export class TrashService {
   private pathResolution = new PathResolutionService();
   constructor(
@@ -132,6 +131,10 @@ export class TrashService {
 
   getTrashRoot(): string {
     return path.join(this.config.worktreeDir, GIT_CONSTANTS.TRASH_DIR_NAME);
+  }
+
+  getBareRepoPath(): string {
+    return this.gitService.getBareRepoPath();
   }
 
   getRetentionDays(): number {
@@ -174,7 +177,8 @@ export class TrashService {
       source: options.source ?? "worktree",
       legacyOriginalName: options.legacyOriginalName ?? null,
       legacyQuarantinedAt: options.legacyQuarantinedAt?.toISOString() ?? null,
-      keepPinOnReap,
+      // Set in the second write: the validator rejects keepPinOnReap with a null pinRef.
+      keepPinOnReap: false,
     };
 
     // Manifest goes down BEFORE the pin ref: a crash in between leaves a
@@ -249,6 +253,7 @@ export class TrashService {
     const payloadPath = path.join(containerPath, TRASH_CONSTANTS.PAYLOAD_DIRNAME);
     manifest.pinRef = pinRef;
     manifest.bundleFile = bundleFile;
+    manifest.keepPinOnReap = keepPinOnReap;
 
     try {
       await this.writeManifest(containerPath, manifest);
@@ -265,6 +270,9 @@ export class TrashService {
         error instanceof Error ? error : undefined,
       );
     }
+    await detachGitLink(payloadPath).catch((error: unknown) =>
+      this.logger.warn(`⚠️ Could not detach the .git link of trash entry '${id}': ${getErrorMessage(error)}`),
+    );
 
     await this.removalAudit
       .record({
@@ -338,8 +346,8 @@ export class TrashService {
    *
    * Best effort per entry: a payload that cannot be scanned, or a size that
    * cannot be written back, leaves that entry at `null` — the value every
-   * consumer reports as an unknown size rather than as zero — and the next
-   * call tries again.
+   * consumer reports as an unknown size rather than as zero. A payload whose
+   * scan failed is not walked again in this process.
    */
   async listEntriesWithSizes(): Promise<{ entries: TrashEntry[]; invalid: string[] }> {
     const listing = await this.listEntries();
@@ -373,10 +381,13 @@ export class TrashService {
   private async measurePayload(entry: TrashEntry): Promise<number | null> {
     if (await hasPayloadPendingDeletion(entry.containerPath)) return null;
 
+    if (unsizablePayloads.has(entry.payloadPath)) return null;
+
     let sizeBytes: number;
     try {
       sizeBytes = await calculateDirectorySize(entry.payloadPath);
     } catch (error) {
+      unsizablePayloads.add(entry.payloadPath);
       this.logger.debug(`Could not size trash payload for '${entry.manifest.id}': ${getErrorMessage(error)}`);
       return null;
     }
@@ -406,7 +417,7 @@ export class TrashService {
     ]);
   }
 
-  // The full reversible-removal sequence shared by prune and manual removal:
+  // The full reversible-removal sequence shared by prune and diverge-replace:
   // payload to trash, dangling registration cleared, branch ref deleted.
   // A ref-delete failure is a hygiene problem, not a failed removal — the
   // payload and pin ref already capture everything restore needs, and restore
@@ -429,6 +440,14 @@ export class TrashService {
       await this.gitService.removeWorktree(options.dirPath, { force: true });
     } catch (error) {
       try {
+        await fs
+          .rename(
+            path.join(entry.payloadPath, PATH_CONSTANTS.DETACHED_GIT_LINK),
+            path.join(entry.payloadPath, PATH_CONSTANTS.GIT_DIR),
+          )
+          .catch((renameError: NodeJS.ErrnoException) => {
+            if (renameError.code !== "ENOENT") throw renameError;
+          });
         await fs.rename(entry.payloadPath, options.dirPath);
         await this.undoPartialTrash(entry.containerPath, entry.manifest.pinRef);
         // trashDirectory already logged a `trash_create: success` for a
@@ -541,6 +560,7 @@ export class TrashService {
           `   If '${manifest.branch}' is still in this repository's synced set, the next sync finds an unregistered directory at '${manifest.originalPath}' and moves it back to trash as a new 'orphan' entry. Copy what you need out of it first, or exclude the branch.`,
         );
       }
+      await this.stripToolFiles(manifest, payloadPath);
       await fs.rename(payloadPath, manifest.originalPath);
     }
 
@@ -590,8 +610,8 @@ export class TrashService {
 
     try {
       // The pre-rename HEAD verification is not atomic with this deletion: a
-      // commit can still land in the moved payload (its .git link stays valid
-      // until unregistration). Deleting with headOid as the expected old
+      // commit can still land in the payload before its .git link is
+      // detached. Deleting with headOid as the expected old
       // value makes the race lose safely — a moved ref is refused and lands
       // in the caller's leftover-branch-ref hygiene path instead of orphaning
       // the new commit.
@@ -644,6 +664,14 @@ export class TrashService {
     return "released";
   }
 
+  // Tool-written leftovers would read as untracked files in the restored tree.
+  private async stripToolFiles(manifest: TrashManifest, payloadPath: string): Promise<void> {
+    await dropDetachedGitLink(payloadPath);
+    if (manifest.reason === "diverged-replace" || manifest.source === ".diverged") {
+      await fs.rm(path.join(payloadPath, METADATA_CONSTANTS.DIVERGED_INFO_FILE), { force: true });
+    }
+  }
+
   private async restoreAsWorktree(manifest: TrashManifest, payloadPath: string): Promise<void> {
     const branch = manifest.branch as string;
     const headOid = manifest.headOid as string;
@@ -657,13 +685,14 @@ export class TrashService {
       );
     }
 
-    if (existingBranchOid === null) {
-      await this.gitService.createBranchAt(branch, headOid);
-      createdBranch = true;
-    }
+    await this.stripToolFiles(manifest, payloadPath);
 
     let payloadMoved = false;
     try {
+      if (existingBranchOid === null) {
+        await this.gitService.createBranchAt(branch, headOid);
+        createdBranch = true;
+      }
       await this.gitService.addWorktreeNoCheckout(branch, manifest.originalPath);
       await this.movePayloadInto(payloadPath, manifest.originalPath, () => {
         payloadMoved = true;
@@ -681,7 +710,11 @@ export class TrashService {
       // origin/<branch> when it is known so pull/status work as before.
       // Best-effort: the worktree is complete either way.
       try {
-        await this.gitService.trackRemoteBranchIfExists(branch, manifest.originalPath);
+        if (!(await this.gitService.trackRemoteBranchIfExists(branch, manifest.originalPath))) {
+          this.logger.warn(
+            `⚠️ Restored '${branch}' has no upstream: if origin/${branch} is gone, the next sync will prune it again unless it has uncommitted or unpushed work, or the remote branch returns.`,
+          );
+        }
       } catch (upstreamError) {
         this.logger.warn(`⚠️ Could not set the upstream of restored '${branch}': ${getErrorMessage(upstreamError)}`);
       }
@@ -732,7 +765,7 @@ export class TrashService {
    * and restore() has already refused a destination that existed, so there is
    * nothing in there to preserve but that link. Take it, drop the directory,
    * rename the payload into its place and write the link back over the stale
-   * one the payload carries — the README's manual recipe, which repairs that
+   * one the payload carries — the manual recipe in docs/trash-and-recovery.md, which repairs that
    * link after its `cp -R`, in O(1) rather than O(payload) under the
    * repository lock. Git is unbothered by the replacement: its admin dir
    * addresses the checkout by path, so an identical `.git` at the same path
@@ -798,8 +831,8 @@ export class TrashService {
   }
 
   // The cross-device fallback for movePayloadInto, overlaying rather than
-  // moving. The payload's top-level .git points at a pruned admin dir; the
-  // fresh link already written into the destination must survive the copy.
+  // moving. The payload's top-level .git is stale; the fresh link already
+  // written into the destination must survive the copy.
   private async copyPayloadOver(payloadPath: string, destination: string): Promise<void> {
     await copyTreePreservingSymlinks(payloadPath, destination, {
       force: true,
