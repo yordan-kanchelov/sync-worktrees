@@ -54,17 +54,6 @@ describe("WorktreeMetadataService", () => {
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-branch",
-        createdFrom: {
-          branch: "main",
-          commit: "def456",
-        },
-        syncHistory: [
-          {
-            date: "2024-01-15T10:00:00Z",
-            commit: "abc123",
-            action: "created",
-          },
-        ],
       };
 
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
@@ -99,8 +88,6 @@ describe("WorktreeMetadataService", () => {
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-a",
-        createdFrom: { branch: "main", commit: "def456" },
-        syncHistory: [],
       };
       const incoming: SyncMetadata = {
         ...existing,
@@ -120,8 +107,6 @@ describe("WorktreeMetadataService", () => {
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature/a",
-        createdFrom: { branch: "main", commit: "def456" },
-        syncHistory: [],
       };
       (fs.readFile as Mock<any>).mockResolvedValueOnce(JSON.stringify(existing));
       expect(await service.readMetadataOwner(mockBareRepoPath, mockWorktreeName)).toBe("feature/a");
@@ -138,14 +123,11 @@ describe("WorktreeMetadataService", () => {
         lastSyncCommit: "not a sha",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-a",
-        syncHistory: [],
       };
       const incoming: SyncMetadata = {
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-b",
-        createdFrom: { branch: "main", commit: "def456" },
-        syncHistory: [],
       };
       (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existing));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
@@ -163,11 +145,6 @@ describe("WorktreeMetadataService", () => {
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-branch",
-        createdFrom: {
-          branch: "main",
-          commit: "def456",
-        },
-        syncHistory: [],
       };
 
       (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(mockMetadata));
@@ -204,8 +181,6 @@ describe("WorktreeMetadataService", () => {
       lastSyncCommit: "abc123",
       lastSyncDate: "2024-01-15T10:00:00Z",
       upstreamBranch: "origin/feature-branch",
-      createdFrom: { branch: "main", commit: "def456" },
-      syncHistory: [],
     };
 
     beforeEach(() => {
@@ -293,17 +268,6 @@ describe("WorktreeMetadataService", () => {
         lastSyncCommit: "0dd123",
         lastSyncDate: "2024-01-14T10:00:00Z",
         upstreamBranch: "origin/feature-branch",
-        createdFrom: {
-          branch: "main",
-          commit: "def456",
-        },
-        syncHistory: [
-          {
-            date: "2024-01-14T10:00:00Z",
-            commit: "old123",
-            action: "created",
-          },
-        ],
       };
 
       (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
@@ -313,7 +277,7 @@ describe("WorktreeMetadataService", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2024-01-15T12:00:00Z"));
 
-      await service.updateLastSyncFromPath(mockBareRepoPath, mockWorktreePath, "new456", "updated");
+      await service.updateLastSyncFromPath(mockBareRepoPath, mockWorktreePath, "new456");
 
       expect(mockFileHandle.writeFile).toHaveBeenCalledWith(
         expect.stringContaining('"lastSyncCommit": "new456"'),
@@ -325,33 +289,6 @@ describe("WorktreeMetadataService", () => {
         expect.stringContaining('"lastSyncDate": "2024-01-15T12:00:00.000Z"'),
         "utf-8",
       );
-    });
-
-    it("should limit sync history to 10 entries", async () => {
-      const existingMetadata: SyncMetadata = {
-        lastSyncCommit: "0dd123",
-        lastSyncDate: "2024-01-14T10:00:00Z",
-        upstreamBranch: "origin/feature-branch",
-        createdFrom: {
-          branch: "main",
-          commit: "def456",
-        },
-        syncHistory: Array(10).fill({
-          date: "2024-01-01T10:00:00Z",
-          commit: "old",
-          action: "updated",
-        }),
-      };
-
-      (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-
-      await service.updateLastSyncFromPath(mockBareRepoPath, mockWorktreePath, "new456", "updated");
-
-      // Check that the saved metadata has exactly 10 entries
-      const savedData = JSON.parse(mockFileHandle.writeFile.mock.calls[0][0] as string);
-      expect(savedData.syncHistory).toHaveLength(10);
-      expect(savedData.syncHistory[9].commit).toBe("new456");
     });
   });
 
@@ -367,8 +304,6 @@ describe("WorktreeMetadataService", () => {
         mockWorktreePath,
         "abc123",
         "origin/feature-branch",
-        "main",
-        "def456",
       );
 
       vi.useRealTimers();
@@ -377,17 +312,6 @@ describe("WorktreeMetadataService", () => {
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-15T12:00:00.000Z",
         upstreamBranch: "origin/feature-branch",
-        createdFrom: {
-          branch: "main",
-          commit: "def456",
-        },
-        syncHistory: [
-          {
-            date: "2024-01-15T12:00:00.000Z",
-            commit: "abc123",
-            action: "created",
-          },
-        ],
       };
 
       expect(fs.open).toHaveBeenCalledWith(
@@ -412,11 +336,6 @@ describe("WorktreeMetadataService", () => {
         lastSyncCommit: "abc123def456",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-branch",
-        createdFrom: {
-          branch: "main",
-          commit: "def456",
-        },
-        syncHistory: [],
       };
 
       const isValid = await service.validateMetadata(validMetadata);
@@ -427,8 +346,6 @@ describe("WorktreeMetadataService", () => {
       const invalidMetadata = {
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-branch",
-        createdFrom: { branch: "main", commit: "def456" },
-        syncHistory: [],
       } as any;
 
       const isValid = await service.validateMetadata(invalidMetadata);
@@ -439,8 +356,6 @@ describe("WorktreeMetadataService", () => {
       const invalidMetadata = {
         lastSyncCommit: "abc123",
         upstreamBranch: "origin/feature-branch",
-        createdFrom: { branch: "main", commit: "def456" },
-        syncHistory: [],
       } as any;
 
       const isValid = await service.validateMetadata(invalidMetadata);
@@ -451,8 +366,6 @@ describe("WorktreeMetadataService", () => {
       const invalidMetadata = {
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-15T10:00:00Z",
-        createdFrom: { branch: "main", commit: "def456" },
-        syncHistory: [],
       } as any;
 
       const isValid = await service.validateMetadata(invalidMetadata);
@@ -464,8 +377,6 @@ describe("WorktreeMetadataService", () => {
         lastSyncCommit: "not-a-hex-value",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-branch",
-        createdFrom: { branch: "main", commit: "def456" },
-        syncHistory: [],
       };
 
       const isValid = await service.validateMetadata(invalidMetadata);
@@ -477,8 +388,6 @@ describe("WorktreeMetadataService", () => {
         lastSyncCommit: "abc123",
         lastSyncDate: "not-a-date",
         upstreamBranch: "origin/feature-branch",
-        createdFrom: { branch: "main", commit: "def456" },
-        syncHistory: [],
       };
 
       const isValid = await service.validateMetadata(invalidMetadata);
@@ -490,8 +399,6 @@ describe("WorktreeMetadataService", () => {
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-branch",
-        createdFrom: { branch: "main", commit: "def456" },
-        syncHistory: [],
       };
 
       const isValid = await service.validateMetadata(validMetadata);
@@ -617,32 +524,6 @@ describe("WorktreeMetadataService", () => {
       consoleSpy.mockRestore();
       logSpy.mockRestore();
     });
-
-    it("should use actual default branch instead of hard-coded 'main'", async () => {
-      const worktreePath = "/test/worktrees/feature-branch";
-      const currentCommit = "abc123def456";
-
-      (fs.readFile as Mock<any>).mockRejectedValue(new Error("ENOENT"));
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-
-      mockGit.revparse.mockResolvedValue(currentCommit);
-      mockGit.raw = headOn("feature-branch");
-
-      const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-
-      // Test with a non-"main" default branch
-      await service.updateLastSyncFromPath(mockBareRepoPath, worktreePath, currentCommit, "updated", "develop");
-
-      const writeCallArg = mockFileHandle.writeFile.mock.calls[0][0] as string;
-      const savedMetadata = JSON.parse(writeCallArg);
-
-      // Now fixed: uses passed default branch instead of hard-coded "main"
-      expect(savedMetadata.createdFrom.branch).toBe("develop");
-
-      consoleSpy.mockRestore();
-      logSpy.mockRestore();
-    });
   });
 
   describe("updateLastSyncFromPath", () => {
@@ -651,14 +532,12 @@ describe("WorktreeMetadataService", () => {
         lastSyncCommit: "0dd123",
         lastSyncDate: "2024-01-14T10:00:00Z",
         upstreamBranch: "origin/feature-branch",
-        createdFrom: { branch: "main", commit: "def456" },
-        syncHistory: [],
       };
 
       (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
 
-      await service.updateLastSyncFromPath(mockBareRepoPath, mockWorktreePath, "new123", "updated");
+      await service.updateLastSyncFromPath(mockBareRepoPath, mockWorktreePath, "new123");
 
       expect(mockFileHandle.writeFile).toHaveBeenCalledWith(
         expect.stringContaining('"lastSyncCommit": "new123"'),

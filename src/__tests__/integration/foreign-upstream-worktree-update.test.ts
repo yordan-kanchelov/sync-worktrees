@@ -20,8 +20,7 @@ import type { Mock } from "vitest";
 // feature branch's upstream elsewhere (`git branch -u origin/main`) and every
 // push to main made the probe say "behind" while the merge had nothing to
 // bring in — yet each sync reported the worktree as updated/fast_forward and
-// rewrote its lastSyncCommit/lastSyncDate, filling syncHistory with entries
-// for updates that never happened. The probe now names origin/<branch>
+// rewrote its lastSyncCommit/lastSyncDate for updates that never happened. The probe now names origin/<branch>
 // itself, and the fast-forward reports whether HEAD actually moved, so a
 // merge with nothing to do is recorded as already_up_to_date and leaves the
 // sync metadata untouched.
@@ -109,11 +108,11 @@ describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
   async function syncFieldsOf(
     git: GitService,
     dir: string,
-  ): Promise<Pick<SyncMetadata, "lastSyncCommit" | "lastSyncDate" | "syncHistory">> {
+  ): Promise<Pick<SyncMetadata, "lastSyncCommit" | "lastSyncDate">> {
     const metadata = await git.getWorktreeMetadata(dir);
     if (!metadata) throw new Error(`no sync metadata for ${dir}`);
-    const { lastSyncCommit, lastSyncDate, syncHistory } = metadata;
-    return { lastSyncCommit, lastSyncDate, syncHistory };
+    const { lastSyncCommit, lastSyncDate } = metadata;
+    return { lastSyncCommit, lastSyncDate };
   }
 
   // A teammate's commit on the branch, pushed from the seed clone.
@@ -190,10 +189,6 @@ describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
     const after = await syncFieldsOf(git, topicPath);
     expect(after.lastSyncCommit).toBe(topicV2);
     expect(after.lastSyncDate).not.toBe(before.lastSyncDate);
-    expect(after.syncHistory).toEqual([
-      ...before.syncHistory,
-      expect.objectContaining({ commit: topicV2, action: "updated" }),
-    ]);
     // The user's upstream choice is not touched by the update.
     expect(await upstreamOf(topicPath, "topic")).toBe("refs/heads/main");
   });

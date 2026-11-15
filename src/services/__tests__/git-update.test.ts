@@ -130,13 +130,7 @@ describe("GitService - Update Methods", () => {
       expect(beforeRead).toBeLessThan(mergeCall);
       expect(mergeCall).toBeLessThan(afterRead);
       // The sync metadata records the commit HEAD moved to.
-      expect(updateLastSync).toHaveBeenCalledWith(
-        expect.any(String),
-        "/test/worktrees/feature",
-        "bbb222",
-        "updated",
-        expect.any(String),
-      );
+      expect(updateLastSync).toHaveBeenCalledWith(expect.any(String), "/test/worktrees/feature", "bbb222");
     });
 
     it("reports updated:false with equal shas, and writes no metadata, when the fast-forward had nothing to merge", async () => {

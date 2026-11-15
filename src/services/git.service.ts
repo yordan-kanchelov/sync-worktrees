@@ -881,9 +881,9 @@ export class GitService {
   // actually moved, from a sha comparison around the merge rather than from the
   // runner's earlier behind probe: HEAD can reach the remote tip between the
   // two (a `git pull` in the worktree), and `merge --ff-only` succeeds with
-  // nothing to bring in. Sync metadata (lastSyncCommit, lastSyncDate, the
-  // syncHistory entry) is only written when HEAD moved, so a no-op leaves no
-  // trace of an update that did not happen.
+  // nothing to bring in. Sync metadata (lastSyncCommit, lastSyncDate) is only
+  // written when HEAD moved, so a no-op leaves no trace of an update that did
+  // not happen.
   //
   // The branch is passed in rather than read back with `git branch`: callers
   // reach this from a registration git itself listed, so the extra spawn only
@@ -914,13 +914,7 @@ export class GitService {
 
     if (updated) {
       try {
-        await this.metadataService.updateLastSyncFromPath(
-          this.bareRepoPath,
-          worktreePath,
-          after,
-          "updated",
-          this.defaultBranch,
-        );
+        await this.metadataService.updateLastSyncFromPath(this.bareRepoPath, worktreePath, after);
       } catch (metadataError) {
         this.logger.warn(`Failed to update metadata for worktree: ${String(metadataError)}`);
       }
@@ -1095,13 +1089,7 @@ export class GitService {
     // Update metadata after reset (use path-based method)
     try {
       const currentCommit = await worktreeGit.revparse(["HEAD"]);
-      await this.metadataService.updateLastSyncFromPath(
-        this.bareRepoPath,
-        worktreePath,
-        currentCommit.trim(),
-        "updated",
-        this.defaultBranch,
-      );
+      await this.metadataService.updateLastSyncFromPath(this.bareRepoPath, worktreePath, currentCommit.trim());
     } catch (metadataError) {
       this.logger.warn(`Failed to update metadata after reset: ${String(metadataError)}`);
     }

@@ -2654,8 +2654,6 @@ describe("WorktreeSyncService", () => {
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-1",
-        createdFrom: { branch: "main", commit: "abc123" },
-        syncHistory: [],
       });
       mockGitService.getCurrentCommit.mockResolvedValue("abc123");
 
@@ -2673,8 +2671,6 @@ describe("WorktreeSyncService", () => {
         lastSyncCommit: "old-commit",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-1",
-        createdFrom: { branch: "main", commit: "old-commit" },
-        syncHistory: [],
       });
       mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
       mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");
@@ -2714,8 +2710,6 @@ describe("WorktreeSyncService", () => {
         lastSyncCommit: "old-commit",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-1",
-        createdFrom: { branch: "main", commit: "old-commit" },
-        syncHistory: [],
       });
       mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
       mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");
@@ -2786,8 +2780,6 @@ describe("WorktreeSyncService", () => {
         lastSyncCommit: "old-commit",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-1",
-        createdFrom: { branch: "main", commit: "old-commit" },
-        syncHistory: [],
       });
       mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
       mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");
@@ -2855,8 +2847,6 @@ describe("WorktreeSyncService", () => {
         lastSyncCommit: "old-commit",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-1",
-        createdFrom: { branch: "main", commit: "old-commit" },
-        syncHistory: [],
       });
       mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
       mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");
@@ -3003,8 +2993,6 @@ describe("WorktreeSyncService", () => {
         lastSyncCommit: "old-commit",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-1",
-        createdFrom: { branch: "main", commit: "old-commit" },
-        syncHistory: [],
       });
       mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
       mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");
@@ -3032,8 +3020,6 @@ describe("WorktreeSyncService", () => {
         lastSyncCommit: "old-commit",
         lastSyncDate: "2024-01-15T10:00:00Z",
         upstreamBranch: "origin/feature-1",
-        createdFrom: { branch: "main", commit: "old-commit" },
-        syncHistory: [],
       });
       mockGitService.getCurrentCommit.mockResolvedValue("new-local-commit");
       mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");

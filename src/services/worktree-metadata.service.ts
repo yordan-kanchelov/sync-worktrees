@@ -125,13 +125,7 @@ export class WorktreeMetadataService {
     }
   }
 
-  async updateLastSyncFromPath(
-    bareRepoPath: string,
-    worktreePath: string,
-    commit: string,
-    action: "created" | "updated" = "updated",
-    defaultBranch?: string,
-  ): Promise<void> {
+  async updateLastSyncFromPath(bareRepoPath: string, worktreePath: string, commit: string): Promise<void> {
     const worktreeDirName = this.getWorktreeDirectoryName(worktreePath);
     const existing = await this.loadMetadataFromPath(bareRepoPath, worktreePath);
 
@@ -167,15 +161,11 @@ export class WorktreeMetadataService {
           // No configured upstream, use constructed value
         }
 
-        const parentBranch = defaultBranch || GIT_CONSTANTS.DEFAULT_BRANCH;
-
         const created = await this.createInitialMetadataFromPath(
           bareRepoPath,
           worktreePath,
           currentCommit.trim(),
           upstreamBranch,
-          parentBranch,
-          currentCommit.trim(),
         );
         if (created) {
           this.logger.info(`  ✅ Created metadata for ${worktreeDirName}`);
@@ -192,16 +182,6 @@ export class WorktreeMetadataService {
     // Update metadata
     existing.lastSyncCommit = commit;
     existing.lastSyncDate = new Date().toISOString();
-
-    existing.syncHistory.push({
-      date: existing.lastSyncDate,
-      commit,
-      action,
-    });
-
-    if (existing.syncHistory.length > METADATA_CONSTANTS.MAX_HISTORY_ENTRIES) {
-      existing.syncHistory = existing.syncHistory.slice(-METADATA_CONSTANTS.MAX_HISTORY_ENTRIES);
-    }
 
     // Save using the directory name
     await this.saveMetadata(bareRepoPath, worktreeDirName, existing);
@@ -237,25 +217,12 @@ export class WorktreeMetadataService {
     worktreePath: string,
     commit: string,
     upstreamBranch: string,
-    parentBranch: string,
-    parentCommit: string,
   ): Promise<boolean> {
     const worktreeDirName = this.getWorktreeDirectoryName(worktreePath);
     const metadata: SyncMetadata = {
       lastSyncCommit: commit,
       lastSyncDate: new Date().toISOString(),
       upstreamBranch,
-      createdFrom: {
-        branch: parentBranch,
-        commit: parentCommit,
-      },
-      syncHistory: [
-        {
-          date: new Date().toISOString(),
-          commit,
-          action: "created",
-        },
-      ],
     };
 
     return this.saveMetadata(bareRepoPath, worktreeDirName, metadata);

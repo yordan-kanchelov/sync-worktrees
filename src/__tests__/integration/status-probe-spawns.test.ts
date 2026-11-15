@@ -120,7 +120,7 @@ describe("Status probe spawn count (E2E)", () => {
 
     const metadata = new WorktreeMetadataService(createMockLogger());
     const head = (await simpleGit(worktrees[2]).revparse(["HEAD"])).trim();
-    await metadata.updateLastSyncFromPath(bareRepo, worktrees[2], head, "updated", "main");
+    await metadata.updateLastSyncFromPath(bareRepo, worktrees[2], head);
     const created = await metadata.loadMetadataFromPath(bareRepo, worktrees[2]);
     expect(created?.upstreamBranch).toBe("origin/b");
 

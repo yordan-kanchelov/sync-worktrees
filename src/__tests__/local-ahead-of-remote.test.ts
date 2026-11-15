@@ -152,8 +152,6 @@ describe("Local Branch Ahead of Remote", () => {
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-01T00:00:00.000Z",
         upstreamBranch: "origin/feature-diverged",
-        createdFrom: { branch: "main", commit: "xyz789" },
-        syncHistory: [],
       });
       mockGitService.getCurrentCommit.mockResolvedValue("local456");
 

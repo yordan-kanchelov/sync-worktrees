@@ -502,22 +502,16 @@ export class WorktreeCreationService {
   }
 
   // Resolves to the worktree's HEAD, which the metadata records as lastSyncCommit.
-  private async createWorktreeMetadata(bareGit: SimpleGit, worktreePath: string, branchName: string): Promise<string> {
+  private async createWorktreeMetadata(worktreePath: string, branchName: string): Promise<string> {
     try {
       const worktreeGit = this.ctx.localGit(worktreePath, this.ctx.isLfsSkipEnabled());
       const currentCommit = (await worktreeGit.revparse(["HEAD"])).trim();
-      // refs/heads/<default>, not the bare name: a tag sharing the default
-      // branch's name resolves first and would record the tag's commit as the
-      // worktree's parent.
-      const parentCommit = await bareGit.revparse([`${GIT_CONSTANTS.REFS.HEADS}${this.ctx.defaultBranch()}`]);
 
       const written = await this.deps.metadata.createInitialMetadataFromPath(
         this.ctx.bareRepoPath,
         worktreePath,
         currentCommit,
         `origin/${branchName}`,
-        this.ctx.defaultBranch(),
-        parentCommit.trim(),
       );
       // Metadata is keyed by directory name. A record under this name that
       // belongs to another branch was left alone, and a worktree cannot be
@@ -543,7 +537,7 @@ export class WorktreeCreationService {
     createdNewBranch: boolean,
   ): Promise<AddWorktreeResult> {
     try {
-      const head = await this.createWorktreeMetadata(bareGit, absoluteWorktreePath, branchName);
+      const head = await this.createWorktreeMetadata(absoluteWorktreePath, branchName);
       return { status: "created", head };
     } catch (metadataError) {
       this.logger.warn(`  - Metadata creation failed for '${branchName}', removing worktree to prevent orphan`);

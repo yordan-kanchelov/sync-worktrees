@@ -552,8 +552,6 @@ describe("GitService", () => {
         ".bare/repo",
         "/test/worktrees/feature-1",
         "newcommit123",
-        "updated",
-        "main",
       );
     });
 
@@ -570,14 +568,12 @@ describe("GitService", () => {
         ".bare/repo",
         "/test/worktrees/main",
         "newcommit123",
-        "updated",
-        "main",
       );
     });
 
     // HEAD already sat at origin/<branch> when the merge ran (it got there
     // between the runner's behind probe and the fast-forward), so nothing was
-    // updated: lastSyncCommit/lastSyncDate and syncHistory must stay as they are.
+    // updated: lastSyncCommit/lastSyncDate must stay as they are.
     it("leaves the sync metadata alone when the fast-forward moved nothing", async () => {
       await gitService.initialize();
       mockMetadataService.updateLastSyncFromPath.mockClear();

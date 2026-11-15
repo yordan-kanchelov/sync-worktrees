@@ -153,8 +153,6 @@ describe("Rebased Branch Handling", () => {
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-01T00:00:00.000Z",
         upstreamBranch: "origin/feature-no-local-changes",
-        createdFrom: { branch: "main", commit: "xyz789" },
-        syncHistory: [],
       });
 
       mockGitService.getCurrentCommit.mockResolvedValue("abc123");
@@ -196,8 +194,6 @@ describe("Rebased Branch Handling", () => {
         lastSyncCommit: "abc123",
         lastSyncDate: "2024-01-01T00:00:00.000Z",
         upstreamBranch: "origin/feature-with-local-changes",
-        createdFrom: { branch: "main", commit: "xyz789" },
-        syncHistory: [],
       });
 
       mockGitService.getCurrentCommit.mockResolvedValue("local456");

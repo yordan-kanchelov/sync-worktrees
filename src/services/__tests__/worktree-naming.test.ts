@@ -128,8 +128,6 @@ describe("worktree directory naming (real git)", () => {
           lastSyncCommit: "abc123",
           lastSyncDate: new Date().toISOString(),
           upstreamBranch: "origin/feature-x",
-          createdFrom: { branch: "main", commit: "abc123" },
-          syncHistory: [],
         }),
       );
 

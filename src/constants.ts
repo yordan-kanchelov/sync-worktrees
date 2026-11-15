@@ -196,7 +196,6 @@ export const TRASH_CONSTANTS = {
 } as const;
 
 export const METADATA_CONSTANTS = {
-  MAX_HISTORY_ENTRIES: 10,
   METADATA_FILENAME: "sync-metadata.json",
   WORKTREE_METADATA_PATH: ".git/worktrees",
   DIVERGED_INFO_FILE: ".diverged-info.json",
