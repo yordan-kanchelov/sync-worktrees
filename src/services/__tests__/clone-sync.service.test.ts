@@ -3472,7 +3472,16 @@ describe("CloneSyncService", () => {
           if (args[0] === "cat-file") return options.blobContents?.[args[2]] ?? "";
           return "";
         });
-        gitMock.status.mockResolvedValue({ not_added: [], modified: [], deleted: [], ...options.status });
+        gitMock.status.mockResolvedValue({
+          not_added: [],
+          modified: [],
+          deleted: [],
+          renamed: [],
+          created: [],
+          conflicted: [],
+          files: [],
+          ...options.status,
+        });
         // `.git` stays a directory for the primary-checkout guard; every
         // candidate is a regular file unless the test says otherwise.
         (fs.lstat as unknown as Mock).mockImplementation(async (target: unknown) => {

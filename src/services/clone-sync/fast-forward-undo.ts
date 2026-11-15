@@ -2,6 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 
 import { getErrorMessage } from "../../utils/errors";
+import { unbucketedTrackedPaths } from "../worktree-status.service";
 
 import { asLiteralPathspec, inBatches, lstatOrNull, readHeadCommit, summarizeGitFailure } from "./git-helpers";
 
@@ -220,7 +221,9 @@ async function readWorktreeDeviations(
     const status = await git.status();
     return {
       untracked: new Set(status.not_added),
-      modified: new Set(status.modified),
+      // A type change (` T`, a file the merge turned into a symlink) is in no
+      // bucket; still proved against origin before anything is restored.
+      modified: new Set([...status.modified, ...unbucketedTrackedPaths(status)]),
       missing: new Set(status.deleted),
     };
   } catch (error) {

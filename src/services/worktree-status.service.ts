@@ -158,7 +158,7 @@ const MAX_NAMED_UNCOMMITTED_PATHS = 3;
 
 // simple-git buckets only some porcelain codes: a type change (` T`, `T `) or a
 // mixed state (`MD`, `AD`) is in `files` alone, so cleanliness is read from it.
-function unbucketedTrackedPaths(status: StatusResult): string[] {
+export function unbucketedTrackedPaths(status: StatusResult): string[] {
   const bucketed = new Set([
     ...status.modified,
     ...status.deleted,
