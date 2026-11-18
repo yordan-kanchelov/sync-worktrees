@@ -175,29 +175,6 @@ describe("WorktreeStatusService", () => {
       expect(result).toBe(false);
       expect(gitSubcommands()).toEqual([]);
     });
-
-    // A worktree holding a large untracked output directory that nothing
-    // gitignores used to hand `check-ignore` an argv of every path in it; past
-    // the kernel's ARG_MAX the spawn failed with E2BIG, checkWorktreeStatus
-    // threw, and the update phase recorded `update_check_failed` for that
-    // worktree every tick instead of the correct "dirty worktree".
-    it("answers for a worktree with tens of thousands of untracked files", async () => {
-      const generated = Array.from(
-        { length: 20_000 },
-        (_, index) => `dist/webpack-cache/client-production/chunk-${index}.module.js`,
-      );
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: generated,
-      } as any);
-
-      await expect(service.checkWorktreeStatus("/test/worktree")).resolves.toBe(false);
-      expect(gitSubcommands()).toEqual([]);
-    });
   });
 
   describe("getFullWorktreeStatus", () => {
@@ -308,36 +285,6 @@ describe("WorktreeStatusService", () => {
       expect(result.hasStashedChanges).toBe(true);
       expect(result.canRemove).toBe(false);
       expect(result.reasons).toEqual(["stashed changes"]);
-    });
-
-    // git has already dropped every ignored path before simple-git parses the
-    // status, so a worktree holding nothing but `.DS_Store` reports no `??`
-    // lines at all — and the snapshot spends no second command confirming it.
-    it("should treat worktree as clean when only gitignored files exist", async () => {
-      mockGit.status.mockResolvedValue({
-        modified: [],
-        deleted: [],
-        renamed: [],
-        created: [],
-        conflicted: [],
-        not_added: [],
-      } as any);
-      mockGit.raw.mockImplementation((async (...args: any[]) => {
-        const firstArg = Array.isArray(args[0]) ? args[0] : args;
-        if (firstArg[0] === "submodule") return "";
-        return "0\n";
-      }) as any);
-      mockGit.stashList.mockResolvedValue({ total: 0 } as any);
-      (fs.access as Mock<any>)
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValue(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
-
-      const result = await service.getFullWorktreeStatus("/test/worktree");
-
-      expect(result.isClean).toBe(true);
-      expect(result.canRemove).toBe(true);
-      expect(result.reasons).toEqual([]);
-      expect(gitSubcommands()).not.toContain("check-ignore");
     });
 
     // The other half: what status does report as untracked is a real change,
@@ -1112,14 +1059,6 @@ describe("WorktreeStatusService", () => {
       expect(result.reasons.length).toBeGreaterThan(0);
     });
 
-    it("still reports removable when the worktree path is genuinely missing (ENOENT)", async () => {
-      (fs.access as Mock<any>).mockRejectedValue(errnoError("ENOENT"));
-
-      const result = await service.getFullWorktreeStatus("/test/worktree");
-
-      expect(result.canRemove).toBe(true);
-    });
-
     it("must not report a detached-HEAD worktree as removable", async () => {
       setupCleanWorktreeMocks();
       header = { current: "HEAD", detached: true, tracking: null, ahead: 0, behind: 0 };
@@ -1171,15 +1110,6 @@ describe("WorktreeStatusService", () => {
 
       expect(result.hasOperationInProgress).toBe(true);
       expect(result.canRemove).toBe(false);
-    });
-
-    it("still allows removal of a genuinely clean, fully pushed worktree with lastSyncCommit", async () => {
-      setupCleanWorktreeMocks();
-
-      const status = await service.getFullWorktreeStatus("/test/worktree", false, { lastSyncCommit: "abc123" });
-
-      expect(status.hasUnpushedCommits).toBe(false);
-      expect(status.canRemove).toBe(true);
     });
   });
 

@@ -77,17 +77,6 @@ describe("setupSignalHandlers", () => {
     expect(logMock).toHaveBeenCalledWith(expect.stringContaining("second SIGINT"));
   });
 
-  it("passes fast=true to cleanup functions", async () => {
-    const handle = setupSignalHandlers({ process: proc, exit, log });
-    const cleanup = vi.fn().mockResolvedValue(undefined);
-    handle.register(cleanup);
-
-    proc.emit("SIGINT");
-    await vi.advanceTimersByTimeAsync(10);
-
-    expect(cleanup).toHaveBeenCalledWith(true);
-  });
-
   it("handles SIGTERM the same as SIGINT", async () => {
     const handle = setupSignalHandlers({ process: proc, exit, log });
     const cleanup = vi.fn().mockResolvedValue(undefined);

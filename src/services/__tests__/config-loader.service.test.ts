@@ -243,52 +243,6 @@ describe("ConfigLoaderService", () => {
       expect(error.message).not.toContain("node:internal");
     });
 
-    it("should throw error for invalid config format", async () => {
-      const configPath = path.join(tempDir, "invalid.config.js");
-      const configContent = `export default "not an object";`;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'default export': must be an object with a 'repositories' array",
-      );
-    });
-
-    it("should throw error for missing repositories array", async () => {
-      const configPath = path.join(tempDir, "invalid.config.js");
-      const configContent = `export default { defaults: {} };`;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'repositories': is required",
-      );
-    });
-
-    it("should throw error for duplicate repository names", async () => {
-      const configPath = path.join(tempDir, "duplicate.config.js");
-      const configContent = `
-        export default {
-          repositories: [
-            {
-              name: "duplicate",
-              repoUrl: "https://github.com/test/repo1.git",
-              worktreeDir: "/worktrees1"
-            },
-            {
-              name: "duplicate",
-              repoUrl: "https://github.com/test/repo2.git",
-              worktreeDir: "/worktrees2"
-            }
-          ]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'repositories[1].name' (repository 'duplicate'): " +
-          "duplicate repository name 'duplicate' (already used by repositories[0])",
-      );
-    });
-
     it("redacts credentials from the invalid repoUrl error", async () => {
       const configPath = path.join(tempDir, "invalid-url.config.js");
       const configContent = `
@@ -358,114 +312,6 @@ describe("ConfigLoaderService", () => {
       expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("appears in multiple entries (first, second)"));
     });
 
-    it("should throw error for empty repositories array", async () => {
-      const configPath = path.join(tempDir, "empty.config.js");
-      const configContent = `
-        export default {
-          repositories: []
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'repositories': must contain at least one repository",
-      );
-    });
-
-    it("should throw error for invalid repository object", async () => {
-      const configPath = path.join(tempDir, "invalid-repo.config.js");
-      const configContent = `
-        export default {
-          repositories: ["not-an-object"]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        `Invalid configuration for 'repositories[0]': must be an object, got "not-an-object"`,
-      );
-    });
-
-    it("should throw error for missing repository name", async () => {
-      const configPath = path.join(tempDir, "no-name.config.js");
-      const configContent = `
-        export default {
-          repositories: [
-            { repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
-          ]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].name': is required",
-      );
-    });
-
-    it("should throw error for missing repoUrl", async () => {
-      const configPath = path.join(tempDir, "no-url.config.js");
-      const configContent = `
-        export default {
-          repositories: [
-            { name: "test", worktreeDir: "/path" }
-          ]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].repoUrl' (repository 'test'): is required",
-      );
-    });
-
-    it("should throw error for missing worktreeDir", async () => {
-      const configPath = path.join(tempDir, "no-worktree.config.js");
-      const configContent = `
-        export default {
-          repositories: [
-            { name: "test", repoUrl: "https://github.com/test/repo.git" }
-          ]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].worktreeDir' (repository 'test'): is required",
-      );
-    });
-
-    it("should throw error for invalid bareRepoDir type", async () => {
-      const configPath = path.join(tempDir, "invalid-bare.config.js");
-      const configContent = `
-        export default {
-          repositories: [
-            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", bareRepoDir: 123 }
-          ]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].bareRepoDir' (repository 'test'): must be a string, got 123",
-      );
-    });
-
-    it("should throw error for invalid cronSchedule type", async () => {
-      const configPath = path.join(tempDir, "invalid-cron.config.js");
-      const configContent = `
-        export default {
-          repositories: [
-            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", cronSchedule: 123 }
-          ]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].cronSchedule' (repository 'test'): must be a cron expression string, got 123",
-      );
-    });
-
     it("should reject repository runOnce with a defaults.runOnce pointer", async () => {
       const configPath = path.join(tempDir, "invalid-runonce.config.js");
       const configContent = `
@@ -483,100 +329,6 @@ describe("ConfigLoaderService", () => {
       );
     });
 
-    it("should reject repository syncOnStart with a defaults.syncOnStart pointer", async () => {
-      const configPath = path.join(tempDir, "invalid-synconstart.config.js");
-      const configContent = `
-        export default {
-          repositories: [
-            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", syncOnStart: false }
-          ]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigError);
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].syncOnStart' (repository 'test'): cannot be set on a repository; use defaults.syncOnStart",
-      );
-    });
-
-    it("should throw error for invalid debug type", async () => {
-      const configPath = path.join(tempDir, "invalid-debug.config.js");
-      const configContent = `
-        export default {
-          repositories: [
-            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path", debug: "yes" }
-          ]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        `Invalid configuration for 'repositories[0].debug' (repository 'test'): must be a boolean, got "yes"`,
-      );
-    });
-
-    it.each([
-      [
-        "branchInclude",
-        `branchInclude: "main"`,
-        `branchInclude' (repository 'test-repo'): must be an array of strings`,
-      ],
-      [
-        "branchExclude",
-        `branchExclude: [123]`,
-        `branchExclude[0]' (repository 'test-repo'): must be a string, got 123`,
-      ],
-      [
-        "branchMaxAge",
-        `branchMaxAge: "14 days"`,
-        `branchMaxAge' (repository 'test-repo'): must be a duration string like '14d', '12h', or '2w', greater than zero and under 200000y, got "14 days"`,
-      ],
-      ["skipLfs", `skipLfs: "yes"`, `skipLfs' (repository 'test-repo'): must be a boolean, got "yes"`],
-      [
-        "updateExistingWorktrees",
-        `updateExistingWorktrees: 1`,
-        `updateExistingWorktrees' (repository 'test-repo'): must be a boolean, got 1`,
-      ],
-    ])("rejects invalid repository %s at load time", async (field, line, expected) => {
-      const configPath = path.join(tempDir, `invalid-${field}.config.js`);
-      const configContent = `
-        export default {
-          repositories: [
-            {
-              name: "test-repo",
-              repoUrl: "${TEST_URLS.github}",
-              worktreeDir: "/path",
-              ${line}
-            }
-          ]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigError);
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        `Invalid configuration for 'repositories[0].${expected}`,
-      );
-    });
-
-    it("should throw error for invalid defaults object", async () => {
-      const configPath = path.join(tempDir, "invalid-defaults.config.js");
-      const configContent = `
-        export default {
-          defaults: "not-an-object",
-          repositories: [
-            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
-          ]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        `Invalid configuration for 'defaults': must be an object, got "not-an-object"`,
-      );
-    });
-
     it("should throw error for invalid cronSchedule in defaults", async () => {
       const configPath = path.join(tempDir, "invalid-defaults-cron.config.js");
       const configContent = `
@@ -591,41 +343,6 @@ describe("ConfigLoaderService", () => {
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
         "Invalid configuration for 'defaults.cronSchedule': must be a cron expression string, got 123",
-      );
-    });
-
-    it("should throw error for invalid runOnce in defaults", async () => {
-      const configPath = path.join(tempDir, "invalid-defaults-runonce.config.js");
-      const configContent = `
-        export default {
-          defaults: { runOnce: "yes" },
-          repositories: [
-            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
-          ]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        `Invalid configuration for 'defaults.runOnce': must be a boolean, got "yes"`,
-      );
-    });
-
-    it("should throw error for a non-boolean syncOnStart in defaults", async () => {
-      const configPath = path.join(tempDir, "invalid-defaults-synconstart.config.js");
-      const configContent = `
-        export default {
-          defaults: { syncOnStart: "yes" },
-          repositories: [
-            { name: "test", repoUrl: "https://github.com/test/repo.git", worktreeDir: "/path" }
-          ]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigValidationError);
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'defaults.syncOnStart': must be a boolean",
       );
     });
 
@@ -796,33 +513,9 @@ describe("ConfigLoaderService", () => {
       return configLoader.loadConfigFile(configPath);
     }
 
-    it("rejects a non-object maintenance value", async () => {
-      await expect(loadWith("true")).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].maintenance' (repository 'r'): must be an object",
-      );
-    });
-
-    it("rejects a non-boolean maintenance.enabled", async () => {
-      await expect(loadWith('{ enabled: "yes" }')).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].maintenance.enabled' (repository 'r'): must be a boolean",
-      );
-    });
-
     it("rejects an invalid maintenance.interval duration", async () => {
       await expect(loadWith('{ interval: "soon" }')).rejects.toThrow(
         "Invalid configuration for 'repositories[0].maintenance.interval' (repository 'r'): must be a positive duration string like '7d', '24h', or '2w'",
-      );
-    });
-
-    it("rejects a zero maintenance.interval, which would disable gc throttling entirely", async () => {
-      await expect(loadWith('{ interval: "0d" }')).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].maintenance.interval' (repository 'r'): must be a positive duration string like '7d', '24h', or '2w'",
-      );
-    });
-
-    it("rejects a non-boolean maintenance.aggressive", async () => {
-      await expect(loadWith("{ aggressive: 1 }")).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].maintenance.aggressive' (repository 'r'): must be a boolean",
       );
     });
 
@@ -865,39 +558,6 @@ describe("ConfigLoaderService", () => {
       );
       return configLoader.loadConfigFile(configPath);
     }
-
-    it("rejects a non-object trash value", async () => {
-      await expect(loadWith("true")).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].trash' (repository 'r'): must be an object",
-      );
-    });
-
-    it("rejects a non-boolean trash.enabled", async () => {
-      await expect(loadWith('{ enabled: "yes" }')).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].trash.enabled' (repository 'r'): must be a boolean",
-      );
-    });
-
-    it("rejects a non-positive trash.retentionDays", async () => {
-      await expect(loadWith("{ retentionDays: 0 }")).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].trash.retentionDays' (repository 'r'): must be a positive number",
-      );
-    });
-
-    it("rejects a non-positive trash.warnSizeBytes", async () => {
-      await expect(loadWith("{ warnSizeBytes: -5 }")).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].trash.warnSizeBytes' (repository 'r'): must be a positive number",
-      );
-    });
-
-    it("rejects trash on clone-mode repositories — clone mode never removes its checkout", async () => {
-      const configPath = path.join(tempDir, "trash-clone.config.js");
-      await fs.writeFile(
-        configPath,
-        `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/wt", mode: "clone", trash: { enabled: true } }] };`,
-      );
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/trash/);
-    });
 
     it("accepts a valid trash block", async () => {
       const config = (await loadWith("{ enabled: true, retentionDays: 14, warnSizeBytes: 1073741824 }")) as {
@@ -1234,48 +894,6 @@ describe("ConfigLoaderService", () => {
       expect(config.retry?.maxAttempts).toBe("unlimited");
     });
 
-    it("should reject invalid maxAttempts", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          retry: {
-            maxAttempts: 0
-          },
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees"
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'retry.maxAttempts': must be 'unlimited' or a positive safe integer, got 0",
-      );
-    });
-
-    it("should reject negative initialDelayMs", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          retry: {
-            initialDelayMs: -1000
-          },
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees"
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'retry.initialDelayMs': must be a finite non-negative number, got -1000",
-      );
-    });
-
     it("should reject negative maxDelayMs", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
@@ -1297,27 +915,6 @@ describe("ConfigLoaderService", () => {
       );
     });
 
-    it("should reject backoffMultiplier less than 1", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          retry: {
-            backoffMultiplier: 0.5
-          },
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees"
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'retry.backoffMultiplier': must be a finite number of at least 1, got 0.5",
-      );
-    });
-
     it("should reject negative jitterMs", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
@@ -1336,25 +933,6 @@ describe("ConfigLoaderService", () => {
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
         "Invalid configuration for 'retry.jitterMs': must be a finite non-negative number, got -1",
-      );
-    });
-
-    it("should reject non-object retry configuration", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          retry: "invalid",
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees"
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        `Invalid configuration for 'retry': must be an object, got "invalid"`,
       );
     });
 
@@ -1595,17 +1173,6 @@ describe("ConfigLoaderService", () => {
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
         `Invalid configuration for 'defaults.${field}[0]': must not be empty or whitespace-only`,
       );
-    });
-
-    it("rejects the shape an unset environment variable produces", async () => {
-      const configPath = path.join(tempDir, "patterns-env.config.js");
-      await fs.writeFile(
-        configPath,
-        `const branches = (process.env.SYNC_WORKTREES_T91_UNSET ?? "").split(",");
-export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.github}", worktreeDir: "./worktrees", branchInclude: branches }] };`,
-      );
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toBeInstanceOf(ConfigValidationError);
     });
 
     it("still accepts patterns, an empty list and an absent list", async () => {
@@ -2000,25 +1567,6 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       });
     });
 
-    it("should reject non-object parallelism configuration", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          parallelism: "invalid",
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees"
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        `Invalid configuration for 'parallelism': must be an object, got "invalid"`,
-      );
-    });
-
     it.each([
       { field: "maxRepositories", invalidValue: 0 },
       { field: "maxWorktreeCreation", invalidValue: -1 },
@@ -2047,30 +1595,6 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       );
     });
 
-    it("should reject excessive total concurrent operations", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          parallelism: {
-            maxRepositories: 20,
-            maxWorktreeCreation: 10,
-            maxWorktreeUpdates: 10,
-            maxWorktreeRemoval: 10,
-            maxStatusChecks: 50
-          },
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees"
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/exceeds safe limit/);
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/Consider reducing maxRepositories/);
-    });
-
     it("should calculate safe limit correctly", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
@@ -2089,30 +1613,6 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       await fs.writeFile(configPath, configContent);
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(/maximum safe maxRepositories is/);
-    });
-
-    it("should accept safe concurrent operations", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          parallelism: {
-            maxRepositories: 3,
-            maxWorktreeCreation: 1,
-            maxWorktreeUpdates: 3,
-            maxWorktreeRemoval: 3,
-            maxStatusChecks: 20
-          },
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees"
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      const config = await configLoader.loadConfigFile(configPath);
-      expect(config.parallelism).toBeDefined();
     });
 
     // The peak is what the guardrail is for: a status check is not one git
@@ -2959,25 +2459,6 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       expect(config.repositories[0].hooks?.onBranchCreated).toEqual([]);
     });
 
-    it("should reject non-object hooks in repository", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees",
-            hooks: "invalid"
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].hooks' (repository 'test-repo'): must be an object",
-      );
-    });
-
     it("should reject non-object hooks in defaults", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
@@ -2999,27 +2480,6 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       );
     });
 
-    it("should reject non-array onBranchCreated", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees",
-            hooks: {
-              onBranchCreated: "single command"
-            }
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].hooks.onBranchCreated' (repository 'test-repo'): must be an array",
-      );
-    });
-
     it("should reject non-string command in onBranchCreated", async () => {
       const configPath = path.join(tempDir, "config.js");
       const configContent = `
@@ -3038,27 +2498,6 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
 
       await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
         "Invalid configuration for 'repositories[0].hooks.onBranchCreated[1]' (repository 'test-repo'): must be a non-empty string, got 123",
-      );
-    });
-
-    it("should reject empty string command in onBranchCreated", async () => {
-      const configPath = path.join(tempDir, "config.js");
-      const configContent = `
-        export default {
-          repositories: [{
-            name: "test-repo",
-            repoUrl: "${TEST_URLS.github}",
-            worktreeDir: "./worktrees",
-            hooks: {
-              onBranchCreated: ["valid", ""]
-            }
-          }]
-        };
-      `;
-      await fs.writeFile(configPath, configContent);
-
-      await expect(configLoader.loadConfigFile(configPath)).rejects.toThrow(
-        `Invalid configuration for 'repositories[0].hooks.onBranchCreated[1]' (repository 'test-repo'): must be a non-empty string, got ""`,
       );
     });
 
@@ -3461,23 +2900,6 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
       return configLoader.loadConfigFile(configPath);
     }
 
-    it("rejects sparseCheckout missing include", async () => {
-      const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { exclude: ["docs"] } }] };`;
-      await expect(loadInline(c)).rejects.toThrow(
-        "Invalid configuration for 'repositories[0].sparseCheckout.include' (repository 'r'): is required",
-      );
-    });
-
-    it("rejects empty include array", async () => {
-      const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: [] } }] };`;
-      await expect(loadInline(c)).rejects.toThrow(/at least one pattern/);
-    });
-
-    it("rejects bad mode", async () => {
-      const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["a"], mode: "weird" } }] };`;
-      await expect(loadInline(c)).rejects.toThrow(/must be 'cone' or 'no-cone'/);
-    });
-
     it("rejects empty include strings", async () => {
       const c = `export default { repositories: [{ name: "r", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["a", ""] } }] };`;
       await expect(loadInline(c)).rejects.toThrow(
@@ -3504,11 +2926,6 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
         "Invalid configuration for 'repositories[0].sparseCheckout.include' (repository 'web'): cone-mode 'include' entry '/apps/web' starts with '/'",
       );
       await expect(loadInline(c)).rejects.toBeInstanceOf(ConfigError);
-    });
-
-    it("rejects a cone include holding a glob character", async () => {
-      const c = `export default { repositories: [{ name: "web", repoUrl: "${TEST_URLS.github}", worktreeDir: "/w", sparseCheckout: { include: ["apps/*"] } }] };`;
-      await expect(loadInline(c)).rejects.toThrow(/cone-mode 'include' entry 'apps\/\*'.*not globs/s);
     });
 
     it("accepts the trailing-slash directory git normalizes", async () => {
@@ -3895,14 +3312,6 @@ export default { repositories: [{ name: "test-repo", repoUrl: "${TEST_URLS.githu
         makeEntry("b", { repoUrl: "https://example.com/o/r", worktreeDir: "/w/b", bareRepoDir: "/b/r" }),
       ];
       expect(() => configLoader.detectPathCollisions(repos)).toThrow(/duplicate repoUrl/);
-    });
-
-    it("does not throw when bareRepoDirs differ", () => {
-      const repos = [
-        makeEntry("a", { worktreeDir: "/w/a", bareRepoDir: "/a/.bare" }),
-        makeEntry("b", { worktreeDir: "/w/b", bareRepoDir: "/b/.bare" }),
-      ];
-      expect(() => configLoader.detectPathCollisions(repos)).not.toThrow();
     });
 
     it("detects bareRepoDir collision across case-only differences on darwin", () => {

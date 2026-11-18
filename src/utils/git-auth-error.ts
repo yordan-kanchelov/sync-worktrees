@@ -5,7 +5,7 @@ import { getErrorMessage } from "./errors";
  * we can never supply (every git subprocess runs non-interactively: see
  * sanitizeGitEnv). Matched as substrings of the error message.
  */
-export const GIT_AUTH_ERROR_PATTERNS = Object.freeze([
+const GIT_AUTH_ERROR_PATTERNS = Object.freeze([
   "terminal prompts disabled",
   "could not read Username",
   "could not read Password",

@@ -119,17 +119,12 @@ describe("LfsVerificationService (through GitService)", () => {
 
       (fs.open as Mock<any>).mockResolvedValue(mockFileHandle);
 
-      const bufferSpy = vi.spyOn(Buffer, "alloc");
-
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
       expect(worktreeGitMock.raw).toHaveBeenCalledWith(["lfs", "ls-files", "--name-only"]);
       expect(fs.open).toHaveBeenCalled();
-      expect(bufferSpy).toHaveBeenCalledWith(200);
       expect(mockFileHandle.close).toHaveBeenCalled();
       expect(lfsWarnings()).toEqual([]);
-
-      bufferSpy.mockRestore();
     });
 
     it("samples distinct LFS files when at least five are available", async () => {

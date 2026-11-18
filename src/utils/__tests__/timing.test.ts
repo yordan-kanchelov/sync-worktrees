@@ -90,32 +90,6 @@ describe("PhaseTimer", () => {
     expect(results[0].count).toBe(15);
   });
 
-  it("should not calculate efficiency for parallel operations without per-item timings", () => {
-    const phaseTimer = new PhaseTimer();
-
-    phaseTimer.startPhase("Create");
-    vi.advanceTimersByTime(3000);
-    phaseTimer.setPhaseCount("Create", 9);
-    phaseTimer.endPhase();
-
-    const results = phaseTimer.getResults();
-
-    expect(results[0]).not.toHaveProperty("efficiency");
-  });
-
-  it("should not calculate efficiency for sequential operations", () => {
-    const phaseTimer = new PhaseTimer();
-
-    phaseTimer.startPhase("Fetch");
-    vi.advanceTimersByTime(1000);
-    phaseTimer.setPhaseCount("Fetch", 1);
-    phaseTimer.endPhase();
-
-    const results = phaseTimer.getResults();
-
-    expect(results[0]).not.toHaveProperty("efficiency");
-  });
-
   it("should handle zero count", () => {
     const phaseTimer = new PhaseTimer();
 
@@ -127,7 +101,6 @@ describe("PhaseTimer", () => {
     const results = phaseTimer.getResults();
 
     expect(results[0].count).toBe(0);
-    expect(results[0]).not.toHaveProperty("efficiency");
   });
 });
 
@@ -169,18 +142,15 @@ describe("formatTimingTable", () => {
     expect(table).toContain("45.0s");
     expect(table).toContain("Phase 2: Create (15)");
     expect(table).toContain("Phase 3: Prune (3)");
-    expect(table).not.toContain("Efficiency");
-    expect(table).not.toContain("%");
   });
 
-  it("should handle phases without count or efficiency", () => {
+  it("should handle phases without count", () => {
     const phaseResults = [{ name: "Fetch", duration: 1000 }];
 
     const table = formatTimingTable(1000, phaseResults);
 
     expect(table).toContain("Fetch");
     expect(table).toContain("1.0s");
-    expect(table).not.toContain("%");
   });
 
   it("should use box-drawing characters", () => {

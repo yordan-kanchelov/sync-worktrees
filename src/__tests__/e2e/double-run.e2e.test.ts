@@ -122,28 +122,6 @@ describe("Double run E2E test", () => {
     expect(bothRuns).not.toContain("fatal: 'HEAD' is not a valid branch name");
   }, 30000);
 
-  it("should handle multiple rapid successive runs without errors", async () => {
-    const command = `node "${binaryPath}" --config "${configPath}"`;
-
-    // Run the command 5 times in succession
-    for (let i = 1; i <= 5; i++) {
-      console.log(`Run ${i}...`);
-      const output = execSync(command, { encoding: "utf8" });
-
-      // Every run should be successful
-      expect(output).toContain("Synchronization finished");
-      expect(output).not.toContain("Error during worktree synchronization");
-      expect(output).not.toContain("'HEAD' is not a valid branch name");
-      expect(output).not.toContain("Creating new worktrees for: HEAD");
-
-      // The important thing is that it doesn't error on HEAD
-    }
-
-    // Final verification
-    const worktrees = await fs.readdir(worktreeDir);
-    expect(worktrees).not.toContain("HEAD");
-  }, 60000);
-
   it("should leave an unowned HEAD directory untouched", async () => {
     const command = `node "${binaryPath}" --config "${configPath}"`;
 

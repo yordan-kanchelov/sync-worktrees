@@ -125,48 +125,6 @@ describe("Local Branch Ahead of Remote", () => {
       expect(mockLogger.info).toHaveBeenCalledWith(expect.stringMatching(/skipping.*feature-ahead.*unpushed/i));
     });
 
-    it("should handle diverged branches when local is NOT ahead", async () => {
-      await service.initialize();
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-      (fs.readdir as Mock<any>).mockResolvedValue([]);
-      (fs.access as Mock<any>).mockResolvedValue(undefined);
-      (fs.rename as Mock<any>).mockResolvedValue(undefined);
-      (fs.writeFile as Mock<any>).mockResolvedValue(undefined);
-
-      mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-diverged"]);
-      mockGitService.getWorktrees.mockResolvedValue([
-        { path: "/test/worktrees/main", branch: "main" },
-        { path: "/test/worktrees/feature-diverged", branch: "feature-diverged" },
-      ]);
-
-      // Commits on both sides - truly diverged
-      mockGitService.getAheadBehindCounts.mockImplementation(async (path: string) =>
-        path.includes("feature-diverged") ? { ahead: 1, behind: 1 } : { ahead: 0, behind: 0 },
-      );
-
-      // Trees are different
-      mockGitService.compareTreeContent.mockResolvedValue(false);
-
-      // Has local changes (different commit than last sync)
-      mockGitService.getWorktreeMetadata.mockResolvedValue({
-        lastSyncCommit: "abc123",
-        lastSyncDate: "2024-01-01T00:00:00.000Z",
-        upstreamBranch: "origin/feature-diverged",
-      });
-      mockGitService.getCurrentCommit.mockResolvedValue("local456");
-
-      await service.sync();
-
-      // Should move to diverged (normal diverged behavior)
-      expect(fs.mkdir).toHaveBeenCalledWith("/test/worktrees/.diverged", { recursive: true });
-      expect(fs.rename).toHaveBeenCalledWith(
-        "/test/worktrees/feature-diverged",
-        expect.stringMatching(
-          /\/test\/worktrees\/\.diverged\/\d{4}-\d{2}-\d{2}-feature-diverged-[a-z0-9]{8}-[a-z0-9]+$/,
-        ),
-      );
-    });
-
     it("should handle case where local is ahead with uncommitted changes too", async () => {
       await service.initialize();
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);

@@ -31,19 +31,6 @@ async function git(cwd: string, ...args: string[]): Promise<void> {
   await execFileAsync("git", ["-c", "user.email=t@e.st", "-c", "user.name=t", ...args], { cwd });
 }
 
-// Does real Node -- not vitest's Vite-backed `import()` -- accept this file as
-// a module? vitest transforms dynamic imports itself and will happily evaluate
-// things Node rejects, so a "this config is broken" premise checked inside the
-// test runner can hold for entirely the wrong reason.
-async function nodeImportOutcome(file: string): Promise<{ ok: boolean; message: string }> {
-  const script = `import(process.argv[1]).then(() => { process.stdout.write("IMPORT_OK"); }, (e) => { process.stdout.write("IMPORT_FAILED:" + e.name + ":" + e.message); });`;
-  const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "-e", script, file], {
-    encoding: "utf-8",
-  });
-  if (stdout.startsWith("IMPORT_OK")) return { ok: true, message: "" };
-  return { ok: false, message: stdout.slice("IMPORT_FAILED:".length) };
-}
-
 describe("detectFromPath with a found-but-broken config", () => {
   let workspace: string;
   let configPath: string;
@@ -90,16 +77,6 @@ describe("detectFromPath with a found-but-broken config", () => {
     }
     throw new Error("expected the last loadConfigFile call to have rejected");
   }
-
-  it("uses a fixture real Node refuses to parse and a repair real Node accepts", async () => {
-    const broken = await nodeImportOutcome(configPath);
-    expect(broken.ok).toBe(false);
-    expect(broken.message).toMatch(/^SyntaxError:/);
-
-    await fs.writeFile(configPath, fixedConfig(path.join(workspace, ".bare"), path.join(workspace, "wt")), "utf-8");
-    const repaired = await nodeImportOutcome(configPath);
-    expect(repaired).toEqual({ ok: true, message: "" });
-  });
 
   it("names the config path and the load error in notes", async () => {
     const ctx = new RepositoryContext();

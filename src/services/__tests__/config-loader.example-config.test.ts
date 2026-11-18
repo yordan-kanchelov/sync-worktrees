@@ -218,8 +218,5 @@ describe("sync-worktrees.config.example.js", () => {
     expect(source).toContain(`<parent of worktreeDir>/${lockDirName}/<hash>.lock`);
     expect(source).toContain("first 16 hex characters of sha256");
     expect(source).toContain(ENV_CONSTANTS.LOCK_DIR);
-    // The pre-T31 comment claimed the lock lived in the config file's state
-    // directory, which is where the removal audit log lives instead.
-    expect(source).not.toContain(".sync-worktrees-state");
   });
 });

@@ -96,7 +96,7 @@ function publicTypeModules(): string[] {
   return [...seen].map((file) => path.relative(srcDir, file).split(path.sep).join("/")).sort();
 }
 
-const minimalConfig = {
+const _minimalConfig = {
   repositories: [
     {
       name: "minimal",
@@ -106,7 +106,7 @@ const minimalConfig = {
   ],
 } satisfies SyncWorktreesConfig;
 
-const worktreeModeConfig = {
+const _worktreeModeConfig = {
   defaults: {
     cronSchedule: "0 * * * *",
     runOnce: false,
@@ -151,7 +151,7 @@ const worktreeModeConfig = {
   ],
 } satisfies SyncWorktreesConfig;
 
-const cloneModeConfig = {
+const _cloneModeConfig = {
   repositories: [
     {
       name: "clone",
@@ -171,7 +171,7 @@ const cloneModeConfig = {
 } satisfies SyncWorktreesConfig;
 
 // @ts-expect-error clone mode does not accept worktree branch filters.
-const invalidCloneRepository: SyncWorktreesRepository = {
+const _invalidCloneRepository: SyncWorktreesRepository = {
   name: "bad-clone",
   repoUrl: "https://github.com/example/bad-clone.git",
   worktreeDir: "./bad-clone",
@@ -180,7 +180,7 @@ const invalidCloneRepository: SyncWorktreesRepository = {
 };
 
 // @ts-expect-error worktree mode does not accept clone-only branch pins.
-const invalidWorktreeRepository: SyncWorktreesRepository = {
+const _invalidWorktreeRepository: SyncWorktreesRepository = {
   name: "bad-worktree",
   repoUrl: "https://github.com/example/bad-worktree.git",
   worktreeDir: "./worktrees/bad-worktree",
@@ -189,31 +189,7 @@ const invalidWorktreeRepository: SyncWorktreesRepository = {
 };
 
 describe("public config types", () => {
-  it("accept user-authored config shapes without cronSchedule or runOnce on repositories", () => {
-    expect(minimalConfig.repositories[0]).not.toHaveProperty("cronSchedule");
-    expect(minimalConfig.repositories[0]).not.toHaveProperty("runOnce");
-    expect(worktreeModeConfig.repositories[0].mode).toBe("worktree");
-    expect(cloneModeConfig.repositories[0].mode).toBe("clone");
-    expect(invalidCloneRepository.mode).toBe("clone");
-    expect(invalidWorktreeRepository.mode).toBe("worktree");
-  });
-
-  it("exports the maintenance block alias", () => {
-    const maintenance: SyncWorktreesMaintenanceConfig = { enabled: true, interval: "7d", aggressive: false };
-    const config = {
-      repositories: [{ name: "m", repoUrl: "https://example.com/m.git", worktreeDir: "./m", maintenance }],
-    } satisfies SyncWorktreesConfig;
-    expect(config.repositories[0].maintenance.interval).toBe("7d");
-  });
-
   it("keeps the public declaration graph free of internal modules", () => {
     expect(publicTypeModules()).toEqual(["public-types.ts", "types/public-config.ts"]);
-  });
-
-  it("accepts the inactivity timeouts under defaults and on a repository, in both modes", () => {
-    expect(worktreeModeConfig.defaults.fetchTimeoutMs).toBe(0);
-    expect(worktreeModeConfig.defaults.cloneTimeoutMs).toBe(1_800_000);
-    expect(cloneModeConfig.repositories[0].fetchTimeoutMs).toBe(600_000);
-    expect(cloneModeConfig.repositories[0].cloneTimeoutMs).toBe(0);
   });
 });

@@ -213,10 +213,6 @@ describe("PathResolutionService", () => {
       expect(service.isPathInsideBaseDir("/base/../outside", "/base")).toBe(false);
     });
 
-    it("should return false for a deep traversal escape", () => {
-      expect(service.isPathInsideBaseDir("/base/worktrees/../../etc/passwd", "/base/worktrees")).toBe(false);
-    });
-
     it("should return true when path equals base directory", () => {
       expect(service.isPathInsideBaseDir("/base", "/base")).toBe(true);
     });

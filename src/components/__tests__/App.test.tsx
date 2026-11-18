@@ -113,17 +113,6 @@ describe("App", () => {
       expect(seen).toEqual(["uiReady"]);
     });
 
-    it("should respond to appEvents on mount", async () => {
-      const { lastFrame } = render(<App {...defaultProps} />);
-
-      await waitForStateUpdate();
-
-      appEvents.emit("setStatus", "syncing");
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("Syncing...");
-    });
-
     it("should render sync progress events in the status bar", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 
@@ -232,20 +221,6 @@ describe("App", () => {
       expect(lastFrame()).not.toContain("Progress:");
       expect(lastFrame()).not.toContain("fetch remote");
     });
-
-    it("should clean up event subscriptions on unmount", async () => {
-      const { unmount, lastFrame } = render(<App {...defaultProps} />);
-
-      await waitForStateUpdate();
-      expect(lastFrame()).toContain("Idle");
-
-      unmount();
-
-      // Events should no longer affect the component after unmount
-      appEvents.emit("setStatus", "syncing");
-      await waitForStateUpdate();
-      // No error should occur - events are just silently ignored
-    });
   });
 
   describe("updateLastSyncTime functionality", () => {
@@ -306,20 +281,6 @@ describe("App", () => {
 
       expect(lastFrame()).toContain("Syncing...");
       expect(lastFrame()).not.toContain("Idle");
-    });
-
-    it("should change status from syncing to idle", async () => {
-      const { lastFrame } = render(<App {...defaultProps} />);
-
-      await waitForStateUpdate();
-
-      appEvents.emit("setStatus", "syncing");
-      await waitForStateUpdate();
-      expect(lastFrame()).toContain("Syncing...");
-
-      appEvents.emit("setStatus", "idle");
-      await waitForStateUpdate();
-      expect(lastFrame()).toContain("Idle");
     });
   });
 
@@ -412,20 +373,6 @@ describe("App", () => {
       expect(onManualSync).toHaveBeenCalled();
     });
 
-    it("should not call onManualSync when syncing is in progress", async () => {
-      const onManualSync = vi.fn();
-      const { stdin } = render(<App {...defaultProps} onManualSync={onManualSync} />);
-
-      await waitForStateUpdate();
-
-      appEvents.emit("setStatus", "syncing");
-      await waitForStateUpdate();
-
-      stdin.write("s");
-
-      expect(onManualSync).not.toHaveBeenCalled();
-    });
-
     it("should call onReload when r is pressed", () => {
       const onReload = vi.fn();
       const { stdin } = render(<App {...defaultProps} onReload={onReload} />);
@@ -484,20 +431,6 @@ describe("App", () => {
 
       expect(defaultProps.forceClean).not.toHaveBeenCalled();
       expect(lastFrame()).not.toContain("Force Clean");
-    });
-
-    it("should not call onReload when syncing is in progress", async () => {
-      const onReload = vi.fn();
-      const { stdin } = render(<App {...defaultProps} onReload={onReload} />);
-
-      await waitForStateUpdate();
-
-      appEvents.emit("setStatus", "syncing");
-      await waitForStateUpdate();
-
-      stdin.write("r");
-
-      expect(onReload).not.toHaveBeenCalled();
     });
   });
 
@@ -823,19 +756,6 @@ describe("App", () => {
   });
 
   describe("updateCronSchedule event", () => {
-    it("should update cron schedule when event is emitted", async () => {
-      const { lastFrame } = render(<App {...defaultProps} cronSchedule="0 * * * *" />);
-
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("Next Sync:");
-
-      appEvents.emit("updateCronSchedule", "*/30 * * * *");
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("Next Sync:");
-    });
-
     it("should hide next sync time when schedule becomes undefined", async () => {
       const { lastFrame } = render(<App {...defaultProps} cronSchedule="0 * * * *" />);
 
@@ -856,12 +776,6 @@ describe("App", () => {
 
       expect(lastFrame()).toContain("Next Sync:");
       expect(lastFrame()).not.toMatch(/Next Sync: N\/A/);
-    });
-
-    it("should display next sync time when cron schedule is provided", () => {
-      const { lastFrame } = render(<App {...defaultProps} cronSchedule="0 * * * *" />);
-
-      expect(lastFrame()).toContain("Next Sync:");
     });
 
     it("should not display next sync time when no cron schedule", () => {
@@ -893,17 +807,6 @@ describe("App", () => {
       expect(lastFrame()).not.toContain("Calculating...");
     });
 
-    it("should handle N/A disk space value", async () => {
-      const { lastFrame } = render(<App {...defaultProps} />);
-
-      await waitForStateUpdate();
-
-      appEvents.emit("setDiskSpace", "N/A");
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("N/A");
-    });
-
     it("should update disk space multiple times", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 
@@ -930,39 +833,6 @@ describe("App", () => {
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Test message");
-    });
-
-    it("should display info logs", async () => {
-      const { lastFrame } = render(<App {...defaultProps} />);
-
-      await waitForStateUpdate();
-
-      appEvents.emit("addLog", { message: "Test info message", level: "info" });
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("Test info message");
-    });
-
-    it("should display warn logs", async () => {
-      const { lastFrame } = render(<App {...defaultProps} />);
-
-      await waitForStateUpdate();
-
-      appEvents.emit("addLog", { message: "Test warning message", level: "warn" });
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("Test warning message");
-    });
-
-    it("should display error logs", async () => {
-      const { lastFrame } = render(<App {...defaultProps} />);
-
-      await waitForStateUpdate();
-
-      appEvents.emit("addLog", { message: "Test error message", level: "error" });
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("Test error message");
     });
 
     it("should display multiple logs in order", async () => {

@@ -244,6 +244,16 @@ describe("GitService git client timeouts", () => {
       });
     });
 
+    it("clones and fetches with the configured timeouts in place of the built-in ones", async () => {
+      markMissing(TEST_PATHS.bareRepo);
+      const service = newService({ fetchTimeoutMs: 1_000, cloneTimeoutMs: 2_000 });
+
+      await service.initialize();
+
+      expect(onlyClientThatRan("clone").options.timeout).toEqual({ block: 2_000 });
+      expect(onlyClientThatRan("fetch", "--all", "--progress").options.timeout).toEqual({ block: 1_000 });
+    });
+
     it("runs ls-remote and push with the fetch block timeout", async () => {
       const service = newService();
 

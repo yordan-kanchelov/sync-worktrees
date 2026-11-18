@@ -681,13 +681,6 @@ describe("validateConfigFile: reporting", () => {
 });
 
 describe("KNOWN_CONFIG_KEYS", () => {
-  it("is read off the schema, level by level", () => {
-    expect([...KNOWN_CONFIG_KEYS.topLevel].sort()).toEqual(["defaults", "parallelism", "repositories", "retry"]);
-    expect(KNOWN_CONFIG_KEYS.repository).toContain("name");
-    expect(KNOWN_CONFIG_KEYS.defaults).not.toContain("name");
-    expect(KNOWN_CONFIG_KEYS.nested.retry).toContain("maxAttempts");
-  });
-
   it("gives the top-level blocks the same keys as the nested blocks of the same name", () => {
     const topLevel = configFileSchema.shape;
     for (const block of ["retry", "parallelism"] as const) {

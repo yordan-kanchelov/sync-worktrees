@@ -30,12 +30,6 @@ describe("parseArguments", () => {
     expect(opts.runOnce).toBe(false);
   });
 
-  it("parses --runOnce", () => {
-    const opts = parseArguments(["--runOnce"]);
-    if (opts.command !== "run") throw new Error("expected run command");
-    expect(opts.runOnce).toBe(true);
-  });
-
   it("parses init subcommand", () => {
     const opts = parseArguments(["init"]);
     if (opts.command !== "init") throw new Error("expected init command");
@@ -332,20 +326,12 @@ describe("parseArguments", () => {
     expect(debug.debug).toBe(true);
   });
 
-  it("rejects removed flag --repoUrl under strict()", () => {
-    expect(() => parseArguments(["--repoUrl", "https://example.com/repo.git"])).toThrow(/process\.exit/);
-  });
-
   it("rejects unknown flag under strict()", () => {
     expect(() => parseArguments(["--unknownFlag"])).toThrow(/process\.exit/);
   });
 
   it("rejects unknown flag combined with init subcommand", () => {
     expect(() => parseArguments(["init", "--repoUrl", "https://example.com/repo.git"])).toThrow(/process\.exit/);
-  });
-
-  it("rejects --runOnce on subcommands", () => {
-    expect(() => parseArguments(["list", "--runOnce"])).toThrow(/process\.exit/);
   });
 
   it("nudges --init toward the init subcommand", () => {

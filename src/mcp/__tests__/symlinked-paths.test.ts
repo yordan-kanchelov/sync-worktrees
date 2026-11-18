@@ -84,7 +84,7 @@ describe("MCP tools on paths reached through a symlink (real git)", () => {
     expect(result.currentBranch).toBe("main");
     expect(result.allWorktrees.filter((w) => w.isCurrent).map((w) => w.branch)).toEqual(["main"]);
     expect(result.siblingRepositories).toEqual([]);
-    expect(ctx.__repoCountForTest()).toBe(1);
+    expect(ctx.getRepositoryList()).toHaveLength(1);
   });
 
   it("get_worktree_status accepts the symlinked spelling of a registered worktree", async () => {

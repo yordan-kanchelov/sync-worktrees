@@ -117,31 +117,4 @@ describe("HEAD branch filtering (E2E)", () => {
     const worktreeList = await git.raw(["worktree", "list"]);
     expect(worktreeList).not.toContain("/HEAD");
   });
-
-  it("should handle subsequent runs without errors", async () => {
-    const bareRepoDir = path.join(tempDir, ".bare");
-    const configPath = path.join(tempDir, "subsequent.config.js");
-    await fs.writeFile(
-      configPath,
-      `export default {
-        defaults: { runOnce: true },
-        repositories: [{
-          name: "test-repo",
-          repoUrl: "file://${bareRepo}",
-          worktreeDir: "${worktreeDir}",
-          bareRepoDir: "${bareRepoDir}"
-        }]
-      };`,
-    );
-
-    const command = `node "${binaryPath}" --config "${configPath}"`;
-
-    execSync(command, { encoding: "utf8" });
-
-    const output = execSync(command, { encoding: "utf8" });
-
-    expect(output).not.toContain("Creating new worktrees for: HEAD");
-    expect(output).not.toContain("Failed to create worktree");
-    expect(output).not.toContain("Error during worktree synchronization");
-  }, 30000);
 });

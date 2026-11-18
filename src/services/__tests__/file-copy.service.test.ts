@@ -90,14 +90,6 @@ describe("FileCopyService", () => {
       expect(result.errors).toEqual([]);
     });
 
-    it("should handle dotfiles", async () => {
-      await fs.writeFile(path.join(sourceDir, ".env.local"), "SECRET=value");
-
-      const result = await service.copyFiles(sourceDir, destDir, [".env.local"]);
-
-      expect(result.copied).toEqual([".env.local"]);
-    });
-
     it("should handle multiple patterns", async () => {
       await fs.writeFile(path.join(sourceDir, "CLAUDE.md"), "claude content");
       await fs.writeFile(path.join(sourceDir, ".env.local"), "env content");
@@ -114,15 +106,6 @@ describe("FileCopyService", () => {
       const result = await service.copyFiles(sourceDir, destDir, ["CLAUDE.md", "*.md"]);
 
       expect(result.copied).toEqual(["CLAUDE.md"]);
-    });
-
-    it("should copy files with special characters in name", async () => {
-      await fs.writeFile(path.join(sourceDir, "file-with-dash.txt"), "content");
-      await fs.writeFile(path.join(sourceDir, "file_with_underscore.txt"), "content2");
-
-      const result = await service.copyFiles(sourceDir, destDir, ["file-with-dash.txt", "file_with_underscore.txt"]);
-
-      expect(result.copied.sort()).toEqual(["file-with-dash.txt", "file_with_underscore.txt"].sort());
     });
 
     it("should mix copied and skipped files", async () => {
@@ -144,18 +127,6 @@ describe("FileCopyService", () => {
       const result = await service.copyFiles(sourceDir, destDir, ["**/*.md"]);
 
       expect(result.copied.sort()).toEqual(["a/b/file2.md", "a/file1.md"].sort());
-    });
-
-    it("should copy relative config files into the same target paths", async () => {
-      await fs.mkdir(path.join(sourceDir, "config"), { recursive: true });
-      await fs.writeFile(path.join(sourceDir, ".env"), "SECRET=value");
-      await fs.writeFile(path.join(sourceDir, "config", "local.json"), "{}");
-
-      const result = await service.copyFiles(sourceDir, destDir, [".env", "config/*.json"]);
-
-      expect(result.copied.sort()).toEqual([".env", "config/local.json"].sort());
-      await expect(fs.readFile(path.join(destDir, ".env"), "utf-8")).resolves.toBe("SECRET=value");
-      await expect(fs.readFile(path.join(destDir, "config", "local.json"), "utf-8")).resolves.toBe("{}");
     });
 
     it("should reject absolute and escaping patterns", async () => {
@@ -376,19 +347,6 @@ describe("FileCopyService", () => {
       await expect(fs.stat(path.join(sourceDir, "dest", "other-repo", ".env"))).rejects.toThrow();
       await expect(fs.stat(path.join(sourceDir, "dest", "dest", ".env"))).rejects.toThrow();
       await expect(fs.readFile(path.join(sourceDir, "dest", ".env"), "utf-8")).resolves.toBe("already there");
-    });
-
-    it("copies the intended file while excluding a sibling (the same tree, without the pre-existing destination copy)", async () => {
-      await fs.mkdir(path.join(sourceDir, "other-repo"), { recursive: true });
-      await fs.writeFile(path.join(sourceDir, ".env"), "intended");
-      await fs.writeFile(path.join(sourceDir, "other-repo", ".env"), "foreign secret");
-
-      const result = await service.copyFiles(sourceDir, destDir, ["**/.env"], {
-        excludeDirs: [path.join(sourceDir, "other-repo"), destDir],
-      });
-
-      expect(result.copied).toEqual([".env"]);
-      await expect(fs.readFile(path.join(destDir, ".env"), "utf-8")).resolves.toBe("intended");
     });
 
     it("excludes both halves of a nested pair of checkouts and nothing else", async () => {

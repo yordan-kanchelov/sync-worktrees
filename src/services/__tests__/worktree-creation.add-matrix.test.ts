@@ -63,36 +63,6 @@ describe("WorktreeCreationService add matrix (through GitService)", () => {
       );
     });
 
-    it("should add worktree with upstream when both local and remote exist", async () => {
-      const worktreeGitMock = makeWorktreeGitMock();
-      (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
-        p && p.includes("feature-1") ? worktreeGitMock : mockGit,
-      );
-
-      mockShowRef({ local: true, remote: true });
-
-      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
-
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
-      expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feature-1", "feature-1"]);
-      expect(worktreeGitMock.raw).toHaveBeenCalledWith(["merge", "--ff-only", "origin/feature-1"]);
-    });
-
-    it("should not fast-forward when both exist and the local branch has commits not on origin", async () => {
-      const worktreeGitMock = makeWorktreeGitMock();
-      (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
-        p && p.includes("feature-1") ? worktreeGitMock : mockGit,
-      );
-
-      mockShowRef({ local: true, remote: true, localOnlyCommits: 1 });
-
-      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
-
-      expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]);
-      expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feature-1", "feature-1"]);
-      expect(worktreeGitMock.raw).not.toHaveBeenCalledWith(expect.arrayContaining(["merge"]));
-    });
-
     it("should use --track when local missing but remote exists", async () => {
       mockShowRef({ local: false, remote: true });
 

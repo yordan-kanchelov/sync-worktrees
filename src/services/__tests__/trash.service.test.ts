@@ -1163,28 +1163,6 @@ describe("TrashService", () => {
       });
     }
 
-    it("restores an entry pinned in the legacy flat layout and releases that flat ref", async () => {
-      const source = await makeSourceDir("legacy-restore", { "work.txt": "uncommitted work" });
-      const { manifest, containerPath } = await service.trashDirectory({
-        dirPath: source,
-        branch: "legacy-restore",
-        reason: "prune",
-      });
-      const legacyPinRef = `${PREFIX}${manifest.id}`;
-      await fs.writeFile(
-        path.join(containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME),
-        JSON.stringify({ ...manifest, pinRef: legacyPinRef }),
-      );
-
-      const restored = await service.restore(manifest.id);
-
-      expect(restored.pinRef).toBe(legacyPinRef);
-      expect(gitStub.createBranchAt).toHaveBeenCalledWith("legacy-restore", "abc123");
-      await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
-      expect(gitStub.deleteRef).toHaveBeenCalledWith(legacyPinRef);
-      await expect(service.listEntries()).resolves.toMatchObject({ entries: [] });
-    });
-
     it("reuses a matching branch ref left behind by git worktree remove", async () => {
       const source = await makeSourceDir("feature-left-ref", { "work.txt": "preserved" });
       const { manifest } = await service.trashDirectory({

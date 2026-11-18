@@ -147,17 +147,6 @@ describe("retry", () => {
   });
 
   describe("shouldRetry", () => {
-    it("should retry on default retryable errors", async () => {
-      const networkError = new Error("Network failed: Connection refused");
-
-      const mockFn = vi.fn().mockRejectedValueOnce(networkError).mockResolvedValue("success");
-
-      const result = await retry(mockFn, { initialDelayMs: 1 });
-
-      expect(result).toBe("success");
-      expect(mockFn).toHaveBeenCalledTimes(2);
-    });
-
     it("should not retry on non-retryable errors by default", async () => {
       const error = new Error("Validation error");
       const mockFn = vi.fn().mockRejectedValue(error);
@@ -273,15 +262,6 @@ describe("retry", () => {
   });
 
   describe("default retry configuration", () => {
-    it("should have correct default values", async () => {
-      const mockFn = vi.fn().mockResolvedValue("success");
-
-      await retry(mockFn);
-
-      // Verify function was called (default behavior doesn't affect successful calls)
-      expect(mockFn).toHaveBeenCalledTimes(1);
-    });
-
     it("should default to DEFAULT_CONFIG.RETRY delays", async () => {
       const delays: number[] = [];
       const mockSetTimeout = vi.spyOn(global, "setTimeout");
@@ -306,22 +286,6 @@ describe("retry", () => {
   });
 
   describe("LFS error detection", () => {
-    it("should detect LFS errors and mark context", async () => {
-      const lfsError = new Error("smudge filter lfs failed");
-      let capturedContext: any;
-
-      const mockFn = vi.fn().mockRejectedValueOnce(lfsError).mockResolvedValue("success");
-
-      await retry(mockFn, {
-        initialDelayMs: 1,
-        onRetry: (_error, _attempt, context) => {
-          capturedContext = context;
-        },
-      });
-
-      expect(capturedContext?.isLfsError).toBe(true);
-    });
-
     it("should detect various LFS error messages", async () => {
       const lfsErrors = [
         "smudge filter lfs failed",

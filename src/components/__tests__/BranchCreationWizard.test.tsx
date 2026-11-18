@@ -111,16 +111,6 @@ describe("BranchCreationWizard", () => {
       expect(lastFrame()).toContain("develop");
     });
 
-    it("should highlight default branch", async () => {
-      const { stdin, lastFrame } = render(<BranchCreationWizard {...defaultProps} />);
-
-      stdin.write("\r"); // Enter
-      await waitForStateUpdate();
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("(default)");
-    });
-
     it("should pre-select and mark the default branch when it is not the first one", async () => {
       // Clone-mode repos commonly track something other than the list's first
       // entry; pressing Enter straight away must create from the branch the
@@ -343,8 +333,7 @@ describe("BranchCreationWizard", () => {
       stdin.write("alpha");
       await waitForStateUpdate();
 
-      // Should still show a valid selection (not crash)
-      expect(lastFrame()).toContain("alpha-repo");
+      expect(lastFrame()).toContain("> alpha-repo");
     });
   });
 

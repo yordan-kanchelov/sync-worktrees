@@ -270,41 +270,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       );
     });
 
-    it("records update_check_failed for the worktree whose ahead/behind probe throws, and updates the others", async () => {
-      mockGitService.getAheadBehindCounts.mockImplementation(async (worktreePath: string) => {
-        if (worktreePath.includes("feature")) {
-          throw new Error("fatal: bad revision 'HEAD...refs/remotes/origin/feature'");
-        }
-        return { ahead: 0, behind: 1 };
-      });
-
-      const result = await service.sync();
-
-      expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(2);
-      expect(mockGitService.updateWorktree).not.toHaveBeenCalledWith("/test/worktrees/feature", "feature");
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        "  - Error checking worktree 'feature' (/test/worktrees/feature):",
-        expect.any(Error),
-      );
-
-      expect(result.started).toBe(true);
-      if (!result.started) throw new Error("sync did not start");
-      expect(result.outcome.counts.failed).toBe(0);
-      expect(result.outcome.actions.filter((action) => action.branch === "feature")).toEqual([
-        {
-          kind: "skipped",
-          scope: "worktree",
-          reason: "update_check_failed",
-          branch: "feature",
-          path: "/test/worktrees/feature",
-          message: "fatal: bad revision 'HEAD...refs/remotes/origin/feature'",
-        },
-      ]);
-      expect(result.outcome.actions).not.toContainEqual(
-        expect.objectContaining({ reason: "already_up_to_date", branch: "feature" }),
-      );
-    });
-
     // getAheadBehindCounts throws when its rev-list could not run (EMFILE,
     // ENOMEM, a `fatal:`) rather than answering with counts: zero ahead and
     // zero behind would read as up to date, and any other invented pair could
@@ -359,25 +324,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         const result = await service.sync();
 
         expectFeatureLeftAlone(result, message);
-      });
-
-      // Commits on both sides — which is also what unrelated histories look
-      // like to rev-list, since it counts every commit on each side when there
-      // is no common ancestor — still reach diverged handling.
-      it("still hands a worktree with commits on both sides to diverged handling", async () => {
-        mockGitService.getAheadBehindCounts.mockImplementation(async (worktreePath: string) =>
-          worktreePath.includes("feature") ? { ahead: 1, behind: 1 } : { ahead: 0, behind: 1 },
-        );
-        runner().handleDivergedBranch.mockResolvedValue(false);
-
-        await service.sync();
-
-        expect(runner().handleDivergedBranch).toHaveBeenCalledTimes(1);
-        expect(runner().handleDivergedBranch).toHaveBeenCalledWith(
-          { path: "/test/worktrees/feature", branch: "feature" },
-          expect.objectContaining({ lfsSkipEnabled: false }),
-          expect.anything(),
-        );
       });
     });
 

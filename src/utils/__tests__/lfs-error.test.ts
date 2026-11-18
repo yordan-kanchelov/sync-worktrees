@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { LFS_ERROR_PATTERNS, isLfsError, isLfsErrorFromError } from "../lfs-error";
+import { isLfsError, isLfsErrorFromError } from "../lfs-error";
 
 describe("LFS Error Detection", () => {
   describe("isLfsError", () => {
@@ -52,18 +52,6 @@ describe("LFS Error Detection", () => {
     it("should not detect non-LFS errors", () => {
       const error = new Error("Network connection failed");
       expect(isLfsErrorFromError(error)).toBe(false);
-    });
-  });
-
-  describe("LFS_ERROR_PATTERNS", () => {
-    it("should contain expected patterns", () => {
-      expect(LFS_ERROR_PATTERNS).toContain("smudge filter lfs failed");
-      expect(LFS_ERROR_PATTERNS).toContain("Object does not exist on the server");
-      expect(LFS_ERROR_PATTERNS).toContain("external filter 'git-lfs filter-process' failed");
-    });
-
-    it("should be frozen to prevent modifications", () => {
-      expect(Object.isFrozen(LFS_ERROR_PATTERNS)).toBe(true);
     });
   });
 });

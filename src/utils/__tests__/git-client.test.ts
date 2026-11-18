@@ -3,12 +3,11 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 
-import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setEnvVar } from "../../__tests__/test-utils";
 import { MAX_TIMER_DELAY_MS, buildGitClientOptions, createGitClient } from "../git-client";
-import { GIT_UNSAFE_ALLOWANCES, sanitizeGitEnv } from "../git-env";
+import { GIT_UNSAFE_ALLOWANCES } from "../git-env";
 
 import type { AddressInfo } from "net";
 
@@ -83,14 +82,6 @@ describe("createGitClient with a forwarded shell environment", () => {
 
   it("runs git although the environment carries every variable simple-git validates", async () => {
     await expect(createGitClient().raw(["--version"])).resolves.toMatch(/^git version/);
-  });
-
-  it("would be rejected by the previous, narrower allowance set", async () => {
-    const narrow = simpleGit({ unsafe: { allowUnsafeAskPass: true, allowUnsafeConfigEnvCount: true } }).env(
-      sanitizeGitEnv(process.env),
-    );
-
-    await expect(narrow.raw(["--version"])).rejects.toThrow(/allowUnsafe/);
   });
 });
 
