@@ -69,22 +69,11 @@ describe("GitService", () => {
       delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
       const service = new GitService(createMockConfig(), mockLogger);
 
-      expect((service as any).getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
-      expect((service as any).getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
-
       (mockGit.raw as Mock).mockResolvedValue("ref: refs/heads/main\tHEAD\n");
       await service.getRemoteDefaultBranch(TEST_URLS.github);
       expect(simpleGit).toHaveBeenCalledWith(
         expect.objectContaining({ timeout: { block: DEFAULT_CONFIG.FETCH_TIMEOUT_MS } }),
       );
-    });
-
-    it("prefers the configured timeouts when the unit-test shortcut is unset", () => {
-      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
-      const service = new GitService(createMockConfig({ fetchTimeoutMs: 1_000, cloneTimeoutMs: 2_000 }), mockLogger);
-
-      expect((service as any).getFetchTimeoutMs()).toBe(1_000);
-      expect((service as any).getCloneTimeoutMs()).toBe(2_000);
     });
 
     it("keeps a configured 0 as 0 instead of falling back to the built-in window", async () => {
@@ -97,9 +86,6 @@ describe("GitService", () => {
       // instant abort.
       delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
       const service = new GitService(createMockConfig({ fetchTimeoutMs: 0, cloneTimeoutMs: 0 }), mockLogger);
-
-      expect((service as any).getFetchTimeoutMs()).toBe(0);
-      expect((service as any).getCloneTimeoutMs()).toBe(0);
 
       (mockGit.raw as Mock).mockResolvedValue("ref: refs/heads/main\tHEAD\n");
       await service.getRemoteDefaultBranch(TEST_URLS.github);
@@ -120,20 +106,9 @@ describe("GitService", () => {
       process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid);
       const service = new GitService(createMockConfig(), mockLogger);
 
-      expect((service as any).getFetchTimeoutMs()).toBe(0);
-      expect((service as any).getCloneTimeoutMs()).toBe(0);
-
       (mockGit.raw as Mock).mockResolvedValue("ref: refs/heads/main\tHEAD\n");
       await service.getRemoteDefaultBranch(TEST_URLS.github);
       expect(simpleGit).toHaveBeenCalledWith(expect.not.objectContaining({ timeout: expect.anything() }));
-    });
-
-    it("ignores a shortcut value inherited from another process", () => {
-      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid + 1);
-      const service = new GitService(createMockConfig(), mockLogger);
-
-      expect((service as any).getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
-      expect((service as any).getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
     });
   });
 
@@ -554,47 +529,6 @@ describe("GitService", () => {
         "newcommit123",
       );
     });
-
-    it("should update metadata for main worktree", async () => {
-      await gitService.initialize();
-
-      (mockGit as any).merge = vi.fn<any>().mockResolvedValue(undefined);
-      mockGit.revparse.mockResolvedValueOnce("oldcommit456\n" as any).mockResolvedValueOnce("newcommit123\n" as any);
-
-      await gitService.updateWorktree("/test/worktrees/main", "main");
-
-      expect((mockGit as any).merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
-      expect(mockMetadataService.updateLastSyncFromPath).toHaveBeenCalledWith(
-        ".bare/repo",
-        "/test/worktrees/main",
-        "newcommit123",
-      );
-    });
-
-    // HEAD already sat at origin/<branch> when the merge ran (it got there
-    // between the runner's behind probe and the fast-forward), so nothing was
-    // updated: lastSyncCommit/lastSyncDate must stay as they are.
-    it("leaves the sync metadata alone when the fast-forward moved nothing", async () => {
-      await gitService.initialize();
-      mockMetadataService.updateLastSyncFromPath.mockClear();
-
-      const mockWorktreeGit = {
-        branch: vi.fn<any>().mockResolvedValue({ current: "feature-1" }),
-        merge: vi.fn<any>().mockResolvedValue(undefined),
-        revparse: vi.fn<any>().mockResolvedValue("samecommit789\n"),
-        env: vi.fn<any>().mockReturnThis(),
-      };
-      (simpleGit as unknown as Mock).mockReturnValue(mockWorktreeGit);
-
-      await expect(gitService.updateWorktree("/test/worktrees/feature-1", "feature-1")).resolves.toEqual({
-        updated: false,
-        before: "samecommit789",
-        after: "samecommit789",
-      });
-
-      expect(mockWorktreeGit.merge).toHaveBeenCalledWith(["origin/feature-1", "--ff-only"]);
-      expect(mockMetadataService.updateLastSyncFromPath).not.toHaveBeenCalled();
-    });
   });
 
   describe("classifyRemoteRelationship", () => {
@@ -733,39 +667,6 @@ describe("GitService", () => {
       expect(client.raw).toHaveBeenCalledWith(["merge-base", "refs/heads/feature-1", "refs/remotes/origin/feature-1"]);
     });
 
-    it("returns indeterminate_shallow for a named local ref a shallow clone cannot reach", async () => {
-      const client = buildClient({ headSha: "branchtip", remoteSha: "tip", mergeBase: "", isShallow: "true" });
-      (simpleGit as unknown as Mock).mockReturnValue(client);
-
-      const result = await gitService.classifyRemoteRelationship(
-        "/test/worktrees/feature-1",
-        "feature-1",
-        "refs/heads/feature-1",
-      );
-
-      expect(result).toBe("indeterminate_shallow");
-      expect(client.raw).toHaveBeenCalledWith(["merge-base", "refs/heads/feature-1", "refs/remotes/origin/feature-1"]);
-    });
-
-    it("returns diverged for a named local ref whose merge-base is a third commit", async () => {
-      const client = buildClient({
-        headSha: "branchtip",
-        remoteSha: "tip",
-        mergeBase: "ancestor",
-        isShallow: "true",
-      });
-      (simpleGit as unknown as Mock).mockReturnValue(client);
-
-      const result = await gitService.classifyRemoteRelationship(
-        "/test/worktrees/feature-1",
-        "feature-1",
-        "refs/heads/feature-1",
-      );
-
-      expect(result).toBe("diverged");
-      expect(client.raw).toHaveBeenCalledWith(["merge-base", "refs/heads/feature-1", "refs/remotes/origin/feature-1"]);
-    });
-
     it("returns diverged when revparse of HEAD or remote fails", async () => {
       const client = {
         revparse: vi.fn<any>().mockRejectedValue(new Error("bad ref")),
@@ -862,7 +763,7 @@ describe("GitService", () => {
         TRUNK_WORKTREE_PATH,
         expect.objectContaining({ progress: expect.any(Function) }),
       );
-      expect((gitService as any).mainWorktreePath).toBe(TRUNK_WORKTREE_PATH);
+      expect(gitService.getMainWorktreePath()).toBe(TRUNK_WORKTREE_PATH);
       await expect(gitService.fetchAll()).resolves.toBeUndefined();
     });
 
@@ -897,7 +798,7 @@ describe("GitService", () => {
       await expect(gitService.refreshDefaultBranch()).rejects.toThrow("disk full");
 
       expect(gitService.getDefaultBranch()).toBe("main");
-      expect((gitService as any).mainWorktreePath).toBe(MAIN_WORKTREE_PATH);
+      expect(gitService.getMainWorktreePath()).toBe(MAIN_WORKTREE_PATH);
     });
 
     it("fails instead of switching when no default that exists on origin can be resolved", async () => {

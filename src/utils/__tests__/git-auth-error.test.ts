@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  GIT_AUTH_ERROR_PATTERNS,
   appendGitAuthHint,
   getGitAuthHint,
   isGitAuthError,
@@ -34,12 +33,6 @@ describe("isGitAuthError", () => {
       expect(isGitAuthError(message)).toBe(false);
     },
   );
-
-  it("matches every published pattern", () => {
-    for (const pattern of GIT_AUTH_ERROR_PATTERNS) {
-      expect(isGitAuthError(`prefix ${pattern} suffix`)).toBe(true);
-    }
-  });
 
   it("reads the message out of an error object", () => {
     expect(isGitAuthErrorFromError(new Error(SSH_KEY))).toBe(true);

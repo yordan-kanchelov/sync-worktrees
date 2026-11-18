@@ -15,49 +15,57 @@ describe("Error Classes", () => {
   it.each([
     {
       create: () => new SyncWorktreesError("base failure", "BASE_FAILED"),
+      name: "SyncWorktreesError",
       code: "BASE_FAILED",
       message: "base failure",
     },
     {
       create: () => new GitOperationError("fetch", "network timeout"),
+      name: "GitOperationError",
       code: "GIT_OPERATION_FAILED",
       message: "Git operation 'fetch' failed: network timeout",
     },
     {
       create: () => new FastForwardError("feature/test"),
+      name: "FastForwardError",
       code: "GIT_FAST_FORWARD_FAILED",
       message: "Cannot fast-forward branch 'feature/test'",
     },
     {
       create: () => new WorktreeNotCleanError("/repo/worktree", ["uncommitted changes", "stashed changes"]),
+      name: "WorktreeNotCleanError",
       code: "WORKTREE_NOT_CLEAN",
       message: "Worktree at '/repo/worktree' is not clean: uncommitted changes, stashed changes",
     },
     {
       create: () => new ConfigValidationError("repoUrl", "is required"),
+      name: "ConfigValidationError",
       code: "CONFIG_VALIDATION_FAILED",
       message: "Invalid configuration for 'repoUrl': is required",
     },
     {
       create: () => new WorktreeMetadataError("feature/test", new Error("disk full")),
+      name: "WorktreeMetadataError",
       code: "WORKTREE_METADATA_FAILED",
       message: "Metadata creation failed for 'feature/test': disk full",
     },
     {
       create: () => new UpstreamSetupError("feature/test", new Error("no such ref"), true),
+      name: "UpstreamSetupError",
       code: "WORKTREE_UPSTREAM_SETUP_FAILED",
       message: "Failed to set upstream for 'feature/test': no such ref",
     },
     {
       create: () => new UpstreamSetupError("feature/test", "no such ref", false),
+      name: "UpstreamSetupError",
       code: "WORKTREE_UPSTREAM_SETUP_FAILED",
       message: "Failed to set upstream for 'feature/test': no such ref (rollback failed; partial worktree may remain)",
     },
-  ])("should preserve the public $code contract", ({ create, code, message }) => {
+  ])("should preserve the public $code contract", ({ create, name, code, message }) => {
     const error = create();
 
     expect(error).toBeInstanceOf(Error);
-    expect(error.name).toBe(error.constructor.name);
+    expect(error.name).toBe(name);
     expect(error.code).toBe(code);
     expect(error.message).toBe(message);
   });

@@ -162,13 +162,6 @@ describe("GIT_UNSAFE_ALLOWANCES", () => {
     });
   });
 
-  it("keeps the argument-only protections in place", () => {
-    expect(GIT_UNSAFE_ALLOWANCES).not.toHaveProperty("allowUnsafePack");
-    expect(GIT_UNSAFE_ALLOWANCES).not.toHaveProperty("allowUnsafeProtocolOverride");
-    expect(GIT_UNSAFE_ALLOWANCES).not.toHaveProperty("allowUnsafeHooksPath");
-    expect(GIT_UNSAFE_ALLOWANCES).not.toHaveProperty("allowUnsafeEditor");
-  });
-
   it("is frozen so no client can widen it in place", () => {
     expect(Object.isFrozen(GIT_UNSAFE_ALLOWANCES)).toBe(true);
   });

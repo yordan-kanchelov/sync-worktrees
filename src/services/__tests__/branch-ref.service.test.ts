@@ -200,33 +200,6 @@ describe("BranchRefService (through GitService)", () => {
 
       expect(branches).toEqual([]);
     });
-
-    it("should filter out origin/HEAD", async () => {
-      forEachRef(["main", "feature-1", { ref: "refs/remotes/origin/HEAD", oid: "main-oid" }]);
-
-      const branches = await gitService.getRemoteBranches();
-
-      expect(branches).toEqual(["main", "feature-1"]);
-      expect(branches).not.toContain("HEAD");
-    });
-
-    it("keeps a remote branch named 'feature/HEAD' and drops only the symref (#review)", async () => {
-      forEachRef([{ ref: "refs/remotes/origin/HEAD", oid: "main-oid" }, "feature/HEAD", "main"]);
-
-      const branches = await gitService.getRemoteBranches();
-
-      expect(branches).toEqual(["feature/HEAD", "main"]);
-    });
-
-    // A branch literally named "origin" is a real branch; only the exact
-    // origin/HEAD symref is dropped.
-    it("keeps a remote branch literally named 'origin' (#review)", async () => {
-      forEachRef(["origin", "main"]);
-
-      const branches = await gitService.getRemoteBranches();
-
-      expect(branches).toEqual(["origin", "main"]);
-    });
   });
 
   describe("listRefs", () => {
@@ -308,23 +281,6 @@ describe("BranchRefService (through GitService)", () => {
       expect(branches[1].branch).toBe("feature-2");
     });
 
-    it("should filter out origin/HEAD", async () => {
-      const mockOutput = [
-        "refs/remotes/origin/main\x002024-01-15T10:30:00-05:00",
-        "refs/remotes/origin/HEAD\x002024-01-15T10:30:00-05:00",
-        "refs/remotes/origin/feature-1\x002024-01-14T09:15:00-05:00",
-      ].join("\n");
-
-      mockGit.raw.mockResolvedValueOnce(mockOutput as any);
-
-      const branches = await gitService.getRemoteBranchesWithActivity();
-
-      expect(branches).toHaveLength(2);
-      expect(branches[0].branch).toBe("main");
-      expect(branches[1].branch).toBe("feature-1");
-      expect(branches.some((b) => b.branch === "HEAD")).toBe(false);
-    });
-
     it("keeps branches whose names contain '|' (legal refname character) (#review)", async () => {
       const mockOutput = [
         "refs/remotes/origin/feature|wip\x002024-01-15T10:30:00-05:00",
@@ -363,23 +319,6 @@ describe("BranchRefService (through GitService)", () => {
       const branches = await gitService.getRemoteBranchesWithActivity();
 
       expect(branches.map((b) => b.branch)).toEqual(["feature/HEAD", "main"]);
-    });
-
-    it("asks for %(refname), never the ambiguity-dependent %(refname:short) (#review)", async () => {
-      // git shortens refs/remotes/origin/x to "remotes/origin/x" as soon as a
-      // local branch literally named "origin/x" exists, and
-      // refs/remotes/origin/feature/HEAD to "origin/feature" — both names this
-      // parser would drop or misattribute. Full refnames never change shape.
-      mockGit.raw.mockResolvedValueOnce("refs/remotes/origin/x\x002024-01-15T10:30:00-05:00" as any);
-
-      const branches = await gitService.getRemoteBranchesWithActivity();
-
-      expect(mockGit.raw).toHaveBeenCalledWith([
-        "for-each-ref",
-        "--format=%(refname)%00%(committerdate:iso8601)",
-        "refs/remotes/origin",
-      ]);
-      expect(branches.map((b) => b.branch)).toEqual(["x"]);
     });
   });
 

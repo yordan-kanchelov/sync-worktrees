@@ -3,7 +3,7 @@ import { getErrorMessage } from "./errors";
 /**
  * Common LFS error patterns that indicate Git LFS-related failures
  */
-export const LFS_ERROR_PATTERNS = Object.freeze([
+const LFS_ERROR_PATTERNS = Object.freeze([
   "smudge filter lfs failed",
   "Object does not exist on the server",
   "external filter 'git-lfs filter-process' failed",

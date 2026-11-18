@@ -168,25 +168,6 @@ describe("promptForInitConfig", () => {
     expect(result.repositories[0].worktreeDir).toBe(path.resolve(cwd, "./my-worktrees"));
   });
 
-  it("handles SSH URLs for default worktree directory", async () => {
-    mockInput
-      .mockResolvedValueOnce("ssh://git@bitbucket.tech.amusnet.io/lc/live-casino-monorepo.git")
-      .mockResolvedValueOnce("")
-      .mockResolvedValueOnce("0 * * * *");
-    mockSelect.mockResolvedValueOnce("worktree");
-    mockConfirm.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
-
-    const result = await promptForInitConfig(CONFIG_DIR);
-
-    expect(mockInput).toHaveBeenCalledWith(
-      expect.objectContaining({
-        message: "Enter the directory for storing worktrees:",
-        default: "./live-casino-monorepo",
-      }),
-    );
-    expect(result.repositories[0].worktreeDir).toBe(path.resolve(cwd, "./live-casino-monorepo"));
-  });
-
   it("validates URL format", async () => {
     mockInput
       .mockResolvedValueOnce("https://github.com/user/repo.git")

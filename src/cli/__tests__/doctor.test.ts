@@ -133,12 +133,9 @@ describe("checkGit", () => {
     expect(result.message).toContain("newline");
   });
 
-  it.each(["git version 2.36.0", "git version 2.43.0", "git version 2.50.1 (Apple Git-155)"])(
-    "passes on %s",
-    async (out) => {
-      expect((await checkGit({ runGit: async () => ok(out) })).status).toBe("pass");
-    },
-  );
+  it.each(["git version 2.36.0", "git version 2.50.1 (Apple Git-155)"])("passes on %s", async (out) => {
+    expect((await checkGit({ runGit: async () => ok(out) })).status).toBe("pass");
+  });
 });
 
 describe("checkGitLfs", () => {

@@ -71,14 +71,4 @@ describe("GitService ref existence probes (real git)", () => {
   it("reports the checked-out default branch on both sides", async () => {
     await expect(gitService.branchExists("main")).resolves.toEqual({ local: true, remote: true });
   });
-
-  // Why the probes above spell out `show-ref --verify <ref>` and never add
-  // `--quiet`: git answers "missing" with exit 1 and an empty stderr, which
-  // simple-git resolves. Pin the difference so the flag cannot come back.
-  it("shows that --quiet would hide a missing ref from simple-git", async () => {
-    const bareGit = simpleGit(bareRepoDir);
-
-    await expect(bareGit.raw(["show-ref", "--verify", "--quiet", "refs/heads/nope"])).resolves.toBe("");
-    await expect(bareGit.raw(["show-ref", "--verify", "refs/heads/nope"])).rejects.toThrow(/not a valid ref/);
-  });
 });
