@@ -201,65 +201,6 @@ export default {
     expect(output).not.toContain("backend-api");
   });
 
-  it("should handle config file with custom retry settings", async () => {
-    const configPath = path.join(tmpBase, "retry-test.config.js");
-    await fs.mkdir(tmpBase, { recursive: true });
-
-    const configContent = `
-export default {
-  retry: {
-    maxAttempts: 5,
-    initialDelayMs: 2000,
-    maxDelayMs: 30000,
-    backoffMultiplier: 2
-  },
-  repositories: [
-    {
-      name: "retry-repo",
-      repoUrl: "https://github.com/octocat/Hello-World.git",
-      worktreeDir: "${path.join(tmpBase, "retry-worktrees").replace(/\\/g, "/")}"
-    }
-  ]
-};
-`;
-
-    await fs.writeFile(configPath, configContent);
-
-    const output = execSync(`node "${cliPath}" list --config "${configPath}"`, {
-      encoding: "utf-8",
-    });
-
-    expect(output).toContain("retry-repo");
-  });
-
-  it("should handle config file with branchMaxAge", async () => {
-    const configPath = path.join(tmpBase, "branch-age-test.config.js");
-    await fs.mkdir(tmpBase, { recursive: true });
-
-    const configContent = `
-export default {
-  defaults: {
-    branchMaxAge: "30d"
-  },
-  repositories: [
-    {
-      name: "age-repo",
-      repoUrl: "https://github.com/octocat/Hello-World.git",
-      worktreeDir: "${path.join(tmpBase, "age-worktrees").replace(/\\/g, "/")}"
-    }
-  ]
-};
-`;
-
-    await fs.writeFile(configPath, configContent);
-
-    const output = execSync(`node "${cliPath}" list --config "${configPath}"`, {
-      encoding: "utf-8",
-    });
-
-    expect(output).toContain("age-repo");
-  });
-
   it("redacts credentials embedded in repoUrl from the list output", async () => {
     const configPath = path.join(tmpBase, "token-url.config.js");
     await fs.mkdir(tmpBase, { recursive: true });

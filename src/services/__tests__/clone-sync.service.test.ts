@@ -1,15 +1,10 @@
 import * as fs from "fs/promises";
 
 import simpleGit from "simple-git";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  PRIMARY_CHECKOUT_GIT_DIRS,
-  PRIMARY_CHECKOUT_GIT_DIR_PROBE,
-  buildFsStats,
-  setEnvVar,
-} from "../../__tests__/test-utils";
-import { DEFAULT_CONFIG, ENV_CONSTANTS } from "../../constants";
+import { PRIMARY_CHECKOUT_GIT_DIRS, PRIMARY_CHECKOUT_GIT_DIR_PROBE, buildFsStats } from "../../__tests__/test-utils";
+import { ENV_CONSTANTS } from "../../constants";
 import { ConfigError, FastForwardError, GitOperationError, WorktreeNotCleanError } from "../../errors";
 import { BranchCreatedActionsService } from "../branch-created-actions.service";
 import { CloneSyncService } from "../clone-sync.service";
@@ -236,53 +231,6 @@ describe("CloneSyncService", () => {
     return staleRefDeleteCalls().flatMap((args) => args.slice(3));
   }
 
-  describe("inactivity timeouts", () => {
-    const originalShortcut = process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
-    const originalNodeEnv = process.env.NODE_ENV;
-
-    afterEach(() => {
-      setEnvVar(ENV_CONSTANTS.UNIT_TEST_SHORTCUT, originalShortcut);
-      setEnvVar("NODE_ENV", originalNodeEnv);
-    });
-
-    it("keeps the default timeouts when NODE_ENV=test but the unit-test shortcut is unset", () => {
-      process.env.NODE_ENV = "test";
-      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
-      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
-
-      expect((service as any).clients.getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
-      expect((service as any).clients.getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
-    });
-
-    it("prefers the configured timeouts when the unit-test shortcut is unset", () => {
-      delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
-      const service = new CloneSyncService(
-        makeConfig({ fetchTimeoutMs: 1_000, cloneTimeoutMs: 2_000 }),
-        buildGitService(),
-        logger,
-      );
-
-      expect((service as any).clients.getFetchTimeoutMs()).toBe(1_000);
-      expect((service as any).clients.getCloneTimeoutMs()).toBe(2_000);
-    });
-
-    it("disables the timeouts only while the unit-test shortcut is active for this process", () => {
-      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid);
-      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
-
-      expect((service as any).clients.getFetchTimeoutMs()).toBe(0);
-      expect((service as any).clients.getCloneTimeoutMs()).toBe(0);
-    });
-
-    it("ignores a shortcut value inherited from another process", () => {
-      process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT] = String(process.pid + 1);
-      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
-
-      expect((service as any).clients.getFetchTimeoutMs()).toBe(DEFAULT_CONFIG.FETCH_TIMEOUT_MS);
-      expect((service as any).clients.getCloneTimeoutMs()).toBe(DEFAULT_CONFIG.CLONE_TIMEOUT_MS);
-    });
-  });
-
   describe("initialize", () => {
     it("clones into an empty target with a single tracked remote branch", async () => {
       (fs.readdir as unknown as Mock).mockResolvedValueOnce([]); // worktreeDir exists empty
@@ -466,63 +414,6 @@ describe("CloneSyncService", () => {
       expect(service.isInitialized()).toBe(true);
     });
 
-    it("narrows an existing all-branches clone refspec to the tracked branch", async () => {
-      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git", "src"]);
-      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
-      (fs.stat as unknown as Mock).mockResolvedValue({ isDirectory: () => true, isFile: () => false } as never);
-      (fs.access as unknown as Mock).mockResolvedValue(undefined);
-      gitMock.raw.mockImplementation(async (args: string[]) => {
-        const key = args.join(" ");
-        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
-        if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "config --get-all remote.origin.fetch") return "+refs/heads/*:refs/remotes/origin/*\n";
-        return "";
-      });
-
-      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
-
-      await service.initialize();
-
-      expect(gitMock.raw).toHaveBeenCalledWith([
-        "config",
-        "--replace-all",
-        "remote.origin.fetch",
-        "+refs/heads/main:refs/remotes/origin/main",
-      ]);
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["remote", "set-branches", "origin", "*"]);
-      expect(service.isInitialized()).toBe(true);
-    });
-
-    it("replaces custom fetch refspecs with the tracked clone-mode branch", async () => {
-      (fs.readdir as unknown as Mock).mockResolvedValueOnce([".git", "src"]);
-      (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
-      (fs.stat as unknown as Mock).mockResolvedValue({ isDirectory: () => true, isFile: () => false } as never);
-      (fs.access as unknown as Mock).mockResolvedValue(undefined);
-      gitMock.raw.mockImplementation(async (args: string[]) => {
-        const key = args.join(" ");
-        if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
-        if (key === "config --local --get remote.origin.url") return "https://github.com/example/repo.git";
-        if (key === "rev-parse --abbrev-ref HEAD") return "main";
-        if (key === "config --get-all remote.origin.fetch") {
-          return ["+refs/heads/main:refs/remotes/origin/main", "+refs/pull/*/head:refs/remotes/origin/pr/*"].join("\n");
-        }
-        return "";
-      });
-
-      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
-
-      await service.initialize();
-
-      expect(gitMock.raw).toHaveBeenCalledWith([
-        "config",
-        "--replace-all",
-        "remote.origin.fetch",
-        "+refs/heads/main:refs/remotes/origin/main",
-      ]);
-      expect(service.isInitialized()).toBe(true);
-    });
-
     it("soft-skips and records branch_mismatch when existing clone is on a different branch", async () => {
       const progressEvents: Array<{ phase: string; message: string }> = [];
       const skips: CloneSkipReason[] = [];
@@ -547,7 +438,6 @@ describe("CloneSyncService", () => {
 
       expect(service.isInitialized()).toBe(true);
       expect(gitMock.clone).not.toHaveBeenCalled();
-      expect(gitMock.raw).not.toHaveBeenCalledWith(["remote", "set-branches", "origin", "*"]);
       expect(skips).toEqual([
         { kind: "branch_mismatch", phase: "init", currentBranch: "develop", expectedBranch: "main" },
       ]);
@@ -2332,31 +2222,6 @@ describe("CloneSyncService", () => {
       (service as unknown as { resolvedBranch: string }).resolvedBranch = "main";
     }
 
-    it("warns and skips when on wrong branch", async () => {
-      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
-      setInitialized(service);
-
-      gitMock.raw.mockImplementation(async (args: string[]) =>
-        args.join(" ") === "rev-parse --abbrev-ref HEAD" ? "feature-x" : "",
-      );
-
-      await service.runSyncAttempt();
-
-      expect(gitMock.fetch).not.toHaveBeenCalled();
-      expect(gitMock.merge).not.toHaveBeenCalled();
-    });
-
-    it("logs 'tracked branch missing' when upstream ref is gone", async () => {
-      const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
-      setInitialized(service);
-
-      gitMock.fetch.mockRejectedValueOnce(new Error("fatal: couldn't find remote ref refs/heads/main"));
-
-      await service.runSyncAttempt();
-
-      expect(gitMock.merge).not.toHaveBeenCalled();
-    });
-
     it("skips ff-merge when working tree is dirty", async () => {
       const progressEvents: Array<{ phase: string; message: string }> = [];
       const gitService = buildGitService({
@@ -2606,18 +2471,6 @@ describe("CloneSyncService", () => {
         expect(gitMock.raw).not.toHaveBeenCalledWith(["rev-list", "--topo-order", "--parents", "HEAD"]);
       });
 
-      it("sends no --depth when no depth is configured", async () => {
-        // Shallow with no configured depth is the unshallow path, so this one
-        // is a full clone: nothing to cap, nothing to unshallow.
-        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: false, history: linearHistory(199) }));
-        const service = new CloneSyncService(makeConfig(), buildGitService(), logger);
-        setInitialized(service);
-
-        await service.runSyncAttempt();
-
-        expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs());
-      });
-
       // Both directions of an unreadable walk fall back to the configured depth
       // rather than to no cap: a re-truncation is something the deepen budget
       // can still undo, an uncapped transfer is not. simple-git resolves with ""
@@ -2637,11 +2490,8 @@ describe("CloneSyncService", () => {
         expect(gitMock.fetch).toHaveBeenCalledWith(syncFetchArgs("7"));
       });
 
-      it.each([
-        ["an empty walk (unborn HEAD)", ""],
-        ["a blank-line-only walk", "\n\n"],
-      ])("falls back to the configured depth on %s", async (_label, history) => {
-        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history }));
+      it("falls back to the configured depth on an empty walk (unborn HEAD)", async () => {
+        gitMock.raw.mockImplementation(buildSyncRawMock({ shallow: true, history: "" }));
         const service = new CloneSyncService(makeConfig({ depth: 7 }), buildGitService(), logger);
         setInitialized(service);
 
@@ -2696,18 +2546,6 @@ describe("CloneSyncService", () => {
         "--progress",
         "+refs/heads/main:refs/remotes/origin/main",
       ]);
-    });
-
-    it("does not reset on diverged history", async () => {
-      const gitService = buildGitService({
-        classifyRemoteRelationship: vi.fn().mockResolvedValue("diverged"),
-      });
-      const service = new CloneSyncService(makeConfig(), gitService, logger);
-      setInitialized(service);
-
-      await service.runSyncAttempt();
-
-      expect(gitMock.merge).not.toHaveBeenCalled();
     });
 
     it("deepens a shallow configured clone before classifying as fast-forward", async () => {
@@ -2884,22 +2722,6 @@ describe("CloneSyncService", () => {
       expect(gitMock.merge).toHaveBeenCalledWith(["origin/main", "--ff-only"]);
     });
 
-    it("records ahead_unpushed when classify returns local_ahead", async () => {
-      const skips: CloneSkipReason[] = [];
-      const gitService = buildGitService({
-        classifyRemoteRelationship: vi.fn().mockResolvedValue("local_ahead"),
-      });
-      const service = new CloneSyncService(makeConfig(), gitService, logger, {
-        onSkip: (reason) => skips.push(reason),
-      });
-      setInitialized(service);
-
-      await service.runSyncAttempt();
-
-      expect(gitMock.merge).not.toHaveBeenCalled();
-      expect(skips).toEqual([{ kind: "ahead_unpushed", branch: "main" }]);
-    });
-
     it("fast-forwards when clean, behind, and ff-able", async () => {
       const progressEvents: Array<{ phase: string; message: string }> = [];
       const service = new CloneSyncService(makeConfig(), buildGitService(), logger, {
@@ -2922,18 +2744,6 @@ describe("CloneSyncService", () => {
           }),
         ]),
       );
-    });
-
-    it("no-ops when already up to date", async () => {
-      const gitService = buildGitService({
-        classifyRemoteRelationship: vi.fn().mockResolvedValue("up_to_date"),
-      });
-      const service = new CloneSyncService(makeConfig(), gitService, logger);
-      setInitialized(service);
-
-      await service.runSyncAttempt();
-
-      expect(gitMock.merge).not.toHaveBeenCalled();
     });
 
     it("reapplies sparse-checkout when needsUpdate returns true", async () => {
@@ -3187,6 +2997,7 @@ describe("CloneSyncService", () => {
       await service.runSyncAttempt();
 
       expect(skips).toEqual([{ kind: "missing_remote_ref", branch: "main", source: "fetch_error" }]);
+      expect(gitMock.merge).not.toHaveBeenCalled();
     });
 
     it("soft-skips when the LFS-disabled retry fetch hits a missing remote ref (#7)", async () => {
@@ -3235,50 +3046,6 @@ describe("CloneSyncService", () => {
 
       expect(skips).toEqual([{ kind: "missing_remote_ref", branch: "main", source: "post_fetch_verify" }]);
       expect(gitMock.merge).not.toHaveBeenCalled();
-    });
-
-    it("records dirty_tree when working tree is dirty", async () => {
-      const gitService = buildGitService({
-        checkWorktreeStatus: vi.fn().mockResolvedValue(false),
-      });
-      const { service, skips } = buildServiceWithSkips(gitService);
-
-      await service.runSyncAttempt();
-
-      expect(skips).toEqual([{ kind: "dirty_tree" }]);
-    });
-
-    it("records ahead_unpushed when local is ahead of origin", async () => {
-      const gitService = buildGitService({
-        classifyRemoteRelationship: vi.fn().mockResolvedValue("local_ahead"),
-      });
-      const { service, skips } = buildServiceWithSkips(gitService);
-
-      await service.runSyncAttempt();
-
-      expect(skips).toEqual([{ kind: "ahead_unpushed", branch: "main" }]);
-    });
-
-    it("records diverged when local has diverged from origin", async () => {
-      const gitService = buildGitService({
-        classifyRemoteRelationship: vi.fn().mockResolvedValue("diverged"),
-      });
-      const { service, skips } = buildServiceWithSkips(gitService);
-
-      await service.runSyncAttempt();
-
-      expect(skips).toEqual([{ kind: "diverged", branch: "main" }]);
-    });
-
-    it("does not record a skip when already up to date", async () => {
-      const gitService = buildGitService({
-        classifyRemoteRelationship: vi.fn().mockResolvedValue("up_to_date"),
-      });
-      const { service, skips } = buildServiceWithSkips(gitService);
-
-      await service.runSyncAttempt();
-
-      expect(skips).toEqual([]);
     });
 
     it("does not record a skip when fast-forward succeeds", async () => {

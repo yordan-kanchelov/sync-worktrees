@@ -1,6 +1,5 @@
 import * as fs from "fs/promises";
 
-import * as cron from "node-cron";
 import simpleGit from "simple-git";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,12 +15,10 @@ import type { Mock, Mocked } from "vitest";
 // Mock all external dependencies
 vi.mock("fs/promises");
 vi.mock("simple-git");
-vi.mock("node-cron");
 // vi.mock('../utils/cli'); // Skip due to ESM issues
 
 describe("Integration Tests", () => {
   let mockGit: Mocked<SimpleGit>;
-  let mockScheduledTask: { start: Mock; stop: Mock };
   let mockLogger: Logger;
 
   // Origin's branches, as the for-each-ref inventory lists them.
@@ -61,13 +58,6 @@ describe("Integration Tests", () => {
     } as any;
 
     (simpleGit as unknown as Mock).mockReturnValue(mockGit);
-
-    // Setup mock cron
-    mockScheduledTask = {
-      start: vi.fn(),
-      stop: vi.fn(),
-    };
-    (cron.schedule as Mock).mockReturnValue(mockScheduledTask);
 
     // Setup mock fs
     (fs.access as Mock<any>).mockResolvedValue(undefined);
@@ -173,20 +163,6 @@ describe("Integration Tests", () => {
       }
     });
   });
-
-  describe("Cron scheduling", () => {
-    it("should run once and exit when runOnce is true", async () => {
-      const config = createMockConfig({ runOnce: true, logger: mockLogger });
-
-      const service = new WorktreeSyncService(config);
-      await service.initialize();
-      await service.sync();
-
-      // Should not schedule cron job
-      expect(cron.schedule).not.toHaveBeenCalled();
-    });
-  });
-
   describe("Error handling", () => {
     it("should handle and recover from sync errors", async () => {
       const config = createMockConfig({ runOnce: true, logger: mockLogger });

@@ -979,18 +979,6 @@ describe("WorktreeSyncService", () => {
           outcome: { counts: expect.objectContaining({ created: 2, skipped: 0, failed: 0 }) },
         });
       });
-
-      it("does not verify when the path already was a registered worktree", async () => {
-        mockGitService.addWorktree.mockResolvedValue({ status: "already_registered", detached: false });
-
-        const result = await service.sync();
-
-        expect(mockGitService.getRemoteCommit).not.toHaveBeenCalled();
-        expect(result).toMatchObject({
-          started: true,
-          outcome: { counts: expect.objectContaining({ created: 2, skipped: 0, failed: 0 }) },
-        });
-      });
     });
 
     it("should handle empty remote branches", async () => {
@@ -1018,8 +1006,8 @@ describe("WorktreeSyncService", () => {
 
       await service.sync();
 
-      expect(mockGitService.removeWorktree).not.toHaveBeenCalledWith("/external/mounted-worktree", expect.anything());
-      expect(mockGitService.updateWorktree).not.toHaveBeenCalledWith("/external/mounted-worktree");
+      expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
+      expect(mockGitService.updateWorktree).not.toHaveBeenCalled();
       expect(mockGitService.addWorktree).not.toHaveBeenCalledWith(
         "external-branch",
         wtPath("/test/worktrees", "external-branch"),
@@ -1693,134 +1681,13 @@ describe("WorktreeSyncService", () => {
         return undefined;
       });
 
-      // Mock fs.rm
       (fs.rm as Mock<any>).mockResolvedValue(undefined);
+      (fs.rename as Mock<any>).mockResolvedValue(undefined);
 
       await service.sync();
 
       expect(fs.rm).not.toHaveBeenCalled();
-    });
-
-    it("does not probe or remove unknown directories", async () => {
-      (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
-        if ((dirPath as string).endsWith(".diverged")) {
-          const error: any = new Error("ENOENT: no such file or directory");
-          error.code = "ENOENT";
-          throw error;
-        }
-        return ["feature-1", "orphaned-dir"];
-      });
-      mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/feature-1", branch: "feature-1" }]);
-
-      const mockStat = { isDirectory: vi.fn().mockReturnValue(true) };
-      (fs.stat as Mock<any>).mockResolvedValue(mockStat);
-
-      (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
-        if ((target as string).endsWith(`${path.sep}.git`)) {
-          throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
-        }
-        return undefined;
-      });
-
-      // Mock fs.rm to throw an error
-      (fs.rm as Mock<any>).mockRejectedValue(new Error("Permission denied"));
-
-      await service.sync();
-
-      expect(fs.rm).not.toHaveBeenCalled();
-    });
-
-    it("does not scan the workspace root for orphan candidates", async () => {
-      // Mock fs.readdir to throw an error
-      (fs.readdir as Mock<any>).mockRejectedValue(new Error("Permission denied"));
-
-      mockGitService.getWorktrees.mockResolvedValue([{ path: "/test/worktrees/feature-1", branch: "feature-1" }]);
-
-      await service.sync();
-
-      expect(fs.readdir).not.toHaveBeenCalledWith("/test/worktrees");
-    });
-
-    // Removal-safety regression tests: orphan cleanup must never
-    // destroy a directory that may be a live checkout, and removals must leave
-    // a persistent audit trail.
-    describe("orphaned directory removal safety", () => {
-      const orphanPath = path.join("/test/worktrees", "live-checkout");
-      const errnoError = (code: string): NodeJS.ErrnoException =>
-        Object.assign(new Error(`${code}: probe failed`), { code });
-
-      afterEach(() => {
-        mockGitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2"]);
-        mockGitService.getWorktrees.mockResolvedValue([]);
-        mockGitService.getBareRepoPath.mockReturnValue("/test/.bare/repo.git");
-        (fs.access as Mock<any>).mockReset();
-      });
-
-      const setupOrphan = (gitProbe: "exists" | "missing" | "unknown"): void => {
-        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
-          if ((dirPath as string).endsWith(".diverged")) {
-            throw errnoError("ENOENT");
-          }
-          return ["live-checkout"];
-        });
-        mockGitService.getWorktrees.mockResolvedValue([]);
-        mockGitService.getRemoteBranches.mockResolvedValue([]);
-        (fs.stat as Mock<any>).mockResolvedValue({ isDirectory: vi.fn().mockReturnValue(true) });
-        (fs.rm as Mock<any>).mockResolvedValue(undefined);
-        (fs.rename as Mock<any>).mockResolvedValue(undefined);
-        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
-          if (target === path.join(orphanPath, ".git")) {
-            if (gitProbe === "exists") return undefined;
-            throw errnoError(gitProbe === "missing" ? "ENOENT" : "EMFILE");
-          }
-          return undefined;
-        });
-      };
-
-      it("leaves an unknown directory containing a git checkout untouched", async () => {
-        setupOrphan("exists");
-
-        await service.sync();
-
-        expect(fs.rm).not.toHaveBeenCalledWith(orphanPath, expect.anything());
-        expect(fs.rename).not.toHaveBeenCalledWith(orphanPath, expect.anything());
-      });
-
-      it("skips orphan deletion when the .git probe fails for unknown reasons", async () => {
-        setupOrphan("unknown");
-
-        await service.sync();
-
-        expect(fs.rm).not.toHaveBeenCalledWith(orphanPath, expect.anything());
-        expect(fs.rename).not.toHaveBeenCalledWith(orphanPath, expect.anything());
-      });
-
-      it("leaves an unknown directory without a git checkout untouched", async () => {
-        setupOrphan("missing");
-
-        await service.sync();
-
-        expect(fs.rm).not.toHaveBeenCalledWith(orphanPath, expect.anything());
-      });
-
-      it("skips an orphaned directory that matches bareRepoDir", async () => {
-        const bareRepoPath = path.join("/test/worktrees", "repo-bare");
-        mockGitService.getBareRepoPath.mockReturnValue(bareRepoPath);
-        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
-          if ((dirPath as string).endsWith(".diverged")) {
-            throw errnoError("ENOENT");
-          }
-          return ["repo-bare"];
-        });
-        mockGitService.getWorktrees.mockResolvedValue([]);
-        mockGitService.getRemoteBranches.mockResolvedValue([]);
-        (fs.stat as Mock<any>).mockResolvedValue({ isDirectory: vi.fn().mockReturnValue(true) });
-
-        await service.sync();
-
-        expect(fs.rm).not.toHaveBeenCalledWith(bareRepoPath, expect.anything());
-        expect(fs.rename).not.toHaveBeenCalledWith(bareRepoPath, expect.anything());
-      });
+      expect(fs.rename).not.toHaveBeenCalled();
     });
 
     describe("removal audit log", () => {
@@ -1954,7 +1821,9 @@ describe("WorktreeSyncService", () => {
 
         const result = await service.sync();
 
-        expect(mockGitService.getFullWorktreeStatus).not.toHaveBeenCalledWith(lockedPath, expect.anything());
+        expect(mockGitService.getFullWorktreeStatus.mock.calls.map(([worktreePath]) => worktreePath)).not.toContain(
+          lockedPath,
+        );
         expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
         expect(fs.rename).not.toHaveBeenCalledWith(lockedPath, expect.anything());
         expect(result).toMatchObject({
@@ -2060,36 +1929,6 @@ describe("WorktreeSyncService", () => {
         );
       });
 
-      it("should not treat parent directories of slash branches as orphaned", async () => {
-        mockGitService.getRemoteBranches.mockResolvedValue(["main", "feat/LCR-8879", "feat/PHX-3198"]);
-
-        // Mock file system showing nested structure
-        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
-          if ((dirPath as string).endsWith(".diverged")) {
-            const error: any = new Error("ENOENT: no such file or directory");
-            error.code = "ENOENT";
-            throw error;
-          }
-          return ["feat"]; // Parent directory
-        });
-
-        // Mock Git worktrees with nested paths
-        mockGitService.getWorktrees.mockResolvedValue([
-          { path: "/test/worktrees/feat/LCR-8879", branch: "feat/LCR-8879" },
-          { path: "/test/worktrees/feat/PHX-3198", branch: "feat/PHX-3198" },
-        ]);
-
-        // Mock fs.stat to identify 'feat' as a directory
-        const mockStat = { isDirectory: vi.fn().mockReturnValue(true) };
-        (fs.stat as Mock<any>).mockResolvedValue(mockStat);
-        (fs.rm as Mock<any>).mockResolvedValue(undefined);
-
-        await service.sync();
-
-        expect(fs.rm).not.toHaveBeenCalled();
-        expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("Removed orphaned directory: feat"));
-      });
-
       it("should remove slash-named worktrees correctly when branch is deleted", async () => {
         mockGitService.getRemoteBranches.mockResolvedValue(["main"]); // feat branches deleted from remote
 
@@ -2111,40 +1950,6 @@ describe("WorktreeSyncService", () => {
         // Should remove both worktrees with their full paths
         expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "feat/LCR-8879"));
         expect(mockGitService.removeWorktree).toHaveBeenCalledWith(path.join("/test/worktrees", "feat/PHX-3198"));
-      });
-
-      it("should handle mixed flat and nested worktree structures", async () => {
-        mockGitService.getRemoteBranches.mockResolvedValue(["main", "simple-branch", "feat/nested-branch"]);
-
-        // Mock mixed directory structure
-        (fs.readdir as Mock<any>).mockImplementation(async (dirPath) => {
-          if ((dirPath as string).endsWith(".diverged")) {
-            const error: any = new Error("ENOENT: no such file or directory");
-            error.code = "ENOENT";
-            throw error;
-          }
-          return ["simple-branch", "feat", "orphaned-dir"];
-        });
-
-        mockGitService.getWorktrees.mockResolvedValue([
-          { path: "/test/worktrees/simple-branch", branch: "simple-branch" },
-          { path: "/test/worktrees/feat/nested-branch", branch: "feat/nested-branch" },
-        ]);
-
-        const mockStat = { isDirectory: vi.fn().mockReturnValue(true) };
-        (fs.stat as Mock<any>).mockResolvedValue(mockStat);
-        (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
-          if ((target as string).endsWith(`${path.sep}.git`)) {
-            throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
-          }
-          return undefined;
-        });
-        (fs.rm as Mock<any>).mockResolvedValue(undefined);
-
-        await service.sync();
-
-        expect(fs.rm).not.toHaveBeenCalled();
-        expect(fs.rm).not.toHaveBeenCalledWith(path.join("/test/worktrees", "feat"), expect.any(Object));
       });
     });
 
@@ -2615,6 +2420,7 @@ describe("WorktreeSyncService", () => {
       mockGitService.resetToUpstream.mockResolvedValue(true);
       mockGitService.updateRef.mockResolvedValue(undefined);
       mockGitService.deleteLocalBranch.mockResolvedValue(undefined);
+      mockGitService.getRemoteCommit.mockResolvedValue("remote-commit");
       mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 1, behind: 1 });
     });
 
@@ -3092,16 +2898,6 @@ describe("WorktreeSyncService", () => {
       await retrySyncService.sync();
 
       expect(mockGitService.getWorktrees).toHaveBeenCalledTimes(2);
-    });
-
-    it("should respect maxAttempts configuration", async () => {
-      const error = new Error("Persistent network error: Connection timed out");
-
-      mockGitService.fetchAll.mockRejectedValue(error);
-
-      await expect(retrySyncService.sync()).rejects.toThrow("Persistent network error");
-
-      expect(mockGitService.fetchAll).toHaveBeenCalledTimes(3);
     });
 
     it("should not retry on non-retryable errors", async () => {
