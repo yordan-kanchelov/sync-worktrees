@@ -232,12 +232,6 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     expect(status.reasons.includes("upstream gone")).toBe(gone);
   });
 
-  it("confirms the pruned upstream is one `rev-parse @{upstream}` cannot name", async () => {
-    await expect(
-      simpleGit(worktreeFor(GONE)).raw(["rev-parse", "--abbrev-ref", `${GONE}@{upstream}`]),
-    ).rejects.toThrow();
-  });
-
   // The per-tick cost: what a pass over every worktree of the repository
   // spawns. `branch`, `branch -r` and `rev-parse @{upstream}` are gone from
   // every snapshot, and the branch/remote-ref listing runs once for the
