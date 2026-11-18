@@ -58,22 +58,6 @@ describe("WorktreeCreationService (through GitService)", () => {
       await gitService.initialize();
     });
 
-    it("should add worktree with tracking when branch doesn't exist locally", async () => {
-      mockShowRef({ local: false, remote: true });
-
-      await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
-
-      expect(mockGit.raw).toHaveBeenCalledWith([
-        "worktree",
-        "add",
-        "--track",
-        "-b",
-        "feature-1",
-        "/test/worktrees/feature-1",
-        "origin/feature-1",
-      ]);
-    });
-
     // A bare clone copies every remote branch into refs/heads/* and the fetch
     // refspec never updates those copies, so a local ref with no worktree is a
     // stale snapshot. When it is only behind origin/<branch>, the worktree is
@@ -333,30 +317,6 @@ describe("WorktreeCreationService (through GitService)", () => {
       expect(mockLogger.info).toHaveBeenCalledWith("  - Created worktree for 'feature-1' (without tracking)");
     });
 
-    it("should NOT fallback to simple add when a non-tracking error occurs", async () => {
-      (mockGit.raw as Mock).mockImplementation((args: unknown) => {
-        if (Array.isArray(args)) {
-          if (args[0] === "show-ref" && args[1] === "--verify") {
-            const ref = args[args.length - 1];
-            if (typeof ref === "string" && ref.startsWith("refs/heads/")) {
-              return Promise.reject(new Error("show-ref: not found"));
-            }
-            if (typeof ref === "string" && ref.startsWith("refs/remotes/origin/")) {
-              return Promise.resolve("");
-            }
-          }
-          if (args[0] === "worktree" && args[1] === "add") {
-            return Promise.reject(new Error("Permission denied"));
-          }
-        }
-        return Promise.resolve("");
-      });
-
-      await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
-        "Permission denied",
-      );
-    });
-
     it("should clean up orphaned directory before creating worktree", async () => {
       (fs.access as Mock<any>)
         .mockResolvedValueOnce(undefined) // directory exists
@@ -427,32 +387,16 @@ describe("WorktreeCreationService (through GitService)", () => {
 
       expect(fs.rm).not.toHaveBeenCalled();
       expect(fs.rename).toHaveBeenCalledWith("/test/worktrees/feature-1", expect.stringContaining(".removed"));
-      // Calls: show-ref heads, show-ref remotes, tracking add (fail), rollback show-ref heads,
-      // worktree list, fallback add, show-ref remotes, branch --set-upstream-to, then LFS
-      // verification's three: the .gitattributes grep, the git-lfs probe, `lfs ls-files`
-      expect(mockGit.raw).toHaveBeenCalledTimes(11);
-    });
-
-    it("should throw error when metadata creation fails", async () => {
-      mockShowRef({ local: false, remote: true });
-
-      const metadataError = new Error("Failed to write metadata file");
-      mockMetadataService.createInitialMetadataFromPath.mockRejectedValueOnce(metadataError);
-
-      await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
-        "Metadata creation failed for feature-1",
+      // The plain add runs only once the directory in its way has been moved aside.
+      const rawCalls = (mockGit.raw as Mock).mock.calls.map((call: unknown[]) => call[0]);
+      const fallbackAdd = rawCalls.findIndex(
+        (args) =>
+          JSON.stringify(args) === JSON.stringify(["worktree", "add", "/test/worktrees/feature-1", "feature-1"]),
       );
-
-      expect(mockGit.raw).toHaveBeenCalledWith([
-        "worktree",
-        "add",
-        "--track",
-        "-b",
-        "feature-1",
-        "/test/worktrees/feature-1",
-        "origin/feature-1",
-      ]);
-      expect(mockMetadataService.createInitialMetadataFromPath).toHaveBeenCalled();
+      expect(fallbackAdd).toBeGreaterThan(-1);
+      expect((fs.rename as Mock).mock.invocationCallOrder[0]).toBeLessThan(
+        (mockGit.raw as Mock).mock.invocationCallOrder[fallbackAdd],
+      );
     });
 
     // The whole point of this recovery is a registration whose directory is

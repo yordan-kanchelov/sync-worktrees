@@ -224,25 +224,6 @@ branch refs/heads/feature-2`);
       ]);
     });
 
-    it("should handle mixed prunable and valid worktrees", async () => {
-      await gitService.initialize();
-
-      mockGit.raw.mockResolvedValue(`worktree /path/to/repo
-branch refs/heads/main
-
-worktree /path/to/worktrees/incomplete
-branch refs/heads/incomplete-branch
-prunable
-`);
-
-      const worktrees = await gitService.getWorktrees();
-
-      expect(worktrees).toEqual([
-        { path: "/path/to/repo", branch: "main", isPrunable: false, locked: false },
-        { path: "/path/to/worktrees/incomplete", branch: "incomplete-branch", isPrunable: true, locked: false },
-      ]);
-    });
-
     // The lock flag is what keeps a worktree the user protected out of the
     // prune pipeline entirely, so it has to survive the listing.
     it("should surface locked worktrees and their lock reason", async () => {

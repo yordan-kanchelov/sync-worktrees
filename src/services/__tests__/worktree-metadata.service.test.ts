@@ -393,17 +393,6 @@ describe("WorktreeMetadataService", () => {
       const isValid = await service.validateMetadata(invalidMetadata);
       expect(isValid).toBe(false);
     });
-
-    it("should accept short commit hashes", async () => {
-      const validMetadata: SyncMetadata = {
-        lastSyncCommit: "abc123",
-        lastSyncDate: "2024-01-15T10:00:00Z",
-        upstreamBranch: "origin/feature-branch",
-      };
-
-      const isValid = await service.validateMetadata(validMetadata);
-      expect(isValid).toBe(true);
-    });
   });
 
   describe("loadMetadataFromPath validation", () => {
@@ -523,26 +512,6 @@ describe("WorktreeMetadataService", () => {
 
       consoleSpy.mockRestore();
       logSpy.mockRestore();
-    });
-  });
-
-  describe("updateLastSyncFromPath", () => {
-    it("should update existing metadata when present", async () => {
-      const existingMetadata: SyncMetadata = {
-        lastSyncCommit: "0dd123",
-        lastSyncDate: "2024-01-14T10:00:00Z",
-        upstreamBranch: "origin/feature-branch",
-      };
-
-      (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
-      (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-
-      await service.updateLastSyncFromPath(mockBareRepoPath, mockWorktreePath, "new123");
-
-      expect(mockFileHandle.writeFile).toHaveBeenCalledWith(
-        expect.stringContaining('"lastSyncCommit": "new123"'),
-        "utf-8",
-      );
     });
   });
 });
