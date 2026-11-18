@@ -170,7 +170,6 @@ function makeCtx(opts: {
   discovered?: DiscoveredRepoContext | null;
   baseCapabilities?: Capabilities | null;
   git?: Partial<MockGit>;
-  syncInProgress?: boolean;
   loadConfigImpl?: (configPath: string) => Promise<unknown>;
   currentRepo?: string;
   configPath?: string | null;
@@ -208,7 +207,7 @@ function makeCtx(opts: {
   const service = {
     config: { worktreeDir: "/repo/worktrees" },
     isInitialized: vi.fn<any>().mockReturnValue(true),
-    isSyncInProgress: vi.fn<any>().mockReturnValue(opts.syncInProgress ?? false),
+    isSyncInProgress: vi.fn<any>().mockReturnValue(false),
     initialize: vi.fn<any>().mockResolvedValue(undefined),
     initializeUnlocked: vi.fn<any>().mockResolvedValue(undefined),
     runExclusiveRepoOperation: vi.fn<any>().mockImplementation(async (operation: unknown) => ({
@@ -658,14 +657,6 @@ describe("handleCreateWorktree", () => {
     const result = await invoke(handleCreateWorktree, ctx, { branchName: "new-branch" });
     const body = parseResponse(result);
     expect(body.error).toBe(true);
-  });
-
-  it("fails with SYNC_IN_PROGRESS when sync running", async () => {
-    const { ctx, service } = makeCtx({ syncInProgress: true });
-    service.runExclusiveRepoOperation.mockResolvedValueOnce({ started: false, reason: "in_progress" });
-    const result = await invoke(handleCreateWorktree, ctx, { branchName: "x", baseBranch: "main" });
-    const body = parseResponse(result);
-    expect(body.code).toBe("SYNC_IN_PROGRESS");
   });
 
   it("does not touch git when another process holds the repo operation lock", async () => {

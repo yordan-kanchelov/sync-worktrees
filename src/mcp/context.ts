@@ -386,19 +386,9 @@ export class RepositoryContext {
     this.currentRepo = name;
   }
 
-  /** @internal Test-only helper — returns the size of the internal repo map. */
-  __repoCountForTest(): number {
-    return this.repos.size;
-  }
-
   /** @internal Test-only helper — returns the size of the discovery cache. */
   __discoveryCacheSizeForTest(): number {
     return this.discoveryCache.size;
-  }
-
-  /** @internal Test-only helper — exposes the internal selection state. */
-  __getRepositorySelectionStateForTest(): unknown {
-    return this.getRepositorySelectionState();
   }
 
   private async discoverSiblingRepositories(currentBareRepoPath: string): Promise<SiblingRepository[]> {

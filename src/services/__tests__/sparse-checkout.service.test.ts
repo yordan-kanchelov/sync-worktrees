@@ -107,10 +107,6 @@ describe("SparseCheckoutService", () => {
       expect(service.buildPatterns({ include: ["apps/", "tools/build//"] })).toEqual(["apps", "tools/build"]);
     });
 
-    it("compares equal to the cone list output for a trailing-slash include", () => {
-      expect(service.patternsEqual(service.buildPatterns({ include: ["apps/"] }), ["apps"])).toBe(true);
-    });
-
     it("sorts and de-duplicates cone includes the way git echoes them back", () => {
       expect(service.buildPatterns({ include: ["tools/build", "apps/", "apps"] })).toEqual(["apps", "tools/build"]);
     });

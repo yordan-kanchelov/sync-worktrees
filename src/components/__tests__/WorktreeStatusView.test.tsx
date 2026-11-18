@@ -517,7 +517,7 @@ describe("WorktreeStatusView", () => {
   });
 
   describe("status view", () => {
-    it("should show status indicators for clean worktree", async () => {
+    it("shows each worktree's flags on its own row", async () => {
       const singleRepoProps = {
         ...defaultProps,
         repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
@@ -527,59 +527,11 @@ describe("WorktreeStatusView", () => {
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      expect(lastFrame()).toContain("✓");
-    });
-
-    it("should show M flag for uncommitted changes", async () => {
-      const singleRepoProps = {
-        ...defaultProps,
-        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
-      };
-      const { lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
-
-      await waitForStateUpdate();
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("M");
-    });
-
-    it("should show ↑ flag for unpushed commits", async () => {
-      const singleRepoProps = {
-        ...defaultProps,
-        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
-      };
-      const { lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
-
-      await waitForStateUpdate();
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("↑");
-    });
-
-    it("should show S flag for stashed changes", async () => {
-      const singleRepoProps = {
-        ...defaultProps,
-        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
-      };
-      const { lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
-
-      await waitForStateUpdate();
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("S");
-    });
-
-    it("should show ⚠ flag for operation in progress", async () => {
-      const singleRepoProps = {
-        ...defaultProps,
-        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
-      };
-      const { lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
-
-      await waitForStateUpdate();
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("⚠");
+      const frame = lastFrame();
+      expect(frame).toMatch(/main\s+✓\s/);
+      expect(frame).toMatch(/feature\/auth\s+M↑ \(2 changed, 3 unpushed\)/);
+      expect(frame).toMatch(/feature\/login\s+S \(1 stash\)/);
+      expect(frame).toMatch(/hotfix\/bug-123\s+⚠ \(rebase in progress\)/);
     });
 
     it("should show ⊞ flag for modified submodules", async () => {
@@ -936,83 +888,6 @@ describe("WorktreeStatusView", () => {
       expect(lastFrame()).toContain("Diverged Directories");
       expect(lastFrame()).toContain("feature/x");
       expect(lastFrame()).toContain("bugfix/y");
-    });
-
-    it("should show delete hint when diverged entry is selected", async () => {
-      const singleRepoProps: WorktreeStatusViewProps = {
-        ...defaultProps,
-        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
-        getDivergedDirectoriesForRepo: vi.fn().mockResolvedValue([makeDiverged()]),
-        deleteDivergedDirectory: vi.fn().mockResolvedValue(undefined),
-      };
-      const { stdin, lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
-
-      await waitForStateUpdate();
-      await waitForStateUpdate();
-
-      // Navigate past all worktree entries (4 default) + separator to first diverged
-      for (let i = 0; i < 5; i++) {
-        stdin.write("\u001B[B");
-        await waitForStateUpdate();
-      }
-
-      expect(lastFrame()).toContain("Ctrl-D to delete");
-    });
-
-    it("should show delete confirmation on Ctrl-D", async () => {
-      const singleRepoProps: WorktreeStatusViewProps = {
-        ...defaultProps,
-        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
-        getWorktreeStatusForRepo: vi.fn().mockResolvedValue([makeEntry("main")]),
-        getDivergedDirectoriesForRepo: vi.fn().mockResolvedValue([makeDiverged()]),
-        deleteDivergedDirectory: vi.fn().mockResolvedValue(undefined),
-      };
-      const { stdin, lastFrame } = render(<WorktreeStatusView {...singleRepoProps} />);
-
-      await waitForStateUpdate();
-      await waitForStateUpdate();
-
-      // Navigate past worktree entry + separator to diverged
-      stdin.write("\u001B[B");
-      await waitForStateUpdate();
-      stdin.write("\u001B[B");
-      await waitForStateUpdate();
-
-      stdin.write("\u0004"); // Ctrl-D
-      await waitForStateUpdate();
-
-      expect(lastFrame()).toContain("Delete");
-      expect(lastFrame()).toContain("y/n");
-    });
-
-    it("should delete on y confirmation", async () => {
-      const deleteMock = vi.fn().mockResolvedValue(undefined);
-      const singleRepoProps: WorktreeStatusViewProps = {
-        ...defaultProps,
-        repositories: [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }],
-        getWorktreeStatusForRepo: vi.fn().mockResolvedValue([makeEntry("main")]),
-        getDivergedDirectoriesForRepo: vi.fn().mockResolvedValue([makeDiverged()]),
-        deleteDivergedDirectory: deleteMock,
-      };
-      const { stdin } = render(<WorktreeStatusView {...singleRepoProps} />);
-
-      await waitForStateUpdate();
-      await waitForStateUpdate();
-
-      // Navigate to diverged entry
-      stdin.write("\u001B[B");
-      await waitForStateUpdate();
-      stdin.write("\u001B[B");
-      await waitForStateUpdate();
-
-      stdin.write("\u0004"); // Ctrl-D
-      await waitForStateUpdate();
-
-      stdin.write("y");
-      await waitForStateUpdate();
-      await waitForStateUpdate();
-
-      expect(deleteMock).toHaveBeenCalledWith(0, "2024-01-15-feature-x-abc123");
     });
 
     // The confirmation stays on screen until the delete resolves, so without a

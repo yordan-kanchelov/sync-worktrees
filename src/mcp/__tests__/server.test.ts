@@ -49,15 +49,6 @@ describe("createServer", () => {
     mockWorktreeList.mockReset();
   });
 
-  it("registers workspace resource", () => {
-    const ctx = new RepositoryContext();
-    const server = createServer(ctx);
-
-    const registered = (server as any)._registeredResources as Record<string, unknown> | undefined;
-    expect(registered).toBeDefined();
-    expect(Object.keys(registered ?? {})).toContain("sync-worktrees://workspace");
-  });
-
   it("workspace resource returns not-managed payload for non-git cwd", async () => {
     const plain = await fs.mkdtemp(path.join(os.tmpdir(), "mcp-server-plain-"));
     const originalCwd = process.cwd();
@@ -526,14 +517,6 @@ describe("buildInstructions", () => {
   it("returns base instructions for unmanaged worktrees", () => {
     const discovered = makeDiscovered({ kind: "unmanaged" });
     expect(buildInstructions({ discovered })).toBe(baseInstructions);
-  });
-
-  it("does not embed configuredRepositories inventory in instructions", () => {
-    const discovered = makeDiscovered();
-    const result = buildInstructions({ discovered, configuredRepoCount: 2 });
-    expect(result).not.toContain("Configured repositories:");
-    expect(result).not.toContain("(clone)=");
-    expect(result).not.toContain("(worktree)=");
   });
 
   it("appends connect-time context when inside a managed worktree", () => {

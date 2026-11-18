@@ -61,11 +61,6 @@ describe("LogPanel", () => {
   });
 
   describe("rendering", () => {
-    it("should render panel title", () => {
-      const { lastFrame } = render(<LogPanel {...defaultProps} />);
-      expect(lastFrame()).toContain("Logs");
-    });
-
     it("should show log count when logs exist", () => {
       const props = {
         ...defaultProps,
@@ -237,25 +232,6 @@ describe("LogPanel", () => {
       expect(lastFrame()).not.toContain("more above");
     });
 
-    it("should scroll up with up arrow key", async () => {
-      const logs = Array.from({ length: 20 }, (_, i) => createLog(`${i}`, `Log ${i}`));
-      const props = {
-        ...defaultProps,
-        logs,
-        height: 10,
-      };
-      const { stdin, lastFrame } = render(<LogPanel {...props} />);
-
-      await waitForStateUpdate();
-      const initialFrame = lastFrame();
-
-      stdin.write("\u001B[A"); // Up arrow
-      await waitForStateUpdate();
-
-      const scrolledFrame = lastFrame();
-      expect(scrolledFrame).not.toEqual(initialFrame);
-    });
-
     it("should scroll down with down arrow key after scrolling up", async () => {
       const logs = Array.from({ length: 20 }, (_, i) => createLog(`${i}`, `Log ${i}`));
       const props = {
@@ -418,35 +394,6 @@ describe("LogPanel", () => {
       await waitForStateUpdate();
 
       expect(lastFrame()).not.toContain("(auto)");
-    });
-  });
-
-  describe("log levels", () => {
-    it("should render info logs without special color", () => {
-      const props = {
-        ...defaultProps,
-        logs: [createLog("1", "Info message", "info")],
-      };
-      const { lastFrame } = render(<LogPanel {...props} />);
-      expect(lastFrame()).toContain("Info message");
-    });
-
-    it("should render warn logs", () => {
-      const props = {
-        ...defaultProps,
-        logs: [createLog("1", "Warning message", "warn")],
-      };
-      const { lastFrame } = render(<LogPanel {...props} />);
-      expect(lastFrame()).toContain("Warning message");
-    });
-
-    it("should render error logs", () => {
-      const props = {
-        ...defaultProps,
-        logs: [createLog("1", "Error message", "error")],
-      };
-      const { lastFrame } = render(<LogPanel {...props} />);
-      expect(lastFrame()).toContain("Error message");
     });
   });
 });

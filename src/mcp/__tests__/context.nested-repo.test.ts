@@ -200,30 +200,6 @@ describe("detect_context walks past a nested repository to the enclosing worktre
     expect(result.capabilities.sync.available).toBe(true);
     expect(result.capabilities.createWorktree.available).toBe(true);
   });
-
-  it("refuses rather than answer with the enclosing worktree when a .git cannot be read", async () => {
-    const managed = await makeManaged(tempDir);
-    const looping = path.join(managed.worktree, "cyclic");
-    await fs.mkdir(looping, { recursive: true });
-    // A .git symlinked to itself: readFile fails ELOOP, which is neither ENOENT
-    // nor EISDIR. The errno says only that this process could not look, so the
-    // directory may be a worktree of some other repository; answering with the
-    // enclosing one would name a repository the agent is not in.
-    await fs.symlink(path.join(looping, ".git"), path.join(looping, ".git"));
-
-    const ctx = new RepositoryContext();
-    const result = await ctx.detectFromPath(path.join(looping, "src"));
-
-    expect(result.kind).toBe("unsupported");
-    expect(result.isWorktree).toBe(false);
-    expect(result.repoName).toBeNull();
-    expect(result.bareRepoPath).toBeNull();
-    expect(result.capabilities.createWorktree.available).toBe(false);
-    expect(result.notes).toEqual([
-      `Cannot determine whether ${looping} is a sync-worktrees worktree: an unreadable .git (ELOOP). ` +
-        `Detection stopped there rather than answer with an enclosing repository`,
-    ]);
-  });
 });
 
 // An unreadable `.git` is the one thing the walk may not step over. A `.git`

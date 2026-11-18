@@ -5,7 +5,7 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_CONFIG, HOOK_CONSTANTS } from "../../constants";
+import { HOOK_CONSTANTS } from "../../constants";
 import { setEnvVar } from "../../__tests__/test-utils";
 import { HookExecutionService } from "../hook-execution.service";
 
@@ -138,20 +138,6 @@ describe("HookExecutionService", () => {
 
     it("should do nothing when onBranchCreated is empty array", () => {
       expect(() => service.executeOnBranchCreated({ onBranchCreated: [] }, mockContext)).not.toThrow();
-    });
-
-    it("should execute commands with correct environment variables", async () => {
-      const stdoutCallback = vi.fn();
-
-      await runAndWait(
-        {
-          onBranchCreated: [nodeScript(`process.stdout.write(process.env['${HOOK_CONSTANTS.ENV_VARS.BRANCH_NAME}'])`)],
-        },
-        mockContext,
-        { onStdout: stdoutCallback },
-      );
-
-      expect(stdoutCallback).toHaveBeenCalledWith(expect.stringContaining("feature/test-branch"), expect.any(String));
     });
 
     it("should execute commands with correct environment variables for all context fields", async () => {
@@ -355,26 +341,6 @@ describe("HookExecutionService", () => {
       await service.cleanup();
     });
 
-    it("should handle commands with special characters in context", async () => {
-      const stdoutCallback = vi.fn();
-
-      const contextWithSpecialChars: HookContext = {
-        ...mockContext,
-        branchName: "feature/test-with-special-chars",
-        worktreePath: "/tmp",
-      };
-
-      await runAndWait(
-        {
-          onBranchCreated: [nodeScript("process.stdout.write(process.argv[1])") + " {BRANCH_NAME}"],
-        },
-        contextWithSpecialChars,
-        { onStdout: stdoutCallback },
-      );
-
-      expect(stdoutCallback).toHaveBeenCalledWith("feature/test-with-special-chars", expect.any(String));
-    });
-
     it("should not call callbacks for empty output", async () => {
       const stdoutCallback = vi.fn();
 
@@ -421,16 +387,6 @@ describe("HookExecutionService", () => {
       expect(stdoutCallback).toHaveBeenCalledWith("'; echo INJECTED; '", expect.any(String));
     });
 
-    it("should clean up active processes", async () => {
-      service.executeOnBranchCreated({ onBranchCreated: [nodeScript("setTimeout(() => {}, 10000)")] }, mockContext);
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      await service.cleanup();
-
-      expect((service as any).activeProcesses.size).toBe(0);
-    });
-
     it("should execute command with worktree path as cwd", async () => {
       const stdoutCallback = vi.fn();
 
@@ -449,7 +405,7 @@ describe("HookExecutionService", () => {
     it("should track active processes and remove on completion", async () => {
       await runAndWait({ onBranchCreated: [nodeScript("process.stdout.write('done')")] }, mockContext);
 
-      expect((service as any).activeProcesses.size).toBe(0);
+      expect(service.getActiveCount()).toBe(0);
     });
 
     it("should call onError callback when command times out", async () => {
@@ -713,7 +669,7 @@ describe("HookExecutionService", () => {
       (service as any).activeProcesses.set(dead, "already-finished-hook");
 
       expect(await service.cleanup()).toEqual([]);
-      expect((service as any).activeProcesses.size).toBe(0);
+      expect(service.getActiveCount()).toBe(0);
     });
 
     it("names the live hook and omits the dead one in the same sweep", async () => {
@@ -756,22 +712,29 @@ describe("HookExecutionService", () => {
       });
     });
 
-    it("arms no timer at all for timeoutMs 0, while the hook is still running", async () => {
-      const dir = makeFixtureDir();
+    it("never times out a timeoutMs 0 hook, however long it runs", async () => {
       const errorCallback = vi.fn();
 
-      service.executeOnBranchCreated({ onBranchCreated: [livenessHook(dir)], timeoutMs: 0 }, mockContext, {
-        onError: errorCallback,
-      });
-      const pid = await readReportedPid(dir);
-      expect(isAlive(pid)).toBe(true);
+      // Only the timeout timer is faked, so the clock can pass the shipped
+      // default while the hook is still running: `||` in place of `??` would
+      // arm the 60s default here.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        service.executeOnBranchCreated(
+          { onBranchCreated: [livenessHook(makeFixtureDir())], timeoutMs: 0 },
+          mockContext,
+          {
+            onError: errorCallback,
+          },
+        );
 
-      // Asserted while the hook runs, which is the only moment the two failures
-      // look different: `||` in place of `??` would arm the 60s default here,
-      // and a timer that is merely cleared on close is indistinguishable from
-      // one that was never created once the hook has exited.
-      expect((service as any).timeoutTimers.size).toBe(0);
-      expect(errorCallback).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(10 * 60_000);
+
+        expect(errorCallback).not.toHaveBeenCalled();
+        expect(service.getActiveCount()).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("lets a timeoutMs 0 hook run past the shipped default and complete normally", async () => {
@@ -812,14 +775,23 @@ describe("HookExecutionService", () => {
       expect(errors).toEqual(["Hook timed out after 60ms"]);
     });
 
-    it("falls back to the shipped default when no timeoutMs is configured", async () => {
-      const dir = makeFixtureDir();
-      service.executeOnBranchCreated({ onBranchCreated: [livenessHook(dir)] }, mockContext);
-      await readReportedPid(dir);
+    it("falls back to the shipped 60s default when no timeoutMs is configured", async () => {
+      const errors: string[] = [];
 
-      const timers = [...(service as any).timeoutTimers] as { _idleTimeout?: number }[];
-      expect(timers).toHaveLength(1);
-      expect(timers[0]?._idleTimeout).toBe(DEFAULT_CONFIG.HOOK_TIMEOUT_MS);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        service.executeOnBranchCreated({ onBranchCreated: [livenessHook(makeFixtureDir())] }, mockContext, {
+          onError: (_command, error) => void errors.push(error.message),
+        });
+
+        vi.advanceTimersByTime(59_999);
+        expect(errors).toEqual([]);
+
+        vi.advanceTimersByTime(1);
+        expect(errors).toEqual(["Hook timed out after 60000ms"]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

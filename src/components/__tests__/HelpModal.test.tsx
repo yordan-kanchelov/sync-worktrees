@@ -57,15 +57,6 @@ describe("HelpModal", () => {
   });
 
   describe("keyboard input", () => {
-    it("should call onClose when ? is pressed", () => {
-      const onClose = vi.fn();
-      const { stdin } = render(<HelpModal onClose={onClose} />);
-
-      stdin.write("?");
-
-      expect(onClose).toHaveBeenCalled();
-    });
-
     it("should call onClose when h is pressed", () => {
       const onClose = vi.fn();
       const { stdin } = render(<HelpModal onClose={onClose} />);

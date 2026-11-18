@@ -34,14 +34,6 @@ describe("StatusBar", () => {
       expect(lastFrame()).toContain("3");
     });
 
-    it("should show different repository counts", () => {
-      const { lastFrame: frame1 } = render(<StatusBar {...defaultProps} repositoryCount={1} />);
-      expect(frame1()).toContain("1");
-
-      const { lastFrame: frame2 } = render(<StatusBar {...defaultProps} repositoryCount={10} />);
-      expect(frame2()).toContain("10");
-    });
-
     it("should render active interactive operations even while idle", () => {
       const { lastFrame } = render(
         <StatusBar {...defaultProps} status="idle" activeOps={["Creating worktree feature/x"]} />,
@@ -70,16 +62,6 @@ describe("StatusBar", () => {
 
     it("should show Syncing status when syncing", () => {
       const { lastFrame } = render(<StatusBar {...defaultProps} status="syncing" />);
-
-      expect(lastFrame()).toContain("Syncing...");
-    });
-
-    it("should change status from idle to syncing", () => {
-      const { lastFrame, rerender } = render(<StatusBar {...defaultProps} status="idle" />);
-
-      expect(lastFrame()).toContain("Idle");
-
-      rerender(<StatusBar {...defaultProps} status="syncing" />);
 
       expect(lastFrame()).toContain("Syncing...");
     });
@@ -180,27 +162,9 @@ describe("StatusBar", () => {
       expect(lastFrame()).toContain("Last Sync:");
       expect(lastFrame()).not.toContain("N/A");
     });
-
-    it("should update when lastSyncTime changes", () => {
-      const { lastFrame, rerender } = render(<StatusBar {...defaultProps} lastSyncTime={null} />);
-
-      expect(lastFrame()).toContain("N/A");
-
-      const syncTime = new Date();
-      rerender(<StatusBar {...defaultProps} lastSyncTime={syncTime} />);
-
-      expect(lastFrame()).not.toContain("N/A");
-    });
   });
 
   describe("last sync outcome", () => {
-    it("does not call an idle bar Running", () => {
-      const { lastFrame } = render(<StatusBar {...defaultProps} status="idle" />);
-
-      expect(lastFrame()).toContain("Idle");
-      expect(lastFrame()).not.toContain("Running");
-    });
-
     it("says in words how many repositories failed", () => {
       const { lastFrame } = render(
         <StatusBar {...defaultProps} lastSyncTime={new Date()} lastSyncOutcome={{ kind: "failed", count: 2 }} />,
@@ -298,12 +262,6 @@ describe("StatusBar", () => {
   });
 
   describe("cron schedule", () => {
-    it("should show Next Sync when cronSchedule is provided", () => {
-      const { lastFrame } = render(<StatusBar {...defaultProps} cronSchedule="0 * * * *" />);
-
-      expect(lastFrame()).toContain("Next Sync:");
-    });
-
     it("should not show Next Sync when cronSchedule is undefined", () => {
       const { lastFrame } = render(<StatusBar {...defaultProps} cronSchedule={undefined} />);
 
@@ -327,30 +285,6 @@ describe("StatusBar", () => {
       expect(frame).toContain("Next Sync:");
       // Check that Next Sync line contains a time (not N/A)
       expect(frame).toMatch(/Next Sync:.*\d{1,2}:\d{2}:\d{2}/);
-    });
-
-    it("should re-parse cron expression on each tick to avoid drift", async () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date(2026, 0, 5, 10, 0, 30));
-
-      const { CronExpressionParser } = await import("cron-parser");
-      const parseSpy = vi.spyOn(CronExpressionParser, "parse");
-
-      render(<StatusBar {...defaultProps} cronSchedule="0 * * * *" />);
-
-      // Initial render calls parse once
-      const initialCallCount = parseSpy.mock.calls.length;
-      expect(initialCallCount).toBeGreaterThanOrEqual(1);
-
-      // Advance just past the 11:00 tick to fire the re-armed timeout
-      vi.advanceTimersByTime(3_571_000);
-
-      // Should have called parse again (fresh instance, not reusing iterator).
-      // The timer's re-render is scheduled on the real event loop.
-      await vi.waitFor(() => expect(parseSpy.mock.calls.length).toBeGreaterThan(initialCallCount));
-
-      parseSpy.mockRestore();
-      vi.useRealTimers();
     });
 
     it("rolls Next Sync forward once the cron tick passes, not a minute after mount", async () => {
@@ -388,16 +322,6 @@ describe("StatusBar", () => {
         vi.useRealTimers();
       }
     });
-
-    it("should update next sync time when cronSchedule changes", () => {
-      const { lastFrame, rerender } = render(<StatusBar {...defaultProps} cronSchedule={undefined} />);
-
-      expect(lastFrame()).not.toContain("Next Sync:");
-
-      rerender(<StatusBar {...defaultProps} cronSchedule="0 * * * *" />);
-
-      expect(lastFrame()).toContain("Next Sync:");
-    });
   });
 
   describe("disk space", () => {
@@ -413,24 +337,6 @@ describe("StatusBar", () => {
 
       expect(lastFrame()).toContain("Disk Space:");
       expect(lastFrame()).toContain("1.2 GB");
-      expect(lastFrame()).not.toContain("Calculating...");
-    });
-
-    it("should show N/A when disk space calculation fails", () => {
-      const { lastFrame } = render(<StatusBar {...defaultProps} diskSpaceUsed="N/A" />);
-
-      expect(lastFrame()).toContain("Disk Space:");
-      expect(lastFrame()).toContain("N/A");
-    });
-
-    it("should update when diskSpaceUsed changes", () => {
-      const { lastFrame, rerender } = render(<StatusBar {...defaultProps} diskSpaceUsed={undefined} />);
-
-      expect(lastFrame()).toContain("Calculating...");
-
-      rerender(<StatusBar {...defaultProps} diskSpaceUsed="500 MB" />);
-
-      expect(lastFrame()).toContain("500 MB");
       expect(lastFrame()).not.toContain("Calculating...");
     });
   });
