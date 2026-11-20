@@ -17,9 +17,6 @@ import type { Logger } from "../logger.service";
 import type { RemovalAuditService } from "../removal-audit.service";
 import type { TrashEntry, TrashReason } from "../trash.service";
 
-// Real filesystem everywhere except the one path a test declares undeletable:
-// an ESM namespace export cannot be spied on, so `rm` is replaceable only by
-// way of a partial module mock.
 vi.mock("fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof FsPromises>();
   return { ...actual, default: actual, rm: vi.fn(actual.rm), rename: vi.fn(actual.rename) };
@@ -34,8 +31,6 @@ function makeGitStub() {
     deleteRef: vi.fn<any>().mockResolvedValue(undefined),
     listRefs: vi.fn<any>().mockResolvedValue([]),
     createBundleFromRef: vi.fn<any>().mockResolvedValue(true),
-    // Non-zero: the trashed commits are on no remote, which is why the entry
-    // was pinned for keep-on-reap in the first place.
     countCommitsNotOnAnyRemote: vi.fn<any>().mockResolvedValue(3),
   };
 }
@@ -76,8 +71,6 @@ describe("TrashReaperService", () => {
   });
 
   afterEach(async () => {
-    // Before the cleanup below: it deletes the temp trees with the very fs.rm
-    // and fs.rename some of these tests replace.
     vi.mocked(fs.rm).mockReset();
     vi.mocked(fs.rename).mockReset();
     await cleanupTempDirectories();
@@ -90,7 +83,6 @@ describe("TrashReaperService", () => {
       branch?: string;
       keepPinOnReap?: boolean;
       reason?: TrashReason;
-      /** Rewrite the pin ref into the flat layout shipped before pins were namespaced. */
       legacyFlatPinRef?: boolean;
     },
   ): Promise<TrashEntry> {
@@ -104,8 +96,6 @@ describe("TrashReaperService", () => {
       reason: options.reason ?? "prune",
       keepPinOnReap: options.keepPinOnReap,
     });
-    // trashDirectory always stamps "now"; backdate the manifest on disk to
-    // simulate an entry trashed ageDays ago.
     const deletedAt = new Date(Date.now() - options.ageDays * DAY_MS);
     entry.manifest.deletedAt = deletedAt.toISOString();
     entry.manifest.expiresAt = new Date(deletedAt.getTime() + trashService.getRetentionDays() * DAY_MS).toISOString();
@@ -169,15 +159,10 @@ describe("TrashReaperService", () => {
     );
   });
 
-  // The force-clean confirmation names a set. Anything trashed after the
-  // preview was never on screen, so it stays — and says so, because a purge
-  // that quietly leaves things behind is its own surprise.
   it("purges only the entries the confirmation named and reports the rest", async () => {
     const shownA = await makeEntry("shown-a", { ageDays: 1, branch: "shown-a" });
     const shownB = await makeEntry("shown-b", { ageDays: 1, branch: "shown-b" });
     const trashedAfterPreview = await makeEntry("unseen-c", { ageDays: 1, branch: "unseen-c", keepPinOnReap: true });
-    // Two, not one: with a single unselected entry the reported count cannot be
-    // told apart from a hard-coded 1.
     const alsoTrashedAfterPreview = await makeEntry("unseen-d", { ageDays: 1, branch: "unseen-d" });
 
     const result = await reaper.purgeAllUnlocked([shownA.manifest.id, shownB.manifest.id]);
@@ -189,15 +174,10 @@ describe("TrashReaperService", () => {
     await expect(fs.access(shownA.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(shownB.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(trashedAfterPreview.containerPath)).resolves.toBeUndefined();
-    // Its pin is what keeps the commits out of the `gc` that force
-    // clean runs next; the orphaned-pin sweep must not take it either.
     expect(gitStub.deleteRef).not.toHaveBeenCalledWith(trashedAfterPreview.manifest.pinRef);
     expect(result.orphanedRefsDeleted).toBe(0);
   });
 
-  // Between preview and purge the entry can go: the expiry reaper on the sync
-  // that ran in between takes it, or a delete is halfway through and the
-  // manifest no longer parses. Neither is a reason to fail the whole run.
   it("tolerates named entries that are already gone or half-deleted", async () => {
     const survivor = await makeEntry("still-here", { ageDays: 1, branch: "still-here" });
     const reapedMeanwhile = await makeEntry("gone-already", { ageDays: 1, branch: "gone-already" });
@@ -215,8 +195,6 @@ describe("TrashReaperService", () => {
     expect(result.errors).toEqual([]);
     expect(result.skippedNotSelected).toBe(0);
     await expect(fs.access(survivor.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
-    // An unreadable manifest means the reaper cannot prove what it would be
-    // deleting, so the payload stays exactly as the invalid-entry rule says.
     await expect(fs.access(halfDeleted.payloadPath)).resolves.toBeUndefined();
   });
 
@@ -310,10 +288,6 @@ describe("TrashReaperService", () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("legacy flat trash pin refs"));
   });
 
-  // The sweep deliberately never deletes a flat ref: it cannot tell one of its
-  // own from another config sharing the bare repo. Convergence for our own
-  // legacy entries therefore has to come from the manifest, which names the
-  // exact ref the entry owns — without it the pin outlives the payload forever.
   it("reaps a legacy flat-pinned entry and releases its pin through the manifest, leaving unowned flat refs alone", async () => {
     const legacy = await makeEntry("legacy-expired", {
       ageDays: 31,
@@ -333,11 +307,6 @@ describe("TrashReaperService", () => {
     expect(result.orphanedRefsDeleted).toBe(0);
   });
 
-  // The legacy shape that matters most: an entry whose commits were never
-  // pushed, so the pin is the only thing holding them. Reaping it has to build
-  // the permanent keep ref from the entry's id AND release the flat pin named
-  // in its manifest — the two behaviours are covered apart, and this is the
-  // one case where getting the order wrong loses the only copy.
   it("keeps a legacy flat-pinned entry's commits alive when it reaps it", async () => {
     const legacy = await makeEntry("legacy-keep", {
       ageDays: 31,
@@ -351,18 +320,12 @@ describe("TrashReaperService", () => {
 
     expect(result.deleted).toBe(1);
     expect(result.errors).toEqual([]);
-    // The commits survive the payload: keep ref created from the head the
-    // manifest recorded, before anything was deleted.
     expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${legacy.manifest.id}`, "abc123");
-    // And the flat pin is released, so it is the keep ref holding them now.
     expect(gitStub.deleteRef).toHaveBeenCalledWith(legacyPinRef);
   });
 
-  // Both situations are steady states the reaper never acts on. Repeating them
-  // on an hourly tick buries the lines that do need attention.
   it("warns once per process about unrecognized content and legacy flat refs, and again only when they change", async () => {
     const junkDir = path.join(trashService.getTrashRoot(), "manually-placed");
-    // Non-empty: an empty invalid container is removed, not warned about.
     const makeJunk = async (dir: string) => {
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path.join(dir, "keep.txt"), "x");
@@ -383,7 +346,6 @@ describe("TrashReaperService", () => {
     expect(warningsMatching(/another-manually-placed/)).toHaveLength(1);
     expect(warningsMatching(/leaving unrecognized entry/)).toHaveLength(2);
 
-    // Repaired and broken again is a new situation, not a suppressed one.
     await fs.rm(junkDir, { recursive: true, force: true });
     await reaper.reapExpiredUnlocked();
     await makeJunk(junkDir);
@@ -403,9 +365,6 @@ describe("TrashReaperService", () => {
   });
 
   it("leaves all pin refs alone when the trash root is missing — absence is not proof the trash is empty", async () => {
-    // worktreeDir may be an unmounted volume that sync recreated empty;
-    // sweeping pins here would let gc collect objects whose manifests
-    // reappear on remount.
     gitStub.listRefs.mockResolvedValue(["refs/sync-worktrees/trash/orphan-1"]);
 
     await expect(reaper.reapExpiredUnlocked()).resolves.toMatchObject({ deleted: 0 });
@@ -416,9 +375,6 @@ describe("TrashReaperService", () => {
   it("warns when retained trash exceeds warnSizeBytes so disk pressure is visible", async () => {
     config.trash = { warnSizeBytes: 1 };
     await makeEntry("big", { ageDays: 1 });
-    // The warning totals what the manifests say, and trashing no longer fills
-    // in a size — that happens off the repository lock, after the tick that
-    // trashed. This is the pass a previous tick would have made.
     await trashService.listEntriesWithSizes();
 
     await reaper.reapExpiredUnlocked();
@@ -429,12 +385,6 @@ describe("TrashReaperService", () => {
   it("names the entries it could not include in the total instead of silently counting them as zero", async () => {
     config.trash = { warnSizeBytes: 1 };
     await makeEntry("measured", { ageDays: 1 });
-    // One pass sizes what exists so far, then a second entry arrives the way a
-    // fresh removal does — manifest written, sizeBytes still null, because
-    // sizing runs off the repository lock after the tick that trashed. The
-    // total below is therefore a floor, and the warning has to say so: an
-    // unmeasured entry adds 0 bytes, and reporting that as the whole of the
-    // trash is how a 40 GB accumulation reads as 4 GB.
     await trashService.listEntriesWithSizes();
     await makeEntry("not-yet-measured", { ageDays: 1 });
 
@@ -477,7 +427,6 @@ describe("TrashReaperService", () => {
       `refs/sync-worktrees/keep/${expired.manifest.id}`,
       expect.anything(),
     );
-    // The pin still goes: the entry is reaped, it just needs no successor ref.
     expect(gitStub.deleteRef).toHaveBeenCalledWith(expired.manifest.pinRef);
   });
 
@@ -490,13 +439,8 @@ describe("TrashReaperService", () => {
     expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${expired.manifest.id}`, "abc123");
   });
 
-  // Fail closed: "I could not find out" must read as "still needed", never as
-  // "safe to release". These commits may be the only copy left anywhere.
   it("mints the keep ref when the re-check itself fails", async () => {
     const expired = await makeEntry("recheck-fails", { ageDays: 31, branch: "recheck-fails", keepPinOnReap: true });
-    // Covers every way countCommitsNotOnAnyRemote refuses to answer: a
-    // rev-list that exited non-zero, an oid git cannot resolve, and the
-    // unparseable-count guard the method itself raises.
     gitStub.countCommitsNotOnAnyRemote.mockRejectedValue(new Error("bad object abc123"));
 
     await reaper.reapExpiredUnlocked(new Date(), { remoteRefsFresh: true });
@@ -504,10 +448,6 @@ describe("TrashReaperService", () => {
     expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${expired.manifest.id}`, "abc123");
   });
 
-  // A remote-tracking ref `fetch --prune` has not dropped yet still makes its
-  // commits reachable, so a zero read against a stale ref set would release the
-  // anchor for commits the remote no longer has. Without a pruning fetch this
-  // tick, the reaper must not even ask.
   it("never releases a keep ref when this tick's pruning fetch did not complete", async () => {
     const expired = await makeEntry("stale-refs", { ageDays: 31, branch: "stale-refs", keepPinOnReap: true });
     gitStub.countCommitsNotOnAnyRemote.mockResolvedValue(0);
@@ -539,26 +479,12 @@ describe("TrashReaperService", () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("deferring reap"));
   });
 
-  // `sync-worktrees trash --purge <id>` deletes one entry ahead of its expiry.
-  // A keepPinOnReap entry is exactly the one whose payload and pin can be the
-  // only copy of its commits, so the permanent ref has to exist BEFORE anything
-  // is deleted — the expiry reap's ordering, and deliberately not
-  // purgeAllUnlocked's, whose confirmation covered the recovery refs too.
-  // The guard that makes --purge safe, and the only thing standing between it
-  // and destroying commits. A CLI purge has fetched nothing, so the
-  // remote-tracking refs it would consult may be stale: a branch deleted
-  // upstream whose `refs/remotes/origin/<b>` has not been pruned yet still
-  // makes the "are these commits on a remote?" count read 0. Acting on that
-  // zero releases the anchor for commits no remote has, and the next fetch
-  // prunes the ref that was vouching for them. So the re-check is not even
-  // asked from here — the ref is minted whatever the count says.
   it("mints the keep ref even when the commits look like they reached a remote", async () => {
     const named = await makeEntry("purge-stale-remote", {
       ageDays: 1,
       branch: "purge-stale-remote",
       keepPinOnReap: true,
     });
-    // What a stale, unpruned remote-tracking ref looks like to the re-check.
     gitStub.countCommitsNotOnAnyRemote.mockResolvedValue(0);
     gitStub.updateRef.mockClear();
 
@@ -567,8 +493,6 @@ describe("TrashReaperService", () => {
     expect(result.deleted).toBe(1);
     expect(result.keepRefsMinted).toEqual([`refs/sync-worktrees/keep/${named.manifest.id}`]);
     expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${named.manifest.id}`, "abc123");
-    // Not merely "the answer was ignored": the question is never put, because
-    // there is no fetch behind this call to make the answer worth anything.
     expect(gitStub.countCommitsNotOnAnyRemote).not.toHaveBeenCalled();
   });
 
@@ -583,14 +507,10 @@ describe("TrashReaperService", () => {
     expect(result.deleted).toBe(1);
     expect(result.keepRefsMinted).toEqual([`refs/sync-worktrees/keep/${named.manifest.id}`]);
     expect(gitStub.updateRef).toHaveBeenCalledWith(`refs/sync-worktrees/keep/${named.manifest.id}`, "abc123");
-    // The ordering is the whole point: setting the payload aside is the first
-    // irreversible step, and the ref has to be there before it.
     expect(gitStub.updateRef.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(fs.rename).mock.invocationCallOrder[0],
     );
     await expect(fs.access(named.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
-    // One entry, not the trash: the other keepPinOnReap entry keeps its payload
-    // and gets no ref minted for it either.
     await expect(fs.access(bystander.containerPath)).resolves.toBeUndefined();
     expect(result.skippedNotSelected).toBe(1);
     expect(gitStub.updateRef).not.toHaveBeenCalledWith(
@@ -615,7 +535,6 @@ describe("TrashReaperService", () => {
     expect(result.deleted).toBe(0);
     expect(result.keepRefsMinted).toEqual([]);
     await expect(fs.access(named.payloadPath)).resolves.toBeUndefined();
-    // The pin is still the only thing holding the commits, so it stays too.
     expect(gitStub.deleteRef).not.toHaveBeenCalledWith(named.manifest.pinRef);
     expect(result.errors.join(" ")).toContain("ref store readonly");
   });
@@ -635,8 +554,6 @@ describe("TrashReaperService", () => {
 
   it("keep-refs any keepPinOnReap entry regardless of reason, but never ordinary entries", async () => {
     const ordinary = await makeEntry("ordinary", { ageDays: 31, branch: "ordinary" });
-    // Diverged removals set keepPinOnReap too — the trashed commits may exist
-    // nowhere else, so they must never become gc-eligible silently.
     const diverged = await makeEntry("diverged", {
       ageDays: 31,
       branch: "diverged",
@@ -665,10 +582,6 @@ describe("TrashReaperService", () => {
     expect(gitStub.deleteRef).not.toHaveBeenCalledWith("refs/sync-worktrees/keep/some-old-id");
   });
 
-  // The shape T27 was filed for: `fs.rm(container, {recursive:true})` reaches
-  // manifest.json before whatever deep in the payload it cannot unlink, and
-  // what it leaves is neither a listed entry nor a deleted one — invisible to
-  // the CLI, never retried, holding its disk and its pin forever.
   it("leaves the manifest in place when the payload resists deletion, and finishes the entry on the next run", async () => {
     const expired = await makeEntry("stuck", { ageDays: 31, branch: "stuck" });
     await fs.mkdir(path.join(expired.payloadPath, "dist"));
@@ -683,14 +596,12 @@ describe("TrashReaperService", () => {
     expect(afterFailure.entries.map((entry) => entry.manifest.id)).toEqual([expired.manifest.id]);
     expect(afterFailure.invalid).toEqual([]);
     expect(gitStub.deleteRef).not.toHaveBeenCalled();
-    // The user is told which path refused and what to do about it.
     expect(warningsMatching(/root-built\.js/)).toHaveLength(1);
     expect(warningsMatching(/chattr -i/)).toHaveLength(1);
     expect(audit.record).toHaveBeenCalledWith(
       expect.objectContaining({ action: "trash_reap", result: "failure", trashId: expired.manifest.id }),
     );
 
-    // The user takes ownership of the file / clears the attribute.
     allowDeletion();
     const second = await reaper.reapExpiredUnlocked();
 
@@ -699,10 +610,6 @@ describe("TrashReaperService", () => {
     expect(gitStub.deleteRef).toHaveBeenCalledWith(expired.manifest.pinRef);
   });
 
-  // A run killed between the rename and the delete leaves the payload under
-  // its set-aside name. Nothing else ever comes back for it, so the next reap
-  // has to — and has to do it before the manifest, or the interruption has
-  // simply moved the stuck container one step later.
   it("finishes a payload an interrupted run already set aside, without putting the manifest in the delete's path", async () => {
     const expired = await makeEntry("interrupted", { ageDays: 31, branch: "interrupted" });
     const setAside = path.join(expired.containerPath, `${TRASH_CONSTANTS.DELETING_PREFIX}2026-01-01T00-00-00-000Z`);
@@ -725,10 +632,6 @@ describe("TrashReaperService", () => {
     expect(gitStub.deleteRef).toHaveBeenCalledWith(expired.manifest.pinRef);
   });
 
-  // The payload is gone, so the pin protects nothing restorable any more. A
-  // container that then refuses to go (a read-only trash root, an immutable
-  // manifest) must not take the ref down with it: the orphan sweep keys on the
-  // container name, which is still there, so nothing would ever release it.
   it("releases the pin once the payload is gone, even when the container itself cannot be deleted", async () => {
     const expired = await makeEntry("refused-container", { ageDays: 31, branch: "refused-container" });
     await mockUndeletableFile(TRASH_CONSTANTS.MANIFEST_FILENAME);
@@ -760,11 +663,6 @@ describe("TrashReaperService", () => {
     expect((await trashService.listEntries()).entries).toHaveLength(1);
   });
 
-  // A regular file sitting on the set-aside name makes rename(dir, file) fail
-  // with ENOTDIR while `payload/` stays exactly where it was. Tolerating that
-  // errno would let the sweep unlink the file, report the payload gone, and
-  // hand a container that still holds `payload/` to the recursive delete — the
-  // manifest-first delete this whole ordering exists to prevent.
   it("refuses to report the payload gone when a file blocks the set-aside name", async () => {
     const expired = await makeEntry("blocked-setaside", { ageDays: 31, branch: "blocked-setaside" });
     vi.mocked(fs.rename).mockRejectedValue(
@@ -774,8 +672,6 @@ describe("TrashReaperService", () => {
     const result = await reaper.reapExpiredUnlocked();
 
     expect(result.deleted).toBe(0);
-    // The payload is untouched and the manifest still describes it, so the
-    // entry stays listed and every later run retries it.
     await expect(fs.access(path.join(expired.payloadPath, "file.txt"))).resolves.toBeUndefined();
     expect(gitStub.deleteRef).not.toHaveBeenCalled();
     expect(warningsMatching(/cannot set the payload/)).toHaveLength(1);

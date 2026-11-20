@@ -9,12 +9,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { undoRejectedFastForwardIn } from "../../services/clone-sync/fast-forward-undo";
 import { createMockLogger } from "../test-utils";
 
-// Real git, no mocks. The upstream commit turns a tracked file into a symlink
-// and adds a path whose smudge filter fails. The rejected `merge --ff-only`
-// writes the symlink first, which `git status` reports as ` T` — a code
-// simple-git puts in none of not_added/modified/deleted, only in `files`. Read
-// from those lists, the undo never saw the path and left the checkout dirty
-// for every later tick.
 describe.skipIf(process.platform === "win32")("Undoing a rejected fast-forward that wrote a type change", () => {
   let tempDir: string;
   let workDir: string;

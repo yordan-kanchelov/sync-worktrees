@@ -10,12 +10,6 @@ import { createMockLogger } from "../test-utils";
 
 import type { SimpleGit } from "simple-git";
 
-// Real git, no mocks. A paused rebase makes `git status -b` print
-// `## HEAD (no branch)`, which simple-git parses as a detached HEAD. The
-// unpushed-commit gate is waived for a plain detached HEAD, but a paused
-// rebase's HEAD carries the branch's own replayed commits: reading it as a
-// plain detached HEAD would report a worktree with local-only commits as
-// having none.
 describe("Unpushed commits during a paused rebase (E2E)", () => {
   let tempDir: string;
   let clonePath: string;
@@ -48,11 +42,9 @@ describe("Unpushed commits during a paused rebase (E2E)", () => {
     const clone = simpleGit(clonePath);
     await clone.addConfig("user.name", "Test User");
     await clone.addConfig("user.email", "test@example.com");
-    // Two local-only commits: the first replays cleanly, the second conflicts.
     await commitFile(clone, clonePath, "b.txt", "local\n");
     await commitFile(clone, clonePath, "a.txt", "local\n");
 
-    // main moves on under the same file the second local commit touches.
     await commitFile(seed, seedPath, "a.txt", "remote\n");
     await seed.push("origin", "main");
     await clone.fetch("origin");
@@ -66,7 +58,6 @@ describe("Unpushed commits during a paused rebase (E2E)", () => {
 
   it("keeps reporting the replayed local-only commit as unpushed", async () => {
     const clone = simpleGit(clonePath);
-    // Preconditions: the rebase is paused and git reports HEAD as detached.
     expect((await clone.status()).detached).toBe(true);
     await expect(fs.access(path.join(clonePath, ".git", "rebase-merge"))).resolves.toBeUndefined();
     expect((await clone.raw(["rev-list", "--count", "HEAD", "--not", "--remotes"])).trim()).toBe("1");

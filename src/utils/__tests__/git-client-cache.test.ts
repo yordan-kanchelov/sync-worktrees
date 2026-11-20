@@ -6,11 +6,6 @@ import { GitClientCache } from "../git-client-cache";
 
 import type { SimpleGit } from "simple-git";
 
-// The cache exists for spawn-option reuse, but a worktree's directory outlives
-// nothing: it is removed, trashed or quarantined while the process keeps
-// running. These tests pin the two properties that keeps costing memory —
-// a forgotten path leaves nothing behind, and the cache is bounded even for a
-// path nobody forgets.
 describe("GitClientCache", () => {
   const client = (name: string): SimpleGit => ({ name }) as unknown as SimpleGit;
 
@@ -67,8 +62,6 @@ describe("GitClientCache", () => {
 
     cache.forget("/repo/feature");
 
-    // Nothing about the instance changes — only the map entry is gone, so an
-    // operation still running on it cannot be interrupted by the eviction.
     expect(handedOut).toEqual({ name: "a" });
     expect(cache.get("/repo/feature", "local", () => client("b"))).not.toBe(handedOut);
   });
@@ -78,8 +71,6 @@ describe("GitClientCache", () => {
     const first = cache.get("/repo/a", "local", () => client("a"));
     cache.get("/repo/b", "local", () => client("b"));
 
-    // Using /repo/a again makes /repo/b the coldest entry, so it is the one
-    // that goes when /repo/c arrives.
     expect(cache.get("/repo/a", "local", () => client("a2"))).toBe(first);
     cache.get("/repo/c", "local", () => client("c"));
 

@@ -15,11 +15,8 @@ export interface WorktreeInventory {
 export interface WorktreeEntry {
   path: string;
   branch: string;
-  /** git refuses to remove a locked worktree, so it is never planned for prune. */
   locked?: boolean;
-  /** Reason recorded with the lock, when git has one. */
   lockReason?: string;
-  /** The worktree's HEAD oid as git listed it; absent when the listing had none. */
   head?: string;
 }
 
@@ -31,11 +28,6 @@ export type PruneAction =
   | { kind: "check-prune"; branch: string; path: string }
   | { kind: "skip-prune"; branch: string; path: string; reason: "locked"; lockReason?: string };
 
-// `head` is what the registration listing said this worktree's HEAD was. The
-// update phase compares it against origin/<branch>'s tip to answer "nothing
-// changed" without spawning anything per worktree, so it is carried through the
-// plan rather than probed again.
-// `locked`/`lockReason` keep diverged handling from moving a locked worktree.
 export type UpdateAction = {
   kind: "update-candidate";
   branch: string;
@@ -58,11 +50,6 @@ export interface SyncPlanOptions {
   pathResolution?: PathResolutionService;
   updateExistingWorktrees?: boolean;
   sparseCheckout?: SparseCheckoutConfig;
-  /**
-   * What new worktrees' directory names are checked against. Without one, a
-   * context is built from the inventory alone (its branches and registered
-   * worktrees, without looking at the disk).
-   */
   naming?: WorktreeNamingContext;
 }
 
@@ -75,7 +62,6 @@ export function createWorktreeSyncPlan(inventory: WorktreeInventory, options: Sy
   };
 }
 
-/** The branches a sync creates a worktree for: on origin, without one yet, and not the default branch. */
 export function listBranchesToCreate(inventory: WorktreeInventory): string[] {
   const existingBranches = new Set(inventory.existingWorktrees.map((w) => w.branch));
   return inventory.remoteBranches.filter(
@@ -128,10 +114,6 @@ export function planPruneActions(inventory: WorktreeInventory): PruneAction[] {
   return inventory.existingWorktrees
     .filter((worktree) => !remoteBranches.has(worktree.branch))
     .map((worktree) =>
-      // A locked worktree is one the user told git to protect. Planning it as a
-      // prune candidate would spend a status probe, a `du` size scan and two
-      // renames on it every tick and end in git's refusal anyway, so it is
-      // planned as a deliberate skip instead.
       worktree.locked
         ? ({
             kind: "skip-prune",

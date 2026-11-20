@@ -17,8 +17,6 @@ describe("RemovalAuditService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-    // record opens the log file and fsyncs each line — "attempt" entries gate
-    // destructive ops, so durability matters more than appendFile convenience.
     mockFileHandle = {
       appendFile: vi.fn().mockResolvedValue(undefined),
       sync: vi.fn().mockResolvedValue(undefined),

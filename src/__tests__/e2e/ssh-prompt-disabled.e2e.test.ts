@@ -12,16 +12,6 @@ interface CliRun {
   elapsedMs: number;
 }
 
-// ssh reads a key passphrase or an unknown-host confirmation from /dev/tty
-// itself, so GIT_TERMINAL_PROMPT=0 never reached it: a passphrase-protected key
-// without an agent blocked every clone and fetch until the 300 s inactivity
-// timeout. An ssh remote's git now runs with SSH_ASKPASS_REQUIRE=force and a
-// failing askpass, so ssh gives up at once — without the tool touching the ssh
-// command the user configured.
-//
-// The ssh here is a stand-in, reached through the user's own GIT_SSH_COMMAND:
-// at the prompt it does what OpenSSH 8.4+ does — asks the askpass program when
-// SSH_ASKPASS_REQUIRE=force, and otherwise waits on the terminal.
 describe("CLI fails fast when ssh would prompt", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   let tempDir: string;
@@ -92,8 +82,6 @@ sleep 600
       child.stderr.on("data", (chunk: string) => {
         stderr += chunk;
       });
-      // Backstop only: without the fix the stand-in waits on its "terminal"
-      // until the inactivity timeout.
       const killer = setTimeout(() => child.kill("SIGKILL"), 45_000);
       child.on("error", (error) => {
         clearTimeout(killer);
@@ -112,7 +100,6 @@ sleep 600
 
     expect(run.status, output).toBe(1);
     expect(run.elapsedMs, output).toBeLessThan(15_000);
-    // The configured GIT_SSH_COMMAND is what ran, with prompts routed away from the terminal.
     expect((await fs.readFile(invokedMarker, "utf8")).trim()).toBe("force");
 
     expect(run.stderr).toContain("Failed to initialize repository");

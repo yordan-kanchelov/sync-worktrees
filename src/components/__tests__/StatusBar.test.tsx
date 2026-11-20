@@ -6,7 +6,6 @@ import type { StatusBarProps } from "../StatusBar";
 import StatusBar, { computeNextSyncTime } from "../StatusBar";
 import { frameLines, resizeTerminal } from "./terminal-size";
 
-// Helper to wait for React state updates and effects
 const waitForEffects = () => new Promise((resolve) => setTimeout(resolve, 100));
 
 describe("StatusBar", () => {
@@ -199,8 +198,6 @@ describe("StatusBar", () => {
     });
   });
 
-  // The App budgets one row per line of the bar; a line Ink wrapped pushed the
-  // top of the screen off.
   describe("narrow terminals", () => {
     it("keeps the full key legend where it fits", async () => {
       const { stdout, lastFrame } = render(<StatusBar {...defaultProps} diskSpaceUsed="1.2 GB" />);
@@ -278,12 +275,10 @@ describe("StatusBar", () => {
     it("should calculate next sync time for valid cron", async () => {
       const { lastFrame } = render(<StatusBar {...defaultProps} cronSchedule="0 * * * *" />);
 
-      // Wait for useEffect to calculate next sync time
       await waitForEffects();
 
       const frame = lastFrame();
       expect(frame).toContain("Next Sync:");
-      // Check that Next Sync line contains a time (not N/A)
       expect(frame).toMatch(/Next Sync:.*\d{1,2}:\d{2}:\d{2}/);
     });
 
@@ -296,7 +291,6 @@ describe("StatusBar", () => {
 
         await vi.advanceTimersByTimeAsync(45_000);
 
-        // The timer's re-render is scheduled on the real event loop.
         await vi.waitFor(() => expect(lastFrame()).toContain(new Date(2026, 0, 5, 10, 2, 0).toLocaleTimeString()));
       } finally {
         vi.useRealTimers();
@@ -310,7 +304,6 @@ describe("StatusBar", () => {
         const { lastFrame, rerender } = render(<StatusBar {...defaultProps} cronSchedule="0 * * * *" />);
         expect(lastFrame()).toContain(new Date(2026, 0, 5, 11, 0, 0).toLocaleTimeString());
 
-        // Wall clock jumps (e.g. after sleep) without the timer firing.
         vi.setSystemTime(new Date(2026, 0, 5, 11, 0, 5));
         rerender(
           <StatusBar {...defaultProps} cronSchedule="0 * * * *" lastSyncTime={new Date(2026, 0, 5, 11, 0, 5)} />,

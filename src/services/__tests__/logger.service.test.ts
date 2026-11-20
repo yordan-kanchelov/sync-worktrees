@@ -7,8 +7,6 @@ import { Logger } from "../logger.service";
 const TOKEN_URL = "https://ci-bot:s3cr3t-token@git.example.com/org/repo.git";
 const REDACTED_URL = "https://***@git.example.com/org/repo.git";
 
-// console.* are vi.fn() stubs (see src/__tests__/setup.ts), so every line the
-// logger prints can be read back from their mock calls.
 const printedLines = (): string[] =>
   [
     ...vi.mocked(console.log).mock.calls,
@@ -50,8 +48,6 @@ describe("Logger credential redaction", () => {
 
   it("scrubs the inspected error (message, stack and simple-git task commands) on the console path", () => {
     const logger = new Logger();
-    // simple-git errors carry the invoked command line, URL included, as an
-    // enumerable `task` property that util.inspect prints alongside the stack.
     const error = Object.assign(new Error(`fatal: could not read from remote repository ${TOKEN_URL}`), {
       task: { commands: ["clone", TOKEN_URL, "--bare"] },
     });
@@ -60,13 +56,12 @@ describe("Logger credential redaction", () => {
 
     expect(console.error).toHaveBeenCalledTimes(1);
     const call = vi.mocked(console.error).mock.calls[0];
-    // The raw Error is never handed to console.error; only the scrubbed text is.
     expect(call).toHaveLength(1);
     const line = String(call[0]);
     expect(line).toContain(
       `❌ Failed to initialize repository: Error: fatal: could not read from remote repository ${REDACTED_URL}`,
     );
-    expect(line).toContain("    at "); // the stack trace survives for diagnostics
+    expect(line).toContain("    at ");
     expect(line).toContain("commands");
     expect(line).toContain(`'${REDACTED_URL}'`);
     expect(line).not.toContain("s3cr3t-token");
@@ -104,8 +99,6 @@ describe("Logger error detail", () => {
       `Cloning into bare repository '/tmp/bare'...\nfatal: unable to access '${TOKEN_URL}/': Could not resolve host\n`,
     );
 
-  // An unreachable remote used to print ~30 lines: git's stderr, a stack of
-  // simple-git internals and the inspected `task.commands` array.
   it("prints a git failure as its one `fatal:` line when debug is off", () => {
     new Logger({ repoName: "repo" }).error("❌ Failed to initialize repository 'repo':", cloneFailure());
 
@@ -163,8 +156,6 @@ describe("Logger colours", () => {
   });
 });
 
-// `--quiet` exists for cron, where every stdout line is mailed to someone:
-// only what needs a human's attention may get through.
 describe("Logger quiet mode", () => {
   it("drops info, debug and table output but keeps warnings and errors", () => {
     const logger = Logger.createDefault("repo", true, { quiet: true });

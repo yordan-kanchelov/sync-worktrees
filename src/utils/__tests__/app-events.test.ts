@@ -38,8 +38,6 @@ describe("AppEventEmitter", () => {
     expect(printed).not.toContain("s3cret-token");
   });
 
-  // The dashboard's single entry point for text: whatever a caller forgot to
-  // redact, no credential-bearing URL reaches a log line or a progress row.
   describe("credential redaction at the boundary", () => {
     const RAW = "https://ci-bot:s3cr3t-token@example.com/org/repo.git";
     const REDACTED = "https://***@example.com/org/repo.git";

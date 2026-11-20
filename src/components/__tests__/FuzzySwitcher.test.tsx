@@ -78,7 +78,6 @@ describe("FuzzySwitcher", () => {
     expect(frame).toContain("1/4");
     expect(selectedLine(frame)).toContain("web › main");
     expect(frame).not.toContain("api › feature/login");
-    // The selected entry's path is shown under the list.
     expect(frame).toContain("/w/web/main");
   });
 
@@ -297,7 +296,6 @@ describe("FuzzySwitcher", () => {
     await waitForStateUpdate();
     expect(selectedLine(lastFrame())).toContain("api › feature/login");
 
-    // web is listed first, so its rows land above the selection.
     resolveWeb(WORKTREES[1]);
     await waitForStateUpdate();
     expect(selectedLine(lastFrame())).toContain("api › feature/login");

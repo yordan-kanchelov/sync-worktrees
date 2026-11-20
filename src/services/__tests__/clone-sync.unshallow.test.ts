@@ -22,24 +22,6 @@ import type { Mock } from "vitest";
 vi.mock("fs/promises");
 vi.mock("simple-git");
 
-// Removing `depth` from a clone-mode repository is the documented way to
-// unshallow it, and the fetch that does it is the odd one out here: it is the
-// only fetch whose payload is the whole history rather than what changed since
-// the last tick. Two things follow, and both are asserted below.
-//
-// `--progress` is load-bearing rather than cosmetic. simple-git's inactivity
-// kill resets only on stdout/stderr data, and git writes nothing at all to a
-// piped stderr without the flag — verified on git 2.43, where a throttled
-// unshallow produced 131 stderr chunks with `--progress` and zero bytes without
-// it, the same 20 s of transfer either way. simple-git's progress plugin
-// happens to append the flag to any command whose first token is `fetch`, so
-// the argv reaching git was already right; pinning it here keeps that a
-// property of this service rather than of a third-party plugin's method list.
-//
-// The silence budget is the clone one, not the fetch one: the phases git runs
-// without any output — the server computing the shallow boundary and
-// enumerating objects before the first progress byte, the connectivity check
-// after the last — are sized by total history, exactly like a fresh clone.
 describe("CloneSyncService unshallow fetch", () => {
   interface BuiltClient {
     options: Partial<SimpleGitOptions>;
@@ -79,7 +61,6 @@ describe("CloneSyncService unshallow fetch", () => {
     if (key === PRIMARY_CHECKOUT_GIT_DIR_PROBE) return PRIMARY_CHECKOUT_GIT_DIRS;
     if (key.startsWith("config --local --get remote.origin.url")) return REPO_URL;
     if (key.startsWith("rev-parse --abbrev-ref HEAD")) return "main";
-    // The clone this suite describes: shallow on disk, with no depth configured.
     if (key === "rev-parse --is-shallow-repository") return "true\n";
     return "";
   };
@@ -111,8 +92,6 @@ describe("CloneSyncService unshallow fetch", () => {
     (fs.lstat as unknown as Mock).mockResolvedValue(buildFsStats("directory"));
     (fs.readdir as unknown as Mock).mockResolvedValue([".git"]);
     (fs.access as unknown as Mock).mockResolvedValue(undefined);
-    // The suite-wide shortcut zeroes both timeouts; this suite is about which
-    // of the two the unshallow gets, so it needs the real ones.
     delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
 
     (simpleGit as unknown as Mock).mockImplementation((first?: unknown, second?: unknown) => {
@@ -183,10 +162,6 @@ describe("CloneSyncService unshallow fetch", () => {
       message: `Fetching full history for '${REPO_URL}'`,
     });
 
-    // The other half of the report: what simple-git hands back once git starts
-    // writing progress to stderr has to reach the same emitter, so the TUI and
-    // the MCP notifications keep moving through an unshallow the way they do
-    // through a clone.
     const onProgress = onlyClientThatRan("fetch", "--unshallow").options.progress;
     expect(onProgress).toBeTypeOf("function");
     onProgress?.({ method: "fetch", stage: "receiving", progress: 42, processed: 42, total: 100 });

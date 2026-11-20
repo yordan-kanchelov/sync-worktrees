@@ -141,7 +141,7 @@ describe("retry", () => {
         maxDelayMs: 500,
       });
 
-      expect(delays).toEqual([100, 300, 500, 500]); // Capped at maxDelayMs
+      expect(delays).toEqual([100, 300, 500, 500]);
       mockSetTimeout.mockRestore();
     });
   });
@@ -225,9 +225,6 @@ describe("retry", () => {
       },
     );
 
-    // Credentials git could not obtain or a key/host ssh rejected: retrying
-    // cannot help. The ssh messages also contain "Could not read from remote
-    // repository", which on its own is retryable.
     it.each([
       "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
       "fatal: Authentication failed for 'https://github.com/org/repo.git/'",
@@ -279,7 +276,6 @@ describe("retry", () => {
 
       await retry(mockFn, { maxAttempts: "unlimited" });
 
-      // 1s doubling, capped at 30s.
       expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
       mockSetTimeout.mockRestore();
     });
@@ -340,7 +336,6 @@ describe("retry", () => {
         }),
       ).rejects.toThrow("LFS error retry limit exceeded (2 attempts)");
 
-      // Should have tried 3 times total (initial + 2 retries)
       expect(mockFn).toHaveBeenCalledTimes(3);
     });
 
@@ -354,7 +349,6 @@ describe("retry", () => {
         }),
       ).rejects.toThrow("LFS error retry limit exceeded (2 attempts)");
 
-      // Default is 2, so should try 3 times total
       expect(mockFn).toHaveBeenCalledTimes(3);
     });
 
@@ -370,7 +364,6 @@ describe("retry", () => {
         }),
       ).rejects.toThrow("Network error");
 
-      // Should respect maxAttempts, not maxLfsRetries
       expect(mockFn).toHaveBeenCalledTimes(3);
     });
 

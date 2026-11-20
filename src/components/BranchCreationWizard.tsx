@@ -8,11 +8,6 @@ import { isValidGitBranchName } from "../utils/git-validation";
 
 type WizardStep = "SELECT_PROJECT" | "SELECT_BRANCH" | "ENTER_NAME" | "CREATING" | "RESULT";
 
-// The one place the suffix is worked out. The name shown on the ENTER_NAME
-// step and the name submitted to createAndPushBranch both come from here, so
-// the wizard can never display `will create: <name>-1` and then ask for
-// `<name>` — which is what sent the service at a branch that was already on
-// the remote.
 const resolveFreeBranchName = (name: string, taken: readonly string[]): string => {
   let suffix = 0;
   let candidate = name;
@@ -36,7 +31,6 @@ export interface BranchCreationWizardProps {
   onClose: () => void;
   onComplete: () => void;
   onBranchCreated?: (context: { repoIndex: number; baseBranch: string; newBranch: string }) => void;
-  /** Rows the wizard may use; defaults to the terminal height. */
   availableRows?: number;
 }
 
@@ -65,7 +59,6 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   const [loading, setLoading] = useState(false);
 
   const branchesLoadedRef = useRef(false);
-  // Bumped per load and on ESC; a load whose number is stale is dropped.
   const loadGenRef = useRef(0);
   const [isFetching, setIsFetching] = useState(false);
 
@@ -90,17 +83,12 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
       try {
         let branchList = await getBranchesForRepo(repoIndex);
 
-        // If no branches found and we haven't tried fetching yet, fetch and retry
         if (branchList.length === 0 && fetchForRepo && !stale()) {
           setIsFetching(true);
           await fetchForRepo(repoIndex);
           branchList = await getBranchesForRepo(repoIndex);
         }
 
-        // The default branch only pre-selects and labels an entry; clone mode
-        // resolves it from the remote when no branch is configured, and that
-        // can fail. Losing the hint must not blank a branch list that loaded
-        // fine — no marker beats a marker on the wrong branch.
         let defaultBr = "";
         try {
           defaultBr = await getDefaultBranchForRepo(repoIndex);
@@ -122,9 +110,6 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
     [getBranchesForRepo, getDefaultBranchForRepo, fetchForRepo],
   );
 
-  // The free name for what has been typed so far: derived on every render from
-  // the same two inputs the display reads, never held in state that a
-  // keystroke could leave a render behind.
   const plannedName = useMemo(() => resolveFreeBranchName(branchName.trim(), branches), [branchName, branches]);
 
   const validationError = useMemo(() => {
@@ -146,8 +131,6 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
 
     setStep("CREATING");
     const baseBranch = filteredBranches[selectedBranchIndex];
-    // `plannedName`, not the typed name: the name the step above displayed is
-    // the name that gets created.
     const requestedName = plannedName;
     try {
       const createResult = await createAndPushBranch(selectedRepoIndex, baseBranch, requestedName);
@@ -171,8 +154,6 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   };
 
   useInput((input, key) => {
-    // Mouse reports arrive as a single `input` string; ignore them here so a
-    // scroll never registers as a keystroke.
     if (isMouseSequence(input)) return;
 
     if (step === "CREATING") return;
@@ -282,8 +263,6 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
 
   const getTotalSteps = () => (repositories.length === 1 ? 2 : 3);
 
-  // Rows the step's list may take: what the modal has, less its chrome, the
-  // step's own lines above the list and a footer that wraps on a narrow box.
   const listRoom = (linesAboveList: number): number => {
     const footer = footerText();
     const footerExtra = footer ? wrappedRows(footer, layout.innerWidth) - 1 : 0;
@@ -291,7 +270,6 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
   };
 
   const renderProjectSelection = () => {
-    // "Select repository:", the filter, and the gaps after each.
     const visibleCount = listRowsFor(listRoom(4), filteredProjects.length);
     const { start: startIdx, end: endIdx } = listWindow(selectedProjectIndex, filteredProjects.length, visibleCount);
 
@@ -343,8 +321,6 @@ const BranchCreationWizard: React.FC<BranchCreationWizardProps> = ({
       return <Text color="red">No branches found</Text>;
     }
 
-    // "Select base branch:", the filter, the gaps after each, and the
-    // repository line above them once there is more than one to choose.
     const linesAbove = 4 + (repositories.length > 1 ? 2 : 0);
     const visibleCount = listRowsFor(listRoom(linesAbove), filteredBranches.length);
     const { start: startIdx, end: endIdx } = listWindow(selectedBranchIndex, filteredBranches.length, visibleCount);

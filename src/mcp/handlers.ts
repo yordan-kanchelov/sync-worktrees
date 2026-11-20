@@ -73,10 +73,6 @@ function ensureCapability(
   key: CapabilityKey,
   toolName: string,
 ): void {
-  // Gate on the entry's durable capabilities before consulting the discovery
-  // cache: every mutating tool clears that cache, so an empty `discovered`
-  // must never read as "allowed" (it used to let sync/initialize run against
-  // an auto-detected repo right after update_worktree or create_worktree).
   const base = ctx.getBaseCapabilities(repoName)?.[key];
   if (base && !base.available) {
     throw new CapabilityUnavailableError(toolName, base.reason ? [base.reason] : (discovered?.notes ?? []));
@@ -114,8 +110,6 @@ async function getReadyService(
   };
 }
 
-// Contention (in_progress, locked) is SYNC_IN_PROGRESS and retryable; an
-// unavailable lock is a distinct, non-retryable failure that names its cause.
 function notStartedError(
   ctx: RepositoryContext,
   repoName: string | undefined,
@@ -140,23 +134,11 @@ async function runExclusiveRepoOperation<T>(
   return result.value;
 }
 
-// Git never marks a locked row prunable, so a locked row is probed on disk; an
-// unverifiable path ("unknown") counts as present.
 async function isCheckoutMissing(wt: Pick<RegisteredWorktree, "path" | "isPrunable" | "locked">): Promise<boolean> {
   if (wt.isPrunable === true) return true;
   return wt.locked === true && (await probePathExists(wt.path)) === "missing";
 }
 
-/**
- * Resolves `params.path` to a registered worktree of this repository, always
- * from git's own listing. The discovery snapshot has no freshness check, so it
- * would keep answering for a worktree removed or moved to another branch since.
- *
- * Detached worktrees are included (git omits them otherwise) and carry
- * `detached` plus their HEAD oid with `branch` empty; a caller that acts on the
- * branch must refuse them. A registration whose checkout is gone throws
- * WORKTREE_MISSING (prunable detached rows are dropped by git's listing).
- */
 async function ensureRepoWorktree(params: WorktreePathParams, service: RepoService): Promise<RepoWorktree> {
   const targetPath = params.path;
   let missing: RegisteredWorktree | undefined;
@@ -192,15 +174,6 @@ function ensureWorktreeModeService(service: RepoService, toolName: string): void
   }
 }
 
-/**
- * `addWorktree` treats a directory at the target path that is not a registered
- * worktree as an orphan and moves it to trash (or deletes it when trash is
- * disabled). That recovery is right for sync, but `create_worktree` is
- * advertised as non-destructive and the MCP surface has no trash access, so an
- * unregistered directory at the target path is refused here instead: nothing
- * is moved or deleted from the MCP path. A registered path is left to
- * `addWorktree`, which short-circuits on an existing worktree.
- */
 async function ensureWorktreeTargetAvailable(worktreePath: string, registered: RepoWorktree[]): Promise<void> {
   if (registered.some((w) => pathsEqual(w.path, worktreePath))) return;
 
@@ -221,7 +194,6 @@ export async function handleDetectContext(
 ): Promise<CallToolResult> {
   const target = params.path ?? process.cwd();
   const discovered = await ctx.detectFromPath(target);
-  // configuredRepositories is server-wide loaded-config inventory, independent of params.path.
   const configuredRepositories = await ctx.getConfiguredRepositorySummaries({ detailed: params.detailed ?? false });
   let response = { ...discovered, configuredRepositories };
 
@@ -239,11 +211,6 @@ export async function handleDetectContext(
     return formatToolResponse(response);
   }
 
-  // One enricher for every list in this response, so a worktree that appears
-  // in both `allWorktrees` and `allWorktreesByRepo[<current repo>]` -- which is
-  // every worktree of the current repo, since the two lists come from separate
-  // `worktree list --porcelain` reads of the same repository -- is probed once
-  // and both lists report the same answer.
   const enrich = createWorktreeEnricher(
     new WorktreeStatusService({ extraEnv: { [ENV_CONSTANTS.GIT_OPTIONAL_LOCKS]: "0" } }),
     pLimit(DEFAULT_CONFIG.PARALLELISM.MAX_STATUS_CHECKS),
@@ -267,10 +234,6 @@ export async function handleDetectContext(
 type WorktreeEnrichment = Pick<DiscoveredWorktree, "label" | "divergence" | "staleHint" | "statusError">;
 type WorktreeStatus = Awaited<ReturnType<WorktreeStatusService["getFullWorktreeStatus"]>>;
 
-// A failed status probe still leaves the worktree listed (label "unknown",
-// not safe to remove); this keeps the reason, so the caller is not left with
-// a bare "status unavailable". Scrubbed here as well as in formatToolResponse:
-// git quotes the remote URL in its errors.
 function probeWorktreeStatus(
   probe: Promise<WorktreeStatus>,
 ): Promise<{ status: WorktreeStatus; statusError?: undefined } | { status: null; statusError: string }> {
@@ -281,16 +244,8 @@ function probeWorktreeStatus(
 }
 type WorktreeEnricher = (worktree: DiscoveredWorktree) => Promise<WorktreeEnrichment>;
 
-// Memoizes on the two inputs the enrichment actually reads -- the worktree's
-// path and whether it is the current one -- rather than on the path alone, so
-// two listings that disagreed about `isCurrent` would each still get the label
-// they asked for instead of silently sharing one. The promise is stored, not
-// the result, so concurrent callers join the probe already in flight.
 function createWorktreeEnricher(statusService: WorktreeStatusService, limit: Limit): WorktreeEnricher {
   const started = new Map<string, Promise<WorktreeEnrichment>>();
-  // One branch/remote-ref scan per repository across the whole response; the
-  // scope keys on each worktree's common git dir, so lists that span several
-  // repositories still scan each only once.
   const refScans = new RefScanScope();
 
   return (wt) => {
@@ -387,14 +342,6 @@ async function listWorktreesForRepo(
         detached: w.detached,
       }));
     } else {
-      // The common way here is a configured repository that has never been
-      // cloned: `git worktree list` runs against a bare directory that does not
-      // exist, and simple-git rejects with "Cannot use simple-git on a directory
-      // that does not exist". Detection found nothing either, so there is no
-      // fallback list. Reporting only that combination told the caller the two
-      // things that did NOT work and neither the cause nor the remedy — and in
-      // a multi-repo listing this string is what lands in `repositories[name]
-      // .error`, next to repos that listed fine. Name both.
       const cause = err instanceof Error ? err.message : String(err);
       throw new Error(
         `Cannot list worktrees for '${repoName ?? ctx.getCurrentRepo() ?? "current repository"}': ${cause}. ` +
@@ -403,8 +350,6 @@ async function listWorktreesForRepo(
     }
   }
 
-  // The worktree holding the launch cwd (deepest match), not the snapshot's
-  // currentWorktreePath, which mutating tools clear and detect_context moves.
   const launchCwd = await resolveRealPathAsync(ctx.getLaunchCwd());
   let currentPath: string | null = null;
   for (const wt of worktrees) {
@@ -415,7 +360,6 @@ async function listWorktreesForRepo(
       currentPath = wt.path;
     }
   }
-  // One branch/remote-ref scan for the whole listing, not one per worktree.
   const refScans = new RefScanScope();
 
   const results = await Promise.all(
@@ -492,26 +436,12 @@ export async function handleGetWorktreeStatus(
     readOnly: true,
   });
 
-  // `divergence` rides in on the spread: it is a field of the status result now.
   return formatToolResponse({
     path: resolvedPath,
     ...status,
   });
 }
 
-// The sync planner prunes every registered worktree whose branch is missing from
-// the FILTERED remote branch list, and a worktree created seconds ago is clean,
-// has nothing unpushed and no gone upstream — so canRemove is true and the next
-// tick moves it to .trash and deletes its local branch ref. Handing back a
-// checkout the daemon is configured to throw away is never what the caller
-// meant, so the branch is measured against the same filters the runner applies.
-// Returns the sentence naming the offending filter, or null.
-//
-// getRemoteBranchesWithActivity is one `for-each-ref` over refs/remotes in the
-// local ref store (no network, the same read the runner does), and it only runs
-// when branchMaxAge is configured and origin actually carries the branch. A
-// branch with no origin/<branch> has no activity to judge: it is local-only,
-// which pruneRiskWarning covers instead.
 async function branchPrunedBySync(
   config: { branchInclude?: string[]; branchExclude?: string[]; branchMaxAge?: string },
   git: RepoGitService,
@@ -519,16 +449,7 @@ async function branchPrunedBySync(
   remoteExists: boolean,
 ): Promise<string | null> {
   const { branchInclude, branchExclude, branchMaxAge } = config;
-  // Most repositories configure no filters at all, and then sync keeps every
-  // remote branch: nothing to enforce, and nothing below worth spending.
   if (!branchInclude && !branchExclude && !branchMaxAge) return null;
-  // The runner keeps the default branch in the inventory whatever the filters
-  // say — its worktree is where every fetch runs — for as long as origin still
-  // carries it. Refusing it here would refuse a worktree sync never prunes.
-  // getDefaultBranch() is the cached name, and only a sync re-resolves it, so
-  // between an origin-side rename and the next sync the NEW default is refused
-  // here although the runner would retain it. That errs closed, names the
-  // filter, and force: true still opens it.
   if (remoteExists && branchName === git.getDefaultBranch()) return null;
 
   const excluded = (filter: string, value: unknown): string =>
@@ -545,9 +466,6 @@ async function branchPrunedBySync(
     : null;
 }
 
-// force is an escape hatch, not a mute button: a forced creation still reports
-// the filter that will claim it, and a branch that exists nowhere on origin is
-// reported the same way whether push was declined or the push failed.
 function pruneRiskWarning(branchName: string, exclusion: string | null, localOnly: boolean): string | undefined {
   const parts: string[] = [];
   if (exclusion) parts.push(`${exclusion} Created anyway because force: true was passed.`);
@@ -585,7 +503,6 @@ export async function handleCreateWorktree(
       initFetched = git.didInitializeFetch();
     }
 
-    // Best-effort: offline, existence is judged from the last fetch's refs.
     let fetchWarning: string | undefined;
     if (!initFetched) {
       try {
@@ -611,10 +528,6 @@ export async function handleCreateWorktree(
         `Sanitized worktree path '${worktreePath}' collides with existing branch '${collision.branch}'. Rename or remove the conflicting branch first.`,
       );
     }
-    // Past the collision guard a registration at this path is this branch's
-    // own, so addWorktree below is a no-op and the response would otherwise be
-    // byte-identical to a fresh checkout. A retrying agent has to be able to
-    // tell the two apart before it trusts the checkout's contents.
     const worktreeExisted = existing.some((w) => pathsEqual(w.path, worktreePath));
     await ensureWorktreeTargetAvailable(worktreePath, existing);
 
@@ -686,11 +599,6 @@ export async function handleSync(
       ...reason,
       message: formatCloneSkipReason(reason),
     }));
-    // Per-action failures (a worktree that could not be removed, a sparse
-    // checkout that could not be applied, ...) are recorded on the outcome
-    // instead of rejecting sync(). The CLI's --runOnce turns them into exit
-    // code 1; mirror that here so `success` is not a lie, while the call
-    // itself still completed, so isError stays false.
     const failed = outcome.counts.failed;
     const failures = outcome.actions.filter((action) => action.kind === "failed");
     return formatToolResponse({
@@ -721,7 +629,6 @@ export async function handleUpdateWorktree(
     if (!service.isInitialized()) {
       await service.initializeUnlocked();
     }
-    // Resolved from git, so the branch merged below is the one checked out now.
     const worktree = await ensureRepoWorktree(params, service);
     if (worktree.detached === true) {
       throw new WorktreeDetachedError(worktree.path, worktree.head);
@@ -757,11 +664,9 @@ export async function handleInitialize(
         ...reason,
         message: formatCloneSkipReason(reason),
       }));
-      // Clear the one-shot token so a later `sync` re-reports a refused clone.
       service.clearPendingInitSkip();
       ctx.invalidateDiscovered();
       return formatToolResponse({
-        // A recorded skip means init refused to adopt the existing clone.
         success: skips.length === 0,
         skips,
         defaultBranch: await service.getDefaultBranch(),
@@ -796,10 +701,6 @@ async function detectConfigFromLaunchCwd(ctx: RepositoryContext): Promise<string
   try {
     const discovered = await ctx.detectFromPath(ctx.getLaunchCwd());
     if (discovered.configPath) return discovered.configPath;
-    // detectFromPath only records configs that loaded successfully; a found
-    // but broken config would otherwise be invisible here. Return it so the
-    // loadConfig call surfaces the real parse error instead of the generic
-    // "configPath required" message.
     return await ctx.findConfigUpTree(ctx.getLaunchCwd());
   } catch {
     return null;
@@ -818,24 +719,6 @@ export async function handleSetCurrentRepository(
   });
 }
 
-// A progressToken's `progress` "MUST increase with each notification, even if
-// the total is unknown" (MCP spec, notifications/progress). The SDK does not
-// enforce it — it handles the notification with a bare `break` — so keeping
-// that promise is on this side.
-//
-// Only a phase's item count drives the arithmetic, and those counts do not
-// increase on their own: they restart at 1 in every phase, and in every stage
-// of a phase (the prune checks, then the removals that passed them). So each
-// counted run is carried on top of everything reported before it — `progress`
-// is that offset plus the event's `processed`.
-//
-// Everything else is one tick, git's transfer events included. Those carry a
-// percentage their message already spells out, and they count objects rather
-// than items: a 1200-object clone would otherwise add 1200 to a sync of three
-// branches, once per transfer stage, leaving a client's bar to fill and reset
-// five times over one sync. They also open every stage on `0% (0/1200)`, which
-// as a counted run reports the progress before it a second time and breaks the
-// one rule this function exists to keep.
 function createProgressSequencer(): (event: ProgressEvent) => { progress: number; total?: number } {
   let progress = 0;
   let offset = 0;
@@ -844,7 +727,6 @@ function createProgressSequencer(): (event: ProgressEvent) => { progress: number
   let lastSentTotal = 0;
 
   return (event: ProgressEvent): { progress: number; total?: number } => {
-    // `progress` is a percentage, which only a git transfer event carries.
     const counted = event.progress === undefined && event.processed !== undefined && event.processed > 0;
     if (!counted) {
       progress += 1;
@@ -855,19 +737,12 @@ function createProgressSequencer(): (event: ProgressEvent) => { progress: number
     }
 
     const processed = event.processed!;
-    // A restart — a new phase, the next stage of the same phase, or a total
-    // that changed under it — begins a run of its own above what was reported.
     if (event.total !== lastTotal || processed <= lastProcessed) offset = progress;
     lastProcessed = processed;
     lastTotal = event.total;
     progress = offset + processed;
 
-    // A denominator the progress does not fit inside says nothing, so it is
-    // left out rather than sent as a number already overshot.
     if (event.total === undefined || event.total < processed) return { progress };
-    // Separately: a run abandoned before it reached its total would leave the
-    // next run's denominator below the one already sent — a total that shrinks
-    // under a client mid-sync. The last one sent is a floor.
     lastSentTotal = Math.max(lastSentTotal, offset + event.total);
     return { progress, total: lastSentTotal };
   };

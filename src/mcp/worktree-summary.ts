@@ -2,7 +2,6 @@ import type { WorktreeStatusResult } from "../services/worktree-status.service";
 
 export type WorktreeLabel = "current" | "dirty" | "stale" | "clean" | "unknown";
 
-/** Ahead/behind against `@{upstream}`, as {@link WorktreeStatusResult.divergence} reports it. */
 export type Divergence = NonNullable<WorktreeStatusResult["divergence"]>;
 
 export interface SafeToRemove {

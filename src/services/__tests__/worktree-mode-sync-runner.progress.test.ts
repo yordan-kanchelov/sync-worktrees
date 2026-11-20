@@ -18,11 +18,6 @@ import type { RemovalAuditService } from "../removal-audit.service";
 import type { TrashService } from "../trash.service";
 import type { Config } from "../../types";
 
-// Progress used to be five messages for a whole attempt, so a create phase
-// working through hundreds of branches showed one static line for as long as it
-// ran. Each phase now counts the items it finished; these cover the counts
-// themselves, and that concurrent phases still report a sequence that only
-// moves forward.
 describe("WorktreeModeSyncRunner phase item progress", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -98,8 +93,6 @@ describe("WorktreeModeSyncRunner phase item progress", () => {
     return itemEvents(phase, label).map(({ processed, total }) => ({ processed, total }));
   }
 
-  // Existing worktrees for every branch listed, so the planner sees updates and
-  // sparse candidates rather than creates.
   async function withExistingWorktrees(branches: Array<{ branch: string; head?: string }>): Promise<void> {
     const worktrees = [{ path: mainPath, branch: "main", head: "main-head" }];
     for (const { branch, head } of branches) {
@@ -125,7 +118,6 @@ describe("WorktreeModeSyncRunner phase item progress", () => {
       "Creating worktrees: 'feature-2' (2/3)",
       "Creating worktrees: 'feature-3' (3/3)",
     ]);
-    // The phase still announces itself before any branch is done.
     expect(events[1]).toMatchObject({ phase: "create", message: "Creating worktrees for new branches" });
   });
 
@@ -146,8 +138,6 @@ describe("WorktreeModeSyncRunner phase item progress", () => {
     ]);
   });
 
-  // Creations run concurrently, so a count taken where a branch is dispatched
-  // would arrive out of order. The count follows completions instead.
   it("counts concurrent creations in the order they finish, never backwards", async () => {
     gitService.getRemoteBranches.mockResolvedValue(["main", "feature-1", "feature-2", "feature-3"]);
     const gates = new Map<string, () => void>();
@@ -159,7 +149,6 @@ describe("WorktreeModeSyncRunner phase item progress", () => {
     const attempt = run(makeRunner({ parallelism: { maxWorktreeCreation: 3 } }));
     await waitFor(() => gates.size === 3);
 
-    // Finished in an order the dispatch cannot predict.
     for (const branch of ["feature-3", "feature-1", "feature-2"]) {
       gates.get(branch)!();
       await settle();
@@ -195,10 +184,6 @@ describe("WorktreeModeSyncRunner phase item progress", () => {
     ]);
   });
 
-  // The update phase settles a worktree whose HEAD already matches origin's tip
-  // without spawning anything for it. Those still count: they are part of what
-  // the user is waiting on, and leaving them out would give the count a total it
-  // could never reach.
   it("counts every update candidate, including the ones settled without a git call", async () => {
     gitService.getRemoteBranches.mockResolvedValue(["main", "settled", "behind-1", "behind-2"]);
     await withExistingWorktrees([
@@ -221,7 +206,6 @@ describe("WorktreeModeSyncRunner phase item progress", () => {
 
     await run(makeRunner({ updateExistingWorktrees: true }));
 
-    // Four candidates: main and 'settled' never reach a git probe.
     expect(counts("update", "Checking worktrees for updates")).toEqual([
       { processed: 1, total: 4 },
       { processed: 2, total: 4 },
@@ -229,7 +213,6 @@ describe("WorktreeModeSyncRunner phase item progress", () => {
       { processed: 4, total: 4 },
     ]);
     expect(gitService.getAheadBehindCounts).toHaveBeenCalledTimes(2);
-    // Only the two worktrees actually behind reach the mutation stage.
     expect(counts("update", "Updating worktrees")).toEqual([
       { processed: 1, total: 2 },
       { processed: 2, total: 2 },

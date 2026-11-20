@@ -13,19 +13,6 @@ import type { Logger } from "../logger.service";
 import type { GitServiceOptions } from "../git.service";
 import type { Mock } from "vitest";
 
-// Real git, no mocks. `git clone --bare` runs init_db before it transfers
-// anything, so HEAD appears within milliseconds: a HEAD-less bareRepoDir is
-// not the residue of a killed clone (a kill leaves HEAD in place, a SIGTERM
-// removes the whole destination) but of a half-finished cleanup or external
-// damage. However it arose, "bare repo exists" is decided by `<bare>/HEAD`, so
-// every later initialize() re-ran `git clone --bare` into that directory and
-// git refused it ("destination path already exists and is not an empty
-// directory") until someone deleted it by hand.
-//
-// The marker is written only for a destination verified to be absent or empty,
-// which is what makes a marked HEAD-less directory provably one this tool
-// made, and therefore the only one that may be deleted and cloned again.
-// Everything else is left untouched and named in an error.
 describe("GitService initialize after an interrupted bare clone (real git)", () => {
   let tempDir: string;
   let remote: string;
@@ -72,8 +59,6 @@ describe("GitService initialize after an interrupted bare clone (real git)", () 
     );
   }
 
-  // What a hard kill during `git clone --bare` leaves: the transfer's objects
-  // and config, no HEAD.
   async function leaveInterruptedClone({ marked }: { marked: boolean }): Promise<void> {
     await fs.mkdir(path.join(bareRepoDir, "objects", "pack"), { recursive: true });
     await fs.writeFile(path.join(bareRepoDir, "config"), "[core]\n\trepositoryformatversion = 0\n\tbare = true\n");
@@ -86,8 +71,6 @@ describe("GitService initialize after an interrupted bare clone (real git)", () 
     const service = makeService();
     await expect(service.initialize()).resolves.toBeDefined();
 
-    // A real bare repository now, with the default-branch worktree registered
-    // exactly as a first-run clone leaves it.
     const bareGit = simpleGit(bareRepoDir);
     await expect(bareGit.raw(["rev-parse", "--is-bare-repository"])).resolves.toContain("true");
     await expect(fs.access(path.join(bareRepoDir, "HEAD"))).resolves.toBeUndefined();
@@ -96,8 +79,6 @@ describe("GitService initialize after an interrupted bare clone (real git)", () 
     expect(worktreeList).toContain(path.join(worktreeDir, "main"));
     await expect(fs.readFile(path.join(worktreeDir, "main", "README.md"), "utf8")).resolves.toBe("# app");
 
-    // The marker is settled, so the next init adopts the repository instead of
-    // deleting it again.
     await expect(fs.access(markerPath)).rejects.toThrow();
     expect((logger.warn as Mock).mock.calls.flat().join("\n")).toContain(path.resolve(bareRepoDir));
   });
@@ -111,14 +92,10 @@ describe("GitService initialize after an interrupted bare clone (real git)", () 
       message: expect.stringContaining(path.resolve(bareRepoDir)),
     });
 
-    // Nothing of the user's directory was touched.
     await expect(fs.readFile(path.join(bareRepoDir, "config"), "utf8")).resolves.toContain("bare = true");
     await expect(fs.access(path.join(bareRepoDir, "objects"))).resolves.toBeUndefined();
   });
 
-  // The destination need not be a directory at all. A path that cannot be
-  // listed is never claimed with a marker, so no run — not the first, not the
-  // second — is ever authorized to delete what is really there.
   it("never deletes user data at a bareRepoDir that is a file, on any run", async () => {
     await fs.mkdir(path.dirname(bareRepoDir), { recursive: true });
     await fs.writeFile(bareRepoDir, "USER DATA");
@@ -136,7 +113,6 @@ describe("GitService initialize after an interrupted bare clone (real git)", () 
   it("clears a stale marker next to a finished clone without touching the repository", async () => {
     await makeService().initialize();
     const headBefore = (await simpleGit(bareRepoDir).raw(["rev-parse", "HEAD"])).trim();
-    // A clone that landed but was killed before its marker could be removed.
     await fs.writeFile(markerPath, new Date().toISOString());
 
     await expect(makeService().initialize()).resolves.toBeDefined();

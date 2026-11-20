@@ -14,8 +14,6 @@ import { WorktreeSyncService } from "../../services/worktree-sync.service";
 import type { RepositoryConfig } from "../../types";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
-// The readOnlyHint tools must not refresh (rewrite) a worktree's index: in a
-// parallel-agents setup that takes index.lock under another agent's commit.
 describe("read-only MCP tools leave the git index alone (real git)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -72,7 +70,6 @@ describe("read-only MCP tools leave the git index alone (real git)", () => {
 
     mainPath = pathResolution.getBranchWorktreePath(worktreeDir, "main");
     indexPath = path.resolve(mainPath, (await simpleGit(mainPath).revparse(["--git-path", "index"])).trim());
-    // Stat-dirty but content-clean: a plain `git status` would refresh the index.
     const past = new Date(Date.now() - 60_000);
     await fs.utimes(path.join(mainPath, "README.md"), past, past);
   });

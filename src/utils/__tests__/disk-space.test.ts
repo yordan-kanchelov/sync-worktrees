@@ -10,8 +10,6 @@ import { calculateDirectorySize, calculateSyncDiskSpace, formatBytes } from "../
 
 import type * as ChildProcessModule from "child_process";
 
-// The real `execFile` unless a test scripts `du`'s answers with `duAnswers`,
-// so the same file covers both the parsing and a real `du` run.
 vi.mock("child_process", async () => {
   const actual = await vi.importActual<typeof ChildProcessModule>("child_process");
   return { ...actual, execFile: vi.fn(actual.execFile) };
@@ -19,8 +17,6 @@ vi.mock("child_process", async () => {
 
 type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
 
-// Answers successive `du` calls in order: a string is its stdout, an Error its
-// failure. Calls come in the order `calculateSyncDiskSpace` makes them.
 function duAnswers(...answers: Array<string | Error>): void {
   vi.mocked(execFile).mockImplementation(((_file: string, _args: readonly string[], callback: ExecFileCallback) => {
     const answer = answers.shift() ?? new Error("unexpected du call");
@@ -80,7 +76,6 @@ describe("disk-space", () => {
     });
 
     it("measures a real directory with the system du", async () => {
-      // A name a shell would expand: proves the path reaches `du` as one argument.
       const dir = path.join(tempDir, "with space $(touch pwned)");
       await fs.promises.mkdir(dir);
       await fs.promises.writeFile(path.join(dir, "data.bin"), Buffer.alloc(64 * 1024, 1));
@@ -190,7 +185,6 @@ describe("disk-space", () => {
     });
 
     it("should gracefully handle non-existent directories", async () => {
-      // The real `du`, on a path that is not there.
       const result = await calculateSyncDiskSpace([path.join(tempDir, "nonexistent")], []);
       expect(result).toBe("0 B");
     });
@@ -205,20 +199,11 @@ describe("disk-space", () => {
     });
 
     it("hands every directory to `measure` at once, so the bound is the caller's", async () => {
-      // This function does not bound anything, and this pins that rather than
-      // claiming otherwise: it fans `repoPaths.concat(worktreeDirs)` into one
-      // `Promise.all`, so N directories means N simultaneous calls to whatever
-      // `measure` it was given. The shipped caller passes DiskUsageCache's
-      // bounded measure -- see the second half of this test, and
-      // "bounds the disk walks by the repository parallelism it was given" in
-      // interactive-ui.status-fanout-and-disk.test.ts for the real caller.
       let inFlight = 0;
       let peak = 0;
       const release: Array<() => void> = [];
 
       const total = calculateSyncDiskSpace(["/bare-a", "/bare-b"], ["/wt-a", "/wt-b"], () => {
-        // Recorded from inside the walk: what actually overlapped, not what the
-        // caller was handed.
         inFlight += 1;
         if (inFlight > peak) peak = inFlight;
         return new Promise<number>((resolve) => {
@@ -237,10 +222,6 @@ describe("disk-space", () => {
     });
 
     it("overlaps exactly as far as the measure it is given allows", async () => {
-      // The same four directories through a measure that bounds itself at two,
-      // which is what `DiskUsageCache(2)` does for the shipped caller. Measured
-      // on a 197 MB, 50,407-path six-directory workspace: 101 ms in sequence,
-      // 48 ms through that bound, 29 ms unbounded.
       const limit = pLimit(2);
       let inFlight = 0;
       let peak = 0;
@@ -272,8 +253,6 @@ describe("disk-space", () => {
       expect(vi.mocked(execFile)).not.toHaveBeenCalled();
     });
 
-    // The caller owns reporting: writing to the console here would land on
-    // top of the TUI's Ink frame.
     it("rejects, without writing to the console, when measure throws synchronously", async () => {
       const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 

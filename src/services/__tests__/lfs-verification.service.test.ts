@@ -36,9 +36,6 @@ describe("LfsVerificationService (through GitService)", () => {
   describe("addWorktree - LFS verification", () => {
     const POINTER_HEADER = "version https://git-lfs.github.com/spec/v1";
 
-    // Args-keyed stand-in for the new worktree's client: the attribute probe
-    // (`git grep` over HEAD's .gitattributes), the git-lfs probe (`git lfs
-    // version`) and `git lfs ls-files` all land on the same client.
     const mockWorktreeGit = (
       opts: { declaresLfs?: boolean; gitLfsInstalled?: boolean; lfsFiles?: string[]; treeOid?: string } = {},
     ): { raw: Mock; revparse: Mock; env: Mock } => {
@@ -73,7 +70,6 @@ describe("LfsVerificationService (through GitService)", () => {
       return worktreeGitMock as unknown as { raw: Mock; revparse: Mock; env: Mock };
     };
 
-    // Every sampled file reads back as a git-lfs pointer.
     const mockPointerReads = (): { read: Mock; close: Mock } => {
       const handle = {
         read: vi.fn().mockImplementation((buffer: Buffer) => {
@@ -86,8 +82,6 @@ describe("LfsVerificationService (through GitService)", () => {
       return handle as unknown as { read: Mock; close: Mock };
     };
 
-    // These fixtures let the orphaned-directory cleanup warn on its own, so the
-    // assertions below look only at the warnings LFS verification emits.
     const lfsWarnings = (): string[] =>
       (mockLogger.warn as Mock).mock.calls
         .map(([message]) => String(message))
@@ -98,8 +92,6 @@ describe("LfsVerificationService (through GitService)", () => {
       await gitService.initialize();
     });
 
-    // Restored from a hook, not a `finally`: a test body that never finishes
-    // (a timeout) would otherwise leave the variable set for the whole file.
     const originalSkipSmudge = process.env[ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE];
     afterEach(() => {
       setEnvVar(ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE, originalSkipSmudge);
@@ -168,10 +160,6 @@ describe("LfsVerificationService (through GitService)", () => {
       expect(worktreeGitMock.raw).not.toHaveBeenCalledWith(["lfs", "ls-files", "--name-only"]);
     });
 
-    // `git worktree add` returns only once its checkout (git-lfs delayed
-    // checkout and the post-checkout hook included) has finished, so a pointer
-    // file found now stays a pointer file: waiting for it cost up to 30 s per
-    // created worktree and never changed the answer.
     it("warns once and never sleeps when the checkout left pointer files behind", async () => {
       mockShowRef({ local: false, remote: true });
 
@@ -194,9 +182,6 @@ describe("LfsVerificationService (through GitService)", () => {
       expect(lfsWarnings()[0]).toContain("GIT_LFS_SKIP_SMUDGE");
     });
 
-    // The variable is exported by the shell or the CI job, not by us: with the
-    // smudge filter off, pointer files are the expected outcome of the
-    // checkout, so there is nothing to verify and nothing to warn about.
     it("skips verification when GIT_LFS_SKIP_SMUDGE is set in the environment", async () => {
       setEnvVar(ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE, "1");
       mockShowRef({ local: false, remote: true });
@@ -211,8 +196,6 @@ describe("LfsVerificationService (through GitService)", () => {
       expect(lfsWarnings()).toEqual([]);
     });
 
-    // `git lfs ls-files` walks the whole index and spawns git-lfs; a repository
-    // whose HEAD declares no `filter=lfs` never had LFS content to check.
     it("does not run 'lfs ls-files' when HEAD declares no LFS filter", async () => {
       mockShowRef({ local: false, remote: true });
 
@@ -236,8 +219,6 @@ describe("LfsVerificationService (through GitService)", () => {
       expect(lfsWarnings()).toEqual([]);
     });
 
-    // Whether git-lfs is installed is a machine-wide fact: probing and warning
-    // per created worktree produced one warning per branch on such a machine.
     it("warns once per process when git-lfs is missing, not once per worktree", async () => {
       mockShowRef({ local: false, remote: true });
 
@@ -256,9 +237,6 @@ describe("LfsVerificationService (through GitService)", () => {
       ).toHaveLength(1);
     });
 
-    // The verdict is keyed by the tree HEAD points at, so a tree's content
-    // decides it — a cache entry can never be stale, and a second branch at the
-    // same tree does not re-run the probe.
     it("reuses the attribute verdict per tree oid and re-probes a different tree", async () => {
       mockShowRef({ local: false, remote: true });
 

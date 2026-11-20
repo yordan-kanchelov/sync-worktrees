@@ -4,6 +4,7 @@ coverage/
 node_modules/
 *.tsbuildinfo
 pnpm-lock.yaml
+eslint-suppressions.json
 .mcp-stdio-test-*
 
 # Markdown is hand-wrapped (README, review notes) or generated (CHANGELOG, changesets)

@@ -10,15 +10,6 @@ import { GitService } from "../git.service";
 
 import type { GitServiceOptions } from "../git.service";
 
-// Real git, no mocks. The three inventory listings decide which branches exist
-// on origin; a name they drop has no worktree created and, worse, an existing
-// worktree for it is planned for prune as stale. Two ways a name used to be
-// lost: "feature/HEAD" is a legal branch name that an endsWith("/HEAD") filter
-// removes along with the origin/HEAD symref, and %(refname:short) is
-// ambiguity-dependent — git prints refs/remotes/origin/x as "remotes/origin/x"
-// once a local branch literally named "origin/x" exists, and shortens
-// refs/remotes/origin/feature/HEAD to "origin/feature", a branch that does not
-// exist at all.
 describe("GitService remote branch inventory (real git)", () => {
   let tempDir: string;
   let remote: string;
@@ -47,9 +38,6 @@ describe("GitService remote branch inventory (real git)", () => {
     await seed.branch(["-M", "main"]);
     await seed.addRemote("origin", remote);
     await seed.push("origin", "main");
-    // Every name git can print in a surprising shape: a branch ending in
-    // "/HEAD", one literally named "origin", one carrying "|", and one whose
-    // short form collides with a local branch created below.
     for (const branch of ["feature/HEAD", "origin", "feature|wip", "topic"]) {
       await seed.raw(["push", "origin", `refs/heads/main:refs/heads/${branch}`]);
     }
@@ -62,12 +50,7 @@ describe("GitService remote branch inventory (real git)", () => {
     await gitService.initialize();
 
     const bare = simpleGit(bareRepoDir);
-    // The symref sync must skip — and the only ref under refs/remotes/origin
-    // that is not a branch.
     await bare.raw(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
-    // A local branch literally named "origin/topic": git now has to
-    // disambiguate refs/remotes/origin/topic and prints "remotes/origin/topic"
-    // for %(refname:short).
     await bare.raw(["branch", "origin/topic", "refs/remotes/origin/main"]);
   });
 

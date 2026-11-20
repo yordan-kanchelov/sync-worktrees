@@ -4,6 +4,8 @@ const reactHooks = require("eslint-plugin-react-hooks");
 const globals = require("globals");
 const tseslint = require("typescript-eslint");
 
+const noComments = require("./eslint-rules/no-comments.cjs");
+
 const testFiles = ["src/**/__tests__/**/*.{ts,tsx}", "src/**/*.test.{ts,tsx}"];
 
 module.exports = defineConfig([
@@ -22,6 +24,14 @@ module.exports = defineConfig([
   },
   js.configs.recommended,
   {
+    plugins: { local: { rules: { "no-comments": noComments } } },
+    rules: { "local/no-comments": "error", "no-empty": ["error", { allowEmptyCatch: true }] },
+  },
+  {
+    files: ["src/types/public-config.ts", "sync-worktrees.config.example.js"],
+    rules: { "local/no-comments": "off" },
+  },
+  {
     files: ["**/*.{js,cjs,mjs}"],
     languageOptions: {
       globals: {
@@ -34,7 +44,6 @@ module.exports = defineConfig([
     extends: [tseslint.configs.recommendedTypeChecked],
     languageOptions: {
       parserOptions: {
-        // tsconfig.json covers the src/ sources, tsconfig.spec.json covers tests.
         project: ["./tsconfig.json", "./tsconfig.spec.json"],
         tsconfigRootDir: __dirname,
       },
@@ -49,16 +58,11 @@ module.exports = defineConfig([
           varsIgnorePattern: "^_",
         },
       ],
-      // Async-by-contract methods (interface implementations, MCP handlers) return promises without awaiting.
       "@typescript-eslint/require-await": "off",
-      // Wrapped errors already embed the original message; attaching `cause` changes what the CLI prints on failure.
       "preserve-caught-error": "off",
     },
   },
   {
-    // A repository URL can carry credentials (`https://user:token@host/...`), and redaction at the output has
-    // drifted more than once. These are the two shapes that put a raw one in front of a person: a label falling
-    // back to it, and a template string interpolating it. Use repoDisplayLabel / redactRepoUrl from utils/git-url.
     files: ["src/**/*.{ts,tsx}"],
     ignores: testFiles,
     rules: {
@@ -80,18 +84,14 @@ module.exports = defineConfig([
     },
   },
   {
-    // Ink components and their tests.
     files: ["src/components/**/*.{ts,tsx}"],
     extends: [reactHooks.configs.flat.recommended],
   },
   {
-    // Root-level TypeScript config files belong to no tsconfig project.
     files: ["*.ts"],
     extends: [tseslint.configs.disableTypeChecked],
   },
   {
-    // Test doubles: vi.fn()/vi.mocked() yield `any`, mock implementations are async, methods are passed unbound
-    // to expect() and vi.mocked(), and casts document intent. These rules only add noise in tests.
     files: testFiles,
     rules: {
       "@typescript-eslint/no-explicit-any": "off",
@@ -102,7 +102,6 @@ module.exports = defineConfig([
       "@typescript-eslint/no-unsafe-member-access": "off",
       "@typescript-eslint/no-unsafe-return": "off",
       "@typescript-eslint/unbound-method": "off",
-      // `mockImplementation` is typed to return void but is routinely given async implementations.
       "@typescript-eslint/no-misused-promises": ["error", { checksVoidReturn: { arguments: false } }],
     },
   },

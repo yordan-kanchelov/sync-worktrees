@@ -12,15 +12,6 @@ import { WorktreeSyncService } from "../worktree-sync.service";
 import type { RepositoryConfig, SyncOutcomeAction } from "../../types";
 import type { Mock } from "vitest";
 
-// Real git, no mocks. `git clone --bare` copies every remote branch into
-// refs/heads/*, and the fetch refspec only ever updates refs/remotes/origin/*,
-// so those copies stay frozen at clone time. A worktree added later for such a
-// branch used to check out the frozen tip, be reported as created with
-// tracking, and then read as behind or diverged on the next sync — a reset
-// with a warning, or the directory moved aside as diverged. Two halves: a
-// fresh clone drops the copies, and a local ref that is only behind is moved to
-// origin's tip when its worktree is created. A local ref with commits not on
-// origin keeps its tip, and the sync says so.
 describe("GitService worktree creation from stale local branch refs", () => {
   let tempDir: string;
   let remote: string;
@@ -90,7 +81,6 @@ describe("GitService worktree creation from stale local branch refs", () => {
   const upstreamOf = async (worktreePath: string): Promise<string> =>
     (await simpleGit(worktreePath).raw(["rev-parse", "--abbrev-ref", "feature@{upstream}"])).trim();
 
-  // Advance the remote's feature branch; `rewrite` amends the tip and force-pushes instead.
   async function pushFeature(content: string, opts: { rewrite?: boolean } = {}): Promise<void> {
     const seed = simpleGit(seedDir);
     await seed.checkout("feature");
@@ -105,8 +95,6 @@ describe("GitService worktree creation from stale local branch refs", () => {
     }
   }
 
-  // The failure mode this guards against: the update phase treating the new
-  // worktree as behind or diverged and resetting or moving it aside.
   const divergedHandling = (actions: SyncOutcomeAction[]): SyncOutcomeAction[] =>
     actions.filter(
       (action) =>
@@ -130,12 +118,10 @@ describe("GitService worktree creation from stale local branch refs", () => {
     const service = new WorktreeSyncService(makeConfig());
     await service.initialize();
 
-    // Only the default branch keeps a local ref; every other branch is reachable through origin/* alone.
     expect(await localHeads()).toEqual(["refs/heads/main"]);
     const cloneTip = await revParse(bareRepoDir, "refs/remotes/origin/feature");
     expect(cloneTip).toBe(await revParse(remote, "refs/heads/feature"));
 
-    // Months later the branch is rebased on the remote, then included in the sync.
     await pushFeature("v2 rewritten", { rewrite: true });
     const git = service.getGitService();
     await git.fetchAll();
@@ -156,7 +142,6 @@ describe("GitService worktree creation from stale local branch refs", () => {
     const service = new WorktreeSyncService(makeConfig());
     await service.initialize();
 
-    // A bare repository created by an older version still carries the clone-time copy.
     const cloneTip = await revParse(bareRepoDir, "refs/remotes/origin/feature");
     await simpleGit(bareRepoDir).raw(["update-ref", "refs/heads/feature", cloneTip]);
 
@@ -181,9 +166,6 @@ describe("GitService worktree creation from stale local branch refs", () => {
     const service = new WorktreeSyncService(makeConfig({ logger }));
     await service.initialize();
 
-    // A commit made in a since-removed worktree and never pushed: same tree as
-    // origin/feature, so only the commit itself is local — which is also what
-    // a copy whose history was rebased away on the remote looks like.
     const remoteTip = await revParse(bareRepoDir, "refs/remotes/origin/feature");
     const bare = simpleGit(bareRepoDir);
     const localOnly = (

@@ -7,9 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { DoctorCheck } from "../../cli/doctor";
 
-// A repository name is used as a path segment (lock and audit-log files).
-// Names reserved only on Windows must sync; names that cannot become a
-// segment must be refused by validation, not crash later.
 describe("repository name as a path segment (E2E)", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   let tempDir: string;

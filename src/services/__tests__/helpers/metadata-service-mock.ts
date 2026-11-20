@@ -1,12 +1,5 @@
 import { vi } from "vitest";
 
-// One WorktreeMetadataService stand-in per test file, shared by the module
-// mock below and by the tests that assert on it. It imports nothing but
-// vitest, so a vi.mock factory can load it before the mocked module exists:
-//
-//   vi.mock("../worktree-metadata.service", async () =>
-//     (await import("./helpers/metadata-service-mock")).worktreeMetadataServiceModuleMock(),
-//   );
 export const mockMetadataServiceInstance = {
   createInitialMetadataFromPath: vi.fn<any>().mockResolvedValue(undefined),
   updateLastSyncFromPath: vi.fn<any>().mockResolvedValue(undefined),

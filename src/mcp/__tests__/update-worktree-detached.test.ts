@@ -15,12 +15,6 @@ import type { RepositoryContext } from "../context";
 import type { RepositoryConfig } from "../../types";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
-// Real git, no mocks. The thing under test is what git's own worktree listing
-// says about a worktree whose HEAD is detached, so faking that listing would
-// fake the bug away: `git worktree list --porcelain` prints such an entry with
-// a `HEAD <oid>` line, a `detached` line and NO `branch` line, and the default
-// listing drops it entirely. That is why update_worktree used to answer "not a
-// registered worktree" for a path git really does have registered.
 describe("update_worktree on a detached-HEAD worktree (real git)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -78,9 +72,6 @@ describe("update_worktree on a detached-HEAD worktree (real git)", () => {
     return (await simpleGit(dir).revparse(["HEAD"])).trim();
   }
 
-  // A second commit on origin/feature/x, so an update that ran would visibly
-  // move HEAD. Without it a suppressed fast-forward and a performed one look
-  // the same.
   async function advanceRemote(): Promise<string> {
     const seed = simpleGit(seedDir);
     await seed.checkout("feature/x");
@@ -126,8 +117,6 @@ describe("update_worktree on a detached-HEAD worktree (real git)", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  // The acceptance case. The path IS registered, git simply reports no branch
-  // for it, so the answer has to name that and say what to do about it.
   it("refuses with DETACHED_HEAD and fast-forwards nothing", async () => {
     const target = pathResolution.getBranchWorktreePath(worktreeDir, "feature/x");
     expect((await call(handleCreateWorktree, { branchName: "feature/x" })).success).toBe(true);
@@ -135,10 +124,6 @@ describe("update_worktree on a detached-HEAD worktree (real git)", () => {
 
     const detachedAt = await headOf(target);
     await simpleGit(target).raw(["checkout", "--detach", detachedAt]);
-    // Precondition, pinned so the case cannot silently stop being about a
-    // detached worktree: git lists the path, and lists it without a branch.
-    // The `detached` check is anchored to a whole line — `toContain` would be
-    // satisfied by the temp directory's own name, which carries the word.
     const listing = await porcelain();
     expect(listing).toContain(`worktree ${target}`);
     expect(listing).toMatch(/^detached$/m);
@@ -155,7 +140,6 @@ describe("update_worktree on a detached-HEAD worktree (real git)", () => {
     expect(result.message).toContain("detached HEAD");
     expect(result.message).toContain(target);
     expect(result.message).toContain(detachedAt);
-    // The bug this replaces: a registered path reported as unregistered.
     expect(result.message).not.toContain("not a registered worktree");
 
     expect(fetchBranch).not.toHaveBeenCalled();
@@ -164,9 +148,6 @@ describe("update_worktree on a detached-HEAD worktree (real git)", () => {
     expect(await headOf(target)).not.toBe(remoteTip);
   });
 
-  // The other half of the guard: it must not fire for a worktree that is on a
-  // branch, and re-attaching is exactly the remedy the message prescribes — so
-  // following it has to work.
   it("fast-forwards normally once a branch is checked out again", async () => {
     const target = pathResolution.getBranchWorktreePath(worktreeDir, "feature/x");
     expect((await call(handleCreateWorktree, { branchName: "feature/x" })).success).toBe(true);
@@ -185,11 +166,6 @@ describe("update_worktree on a detached-HEAD worktree (real git)", () => {
     expect(await headOf(target)).toBe(remoteTip);
   });
 
-  // A registration whose checkout has been deleted is `detached` + `prunable`
-  // in git's listing, and asking for detached entries un-hides that too. There
-  // is no directory to check a branch out in, so DETACHED_HEAD would prescribe
-  // a remedy that cannot be performed; the rest of GitService already treats a
-  // prunable registration as absent (isRegisteredWorktree), and so does this.
   it("refuses a prunable detached registration as unregistered, not as detached", async () => {
     const target = pathResolution.getBranchWorktreePath(worktreeDir, "feature/x");
     expect((await call(handleCreateWorktree, { branchName: "feature/x" })).success).toBe(true);
@@ -211,12 +187,6 @@ describe("update_worktree on a detached-HEAD worktree (real git)", () => {
     expect(fetchBranch).not.toHaveBeenCalled();
   });
 
-  // `prunable` is the only thing in the listing that says "the checkout is
-  // gone", and git does not compute it for a LOCKED registration — so a locked
-  // detached worktree whose directory has been deleted arrives looking exactly
-  // like a live detached one. That is git's documented reason to lock (a
-  // worktree on media that is not always mounted), and DETACHED_HEAD there
-  // names a remedy — check out a branch — in a directory that is not present.
   it("refuses a locked detached registration whose checkout is gone as WORKTREE_MISSING", async () => {
     const target = pathResolution.getBranchWorktreePath(worktreeDir, "feature/x");
     expect((await call(handleCreateWorktree, { branchName: "feature/x" })).success).toBe(true);
@@ -227,8 +197,6 @@ describe("update_worktree on a detached-HEAD worktree (real git)", () => {
     const listing = await porcelain();
     expect(listing).toMatch(/^detached$/m);
     expect(listing).toMatch(/^locked on removable media$/m);
-    // The point of the case: git suppresses `prunable` here, so the filter in
-    // getWorktrees cannot see that this checkout no longer exists.
     expect(listing).not.toMatch(/^prunable/m);
 
     const git = service.getGitService();
@@ -241,9 +209,6 @@ describe("update_worktree on a detached-HEAD worktree (real git)", () => {
     expect(fetchBranch).not.toHaveBeenCalled();
   });
 
-  // The other half: a lock is not by itself a reason to disown a worktree. One
-  // that is locked and still on disk is an ordinary detached checkout, and the
-  // remedy the refusal names can actually be carried out there.
   it("still answers DETACHED_HEAD for a locked detached worktree that is present", async () => {
     const target = pathResolution.getBranchWorktreePath(worktreeDir, "feature/x");
     expect((await call(handleCreateWorktree, { branchName: "feature/x" })).success).toBe(true);
@@ -257,10 +222,6 @@ describe("update_worktree on a detached-HEAD worktree (real git)", () => {
     expect(result.message).toContain(detachedAt);
   });
 
-  // Asking git for detached entries also un-hides the bare repository's own
-  // row, which has no branch AND no detached HEAD. Nothing may be fetched or
-  // merged for it: `fetchBranch("")` would fetch every ref under a name git
-  // reads as a refspec of its own.
   it("still refuses the bare repository path as unregistered", async () => {
     expect((await call(handleCreateWorktree, { branchName: "feature/x" })).success).toBe(true);
 

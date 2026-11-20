@@ -5,8 +5,6 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-// A configured repository whose bare clone does not exist yet: `trash` must
-// answer in one line, not with an "Unhandled error" stack from simple-git.
 describe("sync-worktrees trash before the first sync (E2E)", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   let tempDir: string;

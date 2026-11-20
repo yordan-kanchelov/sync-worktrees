@@ -5,9 +5,6 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Only the terminal renderer is stubbed. Everything the wizard calls below it —
-// InteractiveUIService, WorktreeSyncService, CloneSyncService, simple-git and
-// git itself — is the real thing.
 vi.mock("ink", () => ({
   render: vi.fn(() => ({ unmount: vi.fn(), waitUntilExit: vi.fn(() => new Promise<void>(() => {})) })),
 }));
@@ -17,14 +14,6 @@ import { WorktreeSyncService } from "../../services/worktree-sync.service";
 
 import type { Config } from "../../types";
 
-// The TUI's branch wizard on a clone-mode repository. It always ran
-// GitService.createBranch/pushBranch, which work in a bare repository a
-// clone-mode repo does not have: `bareRepoPath` fell back to the RELATIVE
-// '.bare/<repo name>', so the wizard either died with simple-git's
-// "Cannot use simple-git on a directory that does not exist" or — when a bare
-// store of the same repository NAME happened to sit under the daemon's working
-// directory — reported success after creating and pushing the branch in a
-// different repository entirely.
 describe("Clone-mode branch wizard (E2E)", () => {
   let tempDir: string;
   let remote: string;
@@ -98,12 +87,9 @@ describe("Clone-mode branch wizard (E2E)", () => {
       const created = await ui.operations.createAndPushBranch(0, "main", "feature/wizard");
       expect(created).toEqual({ success: true, finalName: "feature/wizard" });
 
-      // The branch exists on the remote at the tip of the base branch...
       expect(remoteBranches(remote)).toContain("feature/wizard");
       expect(git(remote, "rev-parse", "feature/wizard")).toBe(git(remote, "rev-parse", "main"));
 
-      // ...and the wizard's follow-up switches the clone to it in place, which
-      // is the clone-mode branch switching CHANGELOG 5.0.0 describes.
       await ui.operations.createWorktreeForBranch(0, "feature/wizard");
       expect(git(cloneDir, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feature/wizard");
       expect(await fs.readdir(path.join(tempDir))).not.toContain("feature-wizard");
@@ -113,11 +99,6 @@ describe("Clone-mode branch wizard (E2E)", () => {
   });
 
   it("never reaches a bare store that merely sits under the process working directory", async () => {
-    // A worktree-mode entry of a DIFFERENT repository that happens to share
-    // this one's name keeps its bare store at '<config dir>/.bare/app'. With
-    // the daemon started from that directory, the relative fallback path
-    // resolved onto it: the branch was created and pushed there, against the
-    // wrong remote, and the wizard reported success.
     const strangerRemote = await makeRemote("stranger", ["stranger.txt"]);
     const cwd = path.join(tempDir, "config-dir");
     await fs.mkdir(path.join(cwd, ".bare"), { recursive: true });
@@ -176,8 +157,6 @@ describe("Clone-mode branch wizard (E2E)", () => {
   it("suffixes the name instead of fast-forwarding a branch the remote already has", async () => {
     const { ui } = await buildUI();
     try {
-      // A branch somebody else pushed, sitting on an ancestor of the base: a
-      // plain `push` would have fast-forwarded it onto main's tip.
       const olderCommit = git(remote, "rev-parse", "main~1");
       git(remote, "update-ref", "refs/heads/feature/taken", olderCommit);
 
@@ -205,8 +184,6 @@ describe("Clone-mode branch wizard (E2E)", () => {
       expect(created.error).toContain("branch is protected");
       expect(created.error).not.toContain("simple-git");
       expect(remoteBranches(remote)).not.toContain("feature/protected");
-      // The half-created branch is rolled back, so retrying the same name does
-      // not collide with this repository's own leftover.
       expect(git(cloneDir, "for-each-ref", "--format=%(refname)", "refs/heads/feature")).toBe("");
     } finally {
       await ui.destroy(true);

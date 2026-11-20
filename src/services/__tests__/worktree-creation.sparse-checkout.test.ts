@@ -79,8 +79,6 @@ describe("WorktreeCreationService with sparse checkout (through GitService)", ()
       );
     });
 
-    // A --no-checkout worktree has no index or files yet, so the fast-forward
-    // only moves the ref; the checkout after the sparse setup populates it.
     it("moves a behind local branch to origin's tip before the sparse checkout", async () => {
       const sparseConfig: Config = {
         ...createMockConfig(),
@@ -171,22 +169,12 @@ describe("WorktreeCreationService with sparse checkout (through GitService)", ()
       );
     });
 
-    // The GIT_ATTR_SOURCE=HEAD client used for `lfs ls-files` passes an explicit
-    // env, and simple-git validates explicit envs (GIT_ASKPASS, GIT_CONFIG_COUNT)
-    // that a default client inherits freely. Without the same allowances as
-    // getCachedGit's clients, a VS Code askpass bridge or CI config-count in the
-    // forwarded environment throws before `lfs ls-files` runs, and the LFS
-    // verification is silently skipped.
     it("creates the LFS-verification client with the unsafe-env allowances", async () => {
       const sparseConfig: Config = {
         ...createMockConfig(),
         sparseCheckout: { include: ["apps"] },
       };
 
-      // applySparseAndCheckout also creates a worktree client — through
-      // getCachedGit, which already carries the allowances — so hand out a
-      // fresh client per simpleGit() call and pair each .env() with the
-      // options its own client was constructed with.
       const envClients: Array<{ options: unknown; env: NodeJS.ProcessEnv }> = [];
       (simpleGit as unknown as Mock).mockImplementation((p?: any, options?: unknown) => {
         if (!(p && p.includes("feature-1"))) return mockGit;

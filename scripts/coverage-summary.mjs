@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-// Prints vitest's json-summary coverage totals as a Markdown table, for the PR
-// workflow's job summary: `node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"`.
-// Usage: node scripts/coverage-summary.mjs [coverage/coverage-summary.json]
 import { readFileSync } from "node:fs";
 
 const METRICS = [
@@ -26,7 +23,6 @@ let summary;
 try {
   summary = JSON.parse(readFileSync(file, "utf8"));
 } catch (error) {
-  // The tests may have failed before coverage was written; say so rather than failing the step.
   console.log(`## Coverage\n\nNo coverage summary at \`${file}\` (${error.code ?? error.message}).\n`);
   process.exit(0);
 }

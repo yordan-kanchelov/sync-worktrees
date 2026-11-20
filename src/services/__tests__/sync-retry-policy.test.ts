@@ -63,12 +63,6 @@ describe("SyncRetryPolicy", () => {
 
     const options = policy.createOptions(policy.createContext());
 
-    // Pinned twice on purpose. The literals are the behaviour an unconfigured
-    // user gets, and `jitterMs: 0` is the one that would otherwise flip
-    // silently: a non-zero default adds delay to every retry of every sync
-    // nobody asked to jitter. The DEFAULT_CONFIG comparison is what keeps this
-    // fallback and the config loader's cross-field validator, which reads the
-    // same constants, from drifting into two sets of numbers.
     expect(options).toMatchObject({
       maxAttempts: 3,
       maxLfsRetries: 2,

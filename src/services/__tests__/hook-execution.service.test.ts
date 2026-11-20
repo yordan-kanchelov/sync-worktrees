@@ -55,10 +55,6 @@ describe("HookExecutionService", () => {
     };
   });
 
-  // Real children, probed by pid. Whether a hook is alive after cleanup() is
-  // the whole of T110, and "kill was called" is not that: the service kills a
-  // process GROUP through a shell it does not own, so only asking the OS about
-  // the pid the hook itself reported proves the signal reached the work.
   let fixtureDirs: string[] = [];
 
   const makeFixtureDir = (): string => {
@@ -67,9 +63,6 @@ describe("HookExecutionService", () => {
     return dir;
   };
 
-  // A hook that records its own pid, then ticks a file forever. The pid is the
-  // node grandchild's, not the shell the service spawned, so a test that finds
-  // it gone has watched the group kill travel all the way down.
   const livenessHook = (dir: string): string => {
     const pidFile = JSON.stringify(path.join(dir, "pid"));
     const tickFile = JSON.stringify(path.join(dir, "ticks"));
@@ -88,12 +81,6 @@ describe("HookExecutionService", () => {
     return Number(fs.readFileSync(pidFile, "utf8"));
   };
 
-  // "Gone" has two shapes and only one of them is an ESRCH. A killed orphan is
-  // reparented to pid 1 and stays in the process table as a zombie until
-  // something reaps it, which the container these tests run in does not do, so
-  // `kill(pid, 0)` goes on succeeding for a process that stopped running long
-  // ago. Where /proc can settle it, read the state; elsewhere (macOS, whose
-  // launchd does reap) ESRCH is the answer on its own.
   const PROC_AVAILABLE = fs.existsSync("/proc/self/stat");
 
   const isAlive = (pid: number): boolean => {
@@ -158,11 +145,6 @@ describe("HookExecutionService", () => {
       expect(stdoutCallback).toHaveBeenCalledWith("feature/test-branch,test-repo,main", expect.any(String));
     });
 
-    // Hook commands run with the new worktree as their cwd, which is all that
-    // tells them which repository they are in. A run started from a git hook in
-    // a linked worktree inherits that worktree's GIT_DIR (git exports it), and a
-    // shell or CI job can export any of the rest, so without this strip every
-    // `git` in a hook command would work on that repository instead.
     it("does not pass on an inherited repository-selection variable", async () => {
       const stdoutCallback = vi.fn();
       const originalGitDir = process.env.GIT_DIR;
@@ -530,12 +512,8 @@ describe("HookExecutionService", () => {
 
       const terminated = await service.cleanup();
 
-      // The identity of what was killed, not a count: the user has to be able
-      // to read which of their commands the quit ended.
       expect(terminated).toEqual([command]);
 
-      // The outcome, not the call: the pid the hook reported is gone from the
-      // process table, and it has stopped doing work.
       await vi.waitFor(() => {
         expect(isAlive(pid)).toBe(false);
       });
@@ -569,19 +547,10 @@ describe("HookExecutionService", () => {
       expect(await service.cleanup()).toEqual([]);
     });
 
-    // F1. The deliberate SIGTERM is the whole argument for killing rather than
-    // orphaning, and it is worth nothing if the trap does not get to run. It
-    // does not, unless cleanup() holds the process open for it: the quit calls
-    // exitProcess in the statement after this resolves, which closes the pipes
-    // the hook holds as stdout and stderr, and a trap that prints anything is
-    // SIGPIPEd part-way through. Measured directly against the real quit path:
-    // a trap writing only to files completed, the same trap with one echo in it
-    // died between its first and second line.
     it("resolves only once a hook trapping SIGTERM has finished its trap", async () => {
       const dir = makeFixtureDir();
       const trapFile = path.join(dir, "trap");
       const readyFile = path.join(dir, "ready");
-      // The echoes are the point: they are what a bare exit turns into SIGPIPE.
       const command =
         `trap 'echo caught; echo one >> "${trapFile}"; sleep 0.05; echo still-here; ` +
         `echo two >> "${trapFile}"; exit 0' TERM; echo ready > "${readyFile}"; ` +
@@ -595,10 +564,6 @@ describe("HookExecutionService", () => {
       const started = Date.now();
       expect(await service.cleanup()).toEqual([command]);
 
-      // Read with no waitFor: the guarantee is that the trap is already done
-      // when cleanup resolves, because that is the instant the caller exits.
-      // Missing reads as no lines rather than as an ENOENT, so a cleanup that
-      // came back too early says so as a value.
       const trapLines = (): string[] => {
         try {
           return fs.readFileSync(trapFile, "utf8").split("\n").filter(Boolean);
@@ -607,7 +572,6 @@ describe("HookExecutionService", () => {
         }
       };
       expect(trapLines()).toEqual(["one", "two"]);
-      // And the wait is bounded, so quit latency stays a quit latency.
       expect(Date.now() - started).toBeLessThan(2000);
     });
 
@@ -616,23 +580,14 @@ describe("HookExecutionService", () => {
       service.executeOnBranchCreated({ onBranchCreated: [livenessHook(dir)], timeoutMs: 0 }, mockContext);
       await readReportedPid(dir);
 
-      // The grace is an upper bound, not a sleep: a hook killed by the default
-      // action closes its pipes at once and the quit goes straight on.
       const started = Date.now();
       await service.cleanup();
       expect(Date.now() - started).toBeLessThan(200);
     });
 
-    // F4. The 5s SIGKILL this used to arm could never fire - the quit exits in
-    // the statement after cleanup() returns - so a hook that ignored SIGTERM
-    // was orphaned permanently and had to be killed by hand.
     it("SIGKILLs a hook that ignores SIGTERM rather than orphaning it", async () => {
       const dir = makeFixtureDir();
       const pidFile = JSON.stringify(path.join(dir, "pid"));
-      // `; true` keeps the shell from exec'ing into node, so this is the shape
-      // the escalation has to survive: the shell dies on the first SIGTERM and
-      // a grandchild that ignored it goes on holding the pipes. The shell's own
-      // exitCode says "dead" there, which is why the wait watches the streams.
       const command =
         nodeScript(
           `const fs=require('fs');process.on('SIGTERM',()=>{});` +
@@ -649,11 +604,6 @@ describe("HookExecutionService", () => {
       });
     });
 
-    // F2. cleanup() used to push the command before signalling, and
-    // terminateChild swallowed every failure, so the quit could name a hook it
-    // never touched. A hook that exits just before the quit is still in the map
-    // - its close event is queued behind the keystroke - and killing its group
-    // answers ESRCH.
     it("does not name a hook that had already exited", async () => {
       const dead = spawn(nodeScript("process.exit(0)"), {
         shell: true,
@@ -664,8 +614,6 @@ describe("HookExecutionService", () => {
       dead.stderr?.on("data", () => {});
       await new Promise<void>((resolve) => dead.once("close", () => resolve()));
 
-      // A real, really-dead pid put back where a queued close event would have
-      // left it. Nothing here is a double: the ESRCH comes from the kernel.
       (service as any).activeProcesses.set(dead, "already-finished-hook");
 
       expect(await service.cleanup()).toEqual([]);
@@ -715,9 +663,6 @@ describe("HookExecutionService", () => {
     it("never times out a timeoutMs 0 hook, however long it runs", async () => {
       const errorCallback = vi.fn();
 
-      // Only the timeout timer is faked, so the clock can pass the shipped
-      // default while the hook is still running: `||` in place of `??` would
-      // arm the 60s default here.
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       try {
         service.executeOnBranchCreated(

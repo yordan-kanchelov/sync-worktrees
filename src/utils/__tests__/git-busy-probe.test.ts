@@ -67,8 +67,6 @@ describe("probeInFlightGitOperations", () => {
     ]);
   });
 
-  // Clone mode has one checkout and no `worktrees/` directory at all; the git
-  // dir's own markers are the whole story there.
   it("reports markers in the git dir itself", async () => {
     await fs.writeFile(path.join(gitDir, "MERGE_HEAD"), "");
 
@@ -85,9 +83,6 @@ describe("probeInFlightGitOperations", () => {
     ]);
   });
 
-  // git writes an absolute path to the checkout's `.git`, but a submodule or a
-  // hand-made registration can point somewhere that is not named `.git`. Taking
-  // the parent unconditionally would then name the wrong directory.
   it("reports a gitdir path that is not a .git file as it stands", async () => {
     const admin = path.join(gitDir, "worktrees", "feature-a");
     await fs.mkdir(admin, { recursive: true });
@@ -105,8 +100,6 @@ describe("probeInFlightGitOperations", () => {
     await expect(probeInFlightGitOperations(gitDir)).resolves.toEqual([]);
   });
 
-  // A registration directory that cannot be listed could be hiding any of the
-  // markers, so it must not read as an idle checkout.
   it("reports a worktree admin directory that cannot be listed", async () => {
     if (!(await symlinksSupported())) return;
     const worktreesDir = path.join(gitDir, "worktrees");
@@ -143,16 +136,8 @@ describe("probeInFlightGitOperations", () => {
     ]);
   });
 
-  // A registration that vanishes between the `worktrees/` listing and the
-  // per-directory read — `git worktree remove` or `git worktree prune` running
-  // alongside — is not busy, it is gone. Reporting it as unreadable would wedge
-  // force clean's gc on a checkout that no longer exists.
   it("treats an admin directory that disappeared as idle, not as unreadable", async () => {
     if (!(await symlinksSupported())) return;
-    // The race needs `worktrees/` to LIST a name whose directory is then not
-    // there to read — a plain absent entry never gets listed, so it proves
-    // nothing. A dangling symlink is listed and then fails ENOENT on read,
-    // which is exactly the shape `git worktree prune` leaves mid-flight.
     await fs.mkdir(path.join(gitDir, "worktrees"), { recursive: true });
     await fs.symlink(path.join(gitDir, "worktrees", "was-here"), path.join(gitDir, "worktrees", "ghost"));
 
@@ -160,18 +145,12 @@ describe("probeInFlightGitOperations", () => {
   });
 
   it("treats a worktree registration that is a file, not a directory, as idle", async () => {
-    // Same reasoning one level down: ENOTDIR is a malformed registration, not a
-    // git command in flight, and must not permanently block the gc.
     await fs.mkdir(path.join(gitDir, "worktrees"), { recursive: true });
     await fs.writeFile(path.join(gitDir, "worktrees", "not-a-dir"), "stray file");
 
     await expect(probeInFlightGitOperations(gitDir)).resolves.toEqual([]);
   });
 
-  // One worktree can hold more than one marker at once — an interactive rebase
-  // someone walked away from, with a command running inside it right now. The
-  // error names what to clear, so naming only the first would send the user
-  // after half of it.
   it("reports every marker in one worktree, not just the first", async () => {
     const adminDir = await registerWorktree("wt-many", "/w/feature-many");
     await fs.writeFile(path.join(adminDir, "index.lock"), "");
@@ -183,10 +162,6 @@ describe("probeInFlightGitOperations", () => {
     expect(signals.every((signal) => signal.worktree === "/w/feature-many")).toBe(true);
   });
 
-  // HEAD.lock is held while git updates the ref, which is the exact instant a
-  // commit's objects exist and nothing points at them yet — the window this
-  // probe is for. Sampling showed it never overlapping index.lock, so dropping
-  // it loses that window entirely rather than merely duplicating cover.
   it("reports a worktree holding HEAD.lock", async () => {
     const adminDir = await registerWorktree("wt-head", "/w/feature-head");
     await fs.writeFile(path.join(adminDir, "HEAD.lock"), "");

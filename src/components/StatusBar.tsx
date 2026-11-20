@@ -22,27 +22,18 @@ function toScheduleList(cronSchedule: CronScheduleDisplay): string[] {
   return (typeof cronSchedule === "string" ? [cronSchedule] : [...cronSchedule]).filter((s) => s.length > 0);
 }
 
-// The earliest next run across every schedule. Repositories on different
-// schedules used to hide "Next Sync" altogether; an expression that does not
-// parse is left out rather than blanking the ones that do.
 export function computeNextSyncTime(schedules: readonly string[], now: Date = new Date()): Date | null {
   let earliest: Date | null = null;
   for (const schedule of schedules) {
     try {
       const next = CronExpressionParser.parse(schedule, { currentDate: now }).next().toDate();
       if (earliest === null || next < earliest) earliest = next;
-    } catch {
-      // Not a schedule this parser understands; the others still count.
-    }
+    } catch {}
   }
   return earliest;
 }
 
-// The key legend, and the width it needs. Below that it gives way to the keys
-// alone: a legend Ink wrapped onto a second row made the bar a row taller than
-// the App budgets for, and pushed the top of the screen off.
 const LEGEND_WIDTH = "sync create open wtree xclean reload ?help quit".length;
-/** Columns the bar spends outside its content: the border and `paddingX={1}`. */
 const FRAME_COLUMNS = 4;
 
 function describeOutcome(outcome: LastSyncOutcome): { text: string; color: "green" | "red" | "yellow" } {
@@ -70,20 +61,16 @@ const StatusBar: React.FC<StatusBarProps> = ({
 }) => {
   const { columns } = useWindowSize();
   const schedules = toScheduleList(cronSchedule);
-  // A fresh array on every render; the key is what the memo compares.
   const scheduleKey = schedules.join("\n");
-  // Bumped just past each tick so the shown time never lags behind the clock.
   const [tick, setTick] = useState(0);
   const nextSyncTime = useMemo(
     () => (scheduleKey === "" ? null : computeNextSyncTime(scheduleKey.split("\n"))),
-    // Not read: each is a moment to re-read the clock.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [scheduleKey, lastSyncTime, status, tick],
   );
 
   useEffect(() => {
     if (!nextSyncTime) return undefined;
-    // Capped: setTimeout fires at once past ~24.8 days.
     const delay = Math.min(Math.max(nextSyncTime.getTime() - Date.now(), 0) + 1000, 3_600_000);
     const timer = setTimeout(() => setTick((n) => n + 1), delay);
     return () => clearTimeout(timer);
@@ -115,7 +102,6 @@ const StatusBar: React.FC<StatusBarProps> = ({
   return (
     <Box borderStyle="single" paddingX={1}>
       <Box flexDirection="column" width="100%">
-        {/* Every line truncates rather than wraps: the App budgets one row for each. */}
         <Box justifyContent="space-between" gap={1}>
           <Text bold wrap="truncate-end">
             {getStatusIcon()} Status:{" "}
@@ -190,5 +176,4 @@ const StatusBar: React.FC<StatusBarProps> = ({
   );
 };
 
-// Memoised: the App re-renders on every log flush, and none of that touches the bar.
 export default React.memo(StatusBar);

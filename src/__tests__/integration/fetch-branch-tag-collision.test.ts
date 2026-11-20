@@ -10,9 +10,6 @@ import { createMockLogger } from "../test-utils";
 
 import type { SimpleGit } from "simple-git";
 
-// `git fetch origin v1` resolves a short name through refs/tags/ first, so a
-// branch that shares its name with a tag was never fetched: FETCH_HEAD got the
-// tag and refs/remotes/origin/v1 stayed where it was.
 describe("fetchBranch with a tag of the same name (E2E)", () => {
   let tempDir: string;
   let remote: string;

@@ -6,26 +6,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorktreeSyncService } from "../services/worktree-sync.service";
 
 import { TEST_PATHS, TEST_URLS, createMockConfig, createMockLogger, createRemoteRefListOutput } from "./test-utils";
-// import { parseArguments } from '../utils/cli'; // Skip due to ESM issues
 
 import type { Logger } from "../services/logger.service";
 import type { SimpleGit } from "simple-git";
 import type { Mock, Mocked } from "vitest";
 
-// Mock all external dependencies
 vi.mock("fs/promises");
 vi.mock("simple-git");
-// vi.mock('../utils/cli'); // Skip due to ESM issues
 
 describe("Integration Tests", () => {
   let mockGit: Mocked<SimpleGit>;
   let mockLogger: Logger;
 
-  // Origin's branches, as the for-each-ref inventory lists them.
   const REMOTE_BRANCHES = ["main", "feature-1", "feature-2"];
 
-  // Bare-repository stand-in: the default-branch worktree is registered, so
-  // initialize() reuses it instead of creating one; every other call is a no-op.
   const rawDefault = async (args: unknown): Promise<string> => {
     if (!Array.isArray(args)) return "";
     if (args[0] === "worktree" && args[1] === "list") {
@@ -39,7 +33,6 @@ describe("Integration Tests", () => {
     vi.clearAllMocks();
     mockLogger = createMockLogger();
 
-    // Setup mock git
     mockGit = {
       fetch: vi.fn<any>().mockResolvedValue(undefined),
       branch: vi.fn<any>().mockResolvedValue({
@@ -59,17 +52,11 @@ describe("Integration Tests", () => {
 
     (simpleGit as unknown as Mock).mockReturnValue(mockGit);
 
-    // Setup mock fs
     (fs.access as Mock<any>).mockResolvedValue(undefined);
     (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
-    // The trash root is read with `withFileTypes`, so it has to yield Dirents.
-    // Handing it the plain names the worktree-dir listing returns makes the
-    // trash listing throw, which now aborts the sync instead of being swallowed.
     (fs.readdir as Mock<any>).mockImplementation(async (dirPath: unknown) =>
       String(dirPath).endsWith(".trash") ? [] : ["main"],
     );
-    // Removal audit records gate destructive operations and are written via
-    // fs.open + appendFile + sync (durable append), not fs.appendFile.
     (fs.open as Mock<any>).mockResolvedValue({
       writeFile: vi.fn<any>().mockResolvedValue(undefined),
       appendFile: vi.fn<any>().mockResolvedValue(undefined),
@@ -80,9 +67,6 @@ describe("Integration Tests", () => {
 
   describe("Full sync workflow", () => {
     it("should skip creating worktree for currently checked out branch", async () => {
-      // feature-1 is already checked out in a registered worktree; nothing
-      // else exists yet. `worktree add` registers its target, after which the
-      // path exists and the worktree list reports it.
       (fs.readdir as Mock<any>).mockResolvedValueOnce([]);
       const registered: Array<{ path: string; branch: string }> = [
         { path: `${TEST_PATHS.worktree}/feature-1`, branch: "feature-1" },
@@ -100,7 +84,7 @@ describe("Integration Tests", () => {
         if (argsArray[3] === "remote.origin.url") return TEST_URLS.github;
         if (argsArray[0] === "config") throw new Error("config not found");
         if (argsArray[0] === "show-ref" && String(argsArray[argsArray.length - 1]).startsWith("refs/heads/")) {
-          throw new Error("show-ref: not found"); // no local branches yet: every add tracks origin
+          throw new Error("show-ref: not found");
         }
         if (argsArray[0] === "worktree" && argsArray[1] === "list") {
           return registered.map((w) => `worktree ${w.path}\nbranch refs/heads/${w.branch}\n`).join("\n");
@@ -113,7 +97,6 @@ describe("Integration Tests", () => {
         return "";
       });
 
-      // Mock branch calls
       (mockGit.branch as Mock<any>).mockImplementation(async (args?: unknown) =>
         Array.isArray(args) && args[0] === "-r"
           ? ({ all: ["origin/main", "origin/feature-1", "origin/feature-2"], current: "" } as any)
@@ -126,7 +109,6 @@ describe("Integration Tests", () => {
       await service.initialize();
       await service.sync();
 
-      // Should NOT create worktree for feature-1 (current branch)
       expect(mockGit.raw).not.toHaveBeenCalledWith(
         expect.arrayContaining([
           "worktree",
@@ -138,28 +120,20 @@ describe("Integration Tests", () => {
         ]),
       );
 
-      // Check all raw calls to find worktree add commands
       const worktreeAddCalls = mockGit.raw.mock.calls.filter(
         (call) => call[0][0] === "worktree" && call[0][1] === "add",
       );
 
-      // Should have created at least one worktree (main during init and/or feature-2 during sync)
       expect(worktreeAddCalls.length).toBeGreaterThanOrEqual(1);
 
-      // Verify the worktrees that were created
       const createdBranches = worktreeAddCalls.map((call) => {
-        // For new format: ["worktree", "add", "--track", "-b", branchName, ...]
-        // Branch name is at index 4
         return call[0][4];
       });
 
-      // Should have created worktrees for main and/or feature-2 but not feature-1
-      expect(createdBranches).not.toContain("feature-1"); // Current branch should be skipped
+      expect(createdBranches).not.toContain("feature-1");
 
-      // Verify that feature-2 worktree was created during sync
-      // (main might be created during init, but feature-2 should definitely be created)
       if (!createdBranches.includes("feature-2")) {
-        expect(createdBranches).toContain("main"); // At minimum, main should be created
+        expect(createdBranches).toContain("main");
       }
     });
   });
@@ -170,10 +144,8 @@ describe("Integration Tests", () => {
       const service = new WorktreeSyncService(config);
       await service.initialize();
 
-      // Make fetch fail during sync (after successful initialization)
       mockGit.fetch.mockRejectedValueOnce(new Error("Network error"));
 
-      // Should throw but log the error
       await expect(service.sync()).rejects.toThrow("Network error");
       expect(mockLogger.error).toHaveBeenCalledWith(
         "\n❌ Error during worktree synchronization after all retry attempts:",
@@ -184,7 +156,6 @@ describe("Integration Tests", () => {
     it("should continue sync even if individual worktree operations fail", async () => {
       const config = createMockConfig({ runOnce: true, logger: mockLogger });
 
-      // Make first worktree add fail
       (mockGit.raw as Mock<any>)
         .mockRejectedValueOnce(new Error("Worktree already exists"))
         .mockImplementation(rawDefault);
@@ -192,29 +163,18 @@ describe("Integration Tests", () => {
       const service = new WorktreeSyncService(config);
       await service.initialize();
 
-      // Should not throw and continue with other operations
       await expect(service.sync()).resolves.not.toThrow();
     });
   });
 
   describe("Complex scenarios", () => {
     it("should handle mixed operations: add, remove, and skip", async () => {
-      // Asserts the direct-delete mechanism; the trash pipeline has its own suites.
       const config = createMockConfig({ runOnce: true, logger: mockLogger, trash: { enabled: false } });
 
-      // Setup: existing worktrees include some to keep, some to remove
       (fs.readdir as Mock<any>).mockImplementation(async (dirPath: unknown) =>
-        String(dirPath).endsWith(".trash")
-          ? []
-          : [
-              "main", // Keep (exists in remote)
-              "feature-1", // Keep (exists in remote)
-              "old-feature", // Remove (not in remote)
-              "dirty-branch", // Skip removal (has changes)
-            ],
+        String(dirPath).endsWith(".trash") ? [] : ["main", "feature-1", "old-feature", "dirty-branch"],
       );
 
-      // Mock git worktree list --porcelain
       const mockRawCalls: string[][] = [];
       (mockGit.raw as Mock<any>).mockImplementation(async (args) => {
         const argsArray = args as string[];
@@ -239,14 +199,12 @@ branch refs/heads/dirty-branch
         return "";
       });
 
-      // Mock fs.stat and fs.rm for orphaned directory cleanup
       (fs.stat as Mock<any>).mockResolvedValue({
         isDirectory: vi.fn().mockReturnValue(true),
         isFile: vi.fn().mockReturnValue(false),
       });
       (fs.rm as Mock<any>).mockResolvedValue(undefined);
 
-      // Mock fs.access: resolve for directory existence checks, reject for operation file checks
       (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
         const pathStr = p as string;
         if (
@@ -273,10 +231,8 @@ branch refs/heads/dirty-branch
       };
       const dirtyStatus = { ...cleanStatus, modified: ["file.txt"] };
 
-      // Reset the mock implementation before defining the new one
       (mockGit.raw as Mock<any>).mockReset();
 
-      // Mock the raw calls for safety checks on old-feature (clean worktree)
       (mockGit.raw as Mock<any>).mockImplementation(async (args) => {
         const argsArray = args as string[];
         mockRawCalls.push(argsArray);
@@ -309,29 +265,22 @@ worktree /test/worktrees/dirty-branch
 branch refs/heads/dirty-branch
 `;
         } else if (argsArray[0] === "rev-list" && argsArray[1] === "--count") {
-          // No unpushed commits
           return "0\n";
         } else if (argsArray[0] === "submodule" && argsArray[1] === "status") {
-          // No submodules
           return "";
         } else if (argsArray[0] === "worktree" && argsArray[1] === "add") {
-          // Worktree add commands
           return "";
         } else if (argsArray[0] === "branch" && !argsArray[1]) {
-          // Branch list for addWorktree
           return { all: [], current: "main" };
         } else if (argsArray[0] === "worktree" && argsArray[1] === "remove") {
-          // Worktree remove commands
           return "";
         } else if (argsArray[0] === "worktree" && argsArray[1] === "prune") {
-          // Worktree prune command
           return "";
         }
 
         return "";
       });
 
-      // Also need to mock stashList and branch for new safety checks
       (simpleGit as unknown as Mock).mockImplementation((workPath?: unknown) => {
         const pathStr = workPath as string;
         if (pathStr && pathStr.includes("old-feature")) {
@@ -349,7 +298,6 @@ branch refs/heads/dirty-branch
             status: vi.fn<any>().mockResolvedValue({ ...dirtyStatus, current: "dirty-branch", detached: false }),
           };
         } else if (pathStr && pathStr.includes(".bare")) {
-          // For bare repo (used by addWorktree)
           return {
             ...mockGit,
             branch: vi.fn<any>().mockResolvedValue({ all: [], current: "main" }),
@@ -358,7 +306,6 @@ branch refs/heads/dirty-branch
         return mockGit;
       });
 
-      // Nothing sits at feature-2's plain folder name yet, so the new worktree gets it.
       (fs.lstat as Mock<any>).mockImplementation(async (target: unknown) => {
         if (target === "/test/worktrees/feature-2") {
           throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
@@ -370,10 +317,8 @@ branch refs/heads/dirty-branch
       await service.initialize();
       await service.sync();
 
-      // Filter out the worktree list calls
       const operationCalls = mockRawCalls.filter((args) => !(args[1] === "list" && args[2] === "--porcelain"));
 
-      // Should add feature-2 with tracking, under its plain folder name
       expect(operationCalls).toContainEqual(
         expect.arrayContaining([
           "worktree",
@@ -386,14 +331,11 @@ branch refs/heads/dirty-branch
         ]),
       );
 
-      // Should remove old-feature with full path (non-forced so git can refuse dirty worktrees)
       expect(operationCalls).toContainEqual(["worktree", "remove", "/test/worktrees/old-feature"]);
 
-      // Should NOT remove dirty-branch
       expect(operationCalls).not.toContainEqual(["worktree", "remove", "/test/worktrees/dirty-branch"]);
       expect(operationCalls).not.toContainEqual(["worktree", "remove", "/test/worktrees/dirty-branch", "--force"]);
 
-      // Should log warning about dirty-branch
       expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("Skipping removal of 'dirty-branch'"));
     });
   });

@@ -1,22 +1,5 @@
 import { z } from "zod";
 
-/**
- * Output schemas advertised on `tools/list` and enforced on `tools/call`
- * (SEP-2106, protocol revision 2026-07-28).
- *
- * The SDK validates every result whose tool advertises a schema: a missing or
- * mismatched `structuredContent` is turned into an `isError` result. Two rules
- * keep that safe as the handlers evolve:
- *
- * 1. A field is `required` here only when the handler's TypeScript return type
- *    guarantees it. Anything optional or conditional is `.optional()`.
- * 2. Every object is loose, so adding a field to a response is never a
- *    breaking wire change.
- *
- * Error results (`isError: true`) carry no `structuredContent` and are exempt
- * from validation, so `formatErrorResponse` stays schema-free.
- */
-
 const worktreeLabelSchema = z.enum(["current", "dirty", "stale", "clean", "unknown"]);
 
 const divergenceSchema = z
@@ -80,7 +63,6 @@ const configuredRepositorySummarySchema = z.looseObject({
   localReady: z.boolean().optional().describe("detailed=true only."),
 });
 
-/** Shared between the `status` member of a listed worktree and the flattened `get_worktree_status` result. */
 const worktreeStatusShape = {
   isClean: z.boolean(),
   hasUnpushedCommits: z.boolean(),

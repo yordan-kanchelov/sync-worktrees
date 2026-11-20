@@ -71,7 +71,7 @@ describe("OpenEditorWizard", () => {
     it("should navigate down with arrow key", async () => {
       const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
-      stdin.write("\u001B[B"); // Down arrow
+      stdin.write("\u001B[B");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("> repo-2");
@@ -80,9 +80,9 @@ describe("OpenEditorWizard", () => {
     it("should navigate up with arrow key", async () => {
       const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
-      stdin.write("\u001B[B"); // Down arrow
+      stdin.write("\u001B[B");
       await waitForStateUpdate();
-      stdin.write("\u001B[A"); // Up arrow
+      stdin.write("\u001B[A");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("> repo-1");
@@ -91,7 +91,7 @@ describe("OpenEditorWizard", () => {
     it("should proceed to worktree selection on Enter", async () => {
       const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
-      stdin.write("\r"); // Enter
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
@@ -102,7 +102,7 @@ describe("OpenEditorWizard", () => {
       const onClose = vi.fn();
       const { stdin } = render(<OpenEditorWizard {...defaultProps} onClose={onClose} />);
 
-      stdin.write("\x1b"); // ESC
+      stdin.write("\x1b");
       await waitForStateUpdate();
       expect(onClose).toHaveBeenCalled();
     });
@@ -112,7 +112,7 @@ describe("OpenEditorWizard", () => {
     it("should filter projects when typing", async () => {
       const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
-      stdin.write("2"); // Type "2"
+      stdin.write("2");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("(1/2 matches)");
@@ -122,7 +122,7 @@ describe("OpenEditorWizard", () => {
     it("should show no matches when filter has no results", async () => {
       const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
-      stdin.write("xyz"); // Type something that doesn't match
+      stdin.write("xyz");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("(0/2 matches)");
@@ -132,13 +132,13 @@ describe("OpenEditorWizard", () => {
     it("should remove filter character on backspace", async () => {
       const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
-      stdin.write("xy"); // Type "xy"
+      stdin.write("xy");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("(0/2 matches)");
 
-      stdin.write("\x7f"); // Backspace
+      stdin.write("\x7f");
       await waitForStateUpdate();
-      stdin.write("\x7f"); // Backspace again
+      stdin.write("\x7f");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("(2/2 matches)");
@@ -147,11 +147,11 @@ describe("OpenEditorWizard", () => {
     it("should reset selection index when filtering", async () => {
       const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
-      stdin.write("\u001B[B"); // Down arrow to select repo-2
+      stdin.write("\u001B[B");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("> repo-2");
 
-      stdin.write("1"); // Filter to show only repo-1
+      stdin.write("1");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("> repo-1");
@@ -162,7 +162,7 @@ describe("OpenEditorWizard", () => {
     it("should show worktrees after project selection", async () => {
       const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
-      stdin.write("\r"); // Enter to select project
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
@@ -173,7 +173,7 @@ describe("OpenEditorWizard", () => {
     it("should show filter with match count for worktrees", async () => {
       const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
-      stdin.write("\r"); // Enter
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
@@ -183,11 +183,11 @@ describe("OpenEditorWizard", () => {
     it("should go back to project selection on ESC", async () => {
       const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
-      stdin.write("\r"); // Enter to select project
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      stdin.write("\x1b"); // ESC
+      stdin.write("\x1b");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Select repository");
@@ -198,11 +198,11 @@ describe("OpenEditorWizard", () => {
     it("should filter worktrees when typing", async () => {
       const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
-      stdin.write("\r"); // Enter to select project
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      stdin.write("feat"); // Type "feat"
+      stdin.write("feat");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("(1/3 matches)");
@@ -211,7 +211,7 @@ describe("OpenEditorWizard", () => {
     it("should drop a trailing newline from a pasted filter", async () => {
       const { stdin, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
-      stdin.write("\r"); // Enter to select project
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
@@ -251,7 +251,7 @@ describe("OpenEditorWizard", () => {
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      stdin.write("\r"); // Enter to select worktree
+      stdin.write("\r");
       await waitForStateUpdate();
 
       expect(openTerminalInWorktree).toHaveBeenCalledWith(0, "/worktrees/main", "main");
@@ -267,7 +267,7 @@ describe("OpenEditorWizard", () => {
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      stdin.write("\t"); // Tab
+      stdin.write("\t");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Mode:");
@@ -289,9 +289,9 @@ describe("OpenEditorWizard", () => {
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      stdin.write("\t"); // Tab to switch to editor
+      stdin.write("\t");
       await waitForStateUpdate();
-      stdin.write("\r"); // Enter
+      stdin.write("\r");
       await waitForStateUpdate();
 
       expect(openEditorInWorktree).toHaveBeenCalledWith("/worktrees/main");
@@ -310,7 +310,7 @@ describe("OpenEditorWizard", () => {
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      stdin.write("\r"); // Enter
+      stdin.write("\r");
       await waitForStateUpdate();
 
       expect(onClose).toHaveBeenCalled();
@@ -334,10 +334,6 @@ describe("OpenEditorWizard", () => {
     });
   });
 
-  // An async loader that returns [] is a legitimate answer (clone mode before
-  // the first sync), not a reason to ask again: the effect used to re-fire on
-  // every commit where the list was still empty, so the modal spun git spawns
-  // and renders for as long as it stayed open.
   describe("empty worktree list", () => {
     const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -360,12 +356,6 @@ describe("OpenEditorWizard", () => {
       expect(lastFrame()).toContain("No worktrees found");
     });
 
-    // The loop the guard is actually for. `App` passes `getWorktreesForRepo` as
-    // an arrow written in its JSX, so the prop -- and with it the `useCallback`
-    // that wraps it and the effect that depends on that -- is a new identity on
-    // every App render, and App re-renders on every log line. A test that hands
-    // the wizard one stable `vi.fn()` never re-runs the effect at all and would
-    // pass with no guard in place.
     it("loads once although the loader prop is a new function on every render", async () => {
       const load = vi.fn(async (repoIndex: number) => {
         expect(repoIndex).toBe(0);
@@ -389,9 +379,6 @@ describe("OpenEditorWizard", () => {
       expect(lastFrame()).toContain("No worktrees found");
     });
 
-    // The loader runs from an effect, which is a commit later than the
-    // keystroke: without a loading state of its own that first frame says there
-    // are no worktrees, for a repository nothing has looked at yet.
     it("does not flash the empty state between the keypress and the load", async () => {
       const getWorktreesForRepo = vi.fn(async () => {
         await delay(50);
@@ -407,14 +394,9 @@ describe("OpenEditorWizard", () => {
 
       await delay(300);
       expect(frames.some((frame) => frame.includes("No worktrees found"))).toBe(true);
-      // And there it stays: the empty state is the answer, not a sign that the
-      // load has not happened yet.
       expect(getWorktreesForRepo).toHaveBeenCalledTimes(1);
     });
 
-    // Going back to the project list forgets what was loaded, so the same
-    // repository can be opened again and is read again rather than showing the
-    // list the wizard cleared on the way out.
     it("loads again when the same repository is picked a second time", async () => {
       const getWorktreesForRepo = vi.fn(async () => {
         await delay(20);
@@ -452,7 +434,6 @@ describe("OpenEditorWizard", () => {
       expect(getWorktreesForRepo).toHaveBeenCalledTimes(1);
       expect(getWorktreesForRepo).toHaveBeenLastCalledWith(0);
 
-      // ESC back to the project list, then pick the second repository.
       stdin.write("\u001B");
       await waitForStateUpdate();
       stdin.write("\u001B[B");
@@ -492,8 +473,6 @@ describe("OpenEditorWizard", () => {
       expect(getWorktreesForRepo).toHaveBeenCalledWith(3);
     });
 
-    // Down on an empty filtered list used to set the selection to -1, so the
-    // first match to appear afterwards was not selected and Enter did nothing.
     it("keeps a valid selection when down is pressed on an empty filtered list", async () => {
       const { stdin, rerender, lastFrame } = render(<OpenEditorWizard {...defaultProps} />);
 
@@ -519,8 +498,6 @@ describe("OpenEditorWizard", () => {
     });
   });
 
-  // A load that resolves after the user has gone back and picked another
-  // repository must not replace that repository's list.
   describe("a late load for a repository the user left", () => {
     it("keeps the second repository's worktrees and opens one of them", async () => {
       let resolveA: (worktrees: Array<{ path: string; branch: string }>) => void = () => {};

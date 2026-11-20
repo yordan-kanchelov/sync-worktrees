@@ -1,13 +1,3 @@
-// Runtime check for the Node.js floor in package.json `engines`. npm only
-// warns (EBADENGINE) when `engines` is not met, and that warning scrolls past
-// in the install log, so an older Node reaches the bundles anyway. This names
-// the problem when the command starts instead of leaving it to whatever breaks
-// first. It warns rather than exits: most commands still work on Node 22, which
-// is simply no longer tested.
-//
-// src/__tests__/node-version.test.ts keeps MIN_NODE_MAJOR in step with
-// `engines.node`.
-
 import process from "node:process";
 
 export const MIN_NODE_MAJOR = 24;

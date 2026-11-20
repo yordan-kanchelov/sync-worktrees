@@ -16,11 +16,6 @@ import type { Mock } from "vitest";
 vi.mock("fs/promises");
 vi.mock("simple-git");
 
-// The TUI hands its log-panel logger to an already-built GitService
-// (updateLogger). Anything that kept the construction-time logger keeps writing
-// to the console Ink has taken over, where the user never sees it — so these
-// tests follow real log lines from the two sub-services GitService owns, and
-// from a git client cached before the swap, rather than asserting on a spy.
 describe("GitService logger propagation", () => {
   const BARE_REPO_PATH = "/test/.bare";
   const WORKTREE_PATH = "/test/worktrees/feature";
@@ -54,8 +49,6 @@ describe("GitService logger propagation", () => {
     };
   };
 
-  // Options every simple-git client was built with, so a cached client's
-  // progress handler can be fired the way simple-git fires it.
   let clientOptions: Array<Partial<SimpleGitOptions>>;
 
   beforeEach(() => {
@@ -65,7 +58,6 @@ describe("GitService logger propagation", () => {
     (simpleGit as unknown as Mock).mockImplementation((...args: unknown[]) => {
       clientOptions.push((args.length > 1 ? args[1] : args[0]) as Partial<SimpleGitOptions>);
       return {
-        // The status probe fails: "Error reading status for ...".
         status: vi.fn().mockRejectedValue(new Error("not a git repository")),
         branch: vi.fn().mockResolvedValue({ current: "feature", detached: false, all: [] }),
         stashList: vi.fn().mockResolvedValue({ total: 0 }),
@@ -75,13 +67,11 @@ describe("GitService logger propagation", () => {
       } as unknown as SimpleGit;
     });
 
-    // Corrupted metadata for the worktree: "Corrupted metadata for ...".
     (fs.readFile as Mock).mockImplementation((probed: string) =>
       probed === METADATA_PATH
         ? Promise.resolve("{}")
         : Promise.reject(Object.assign(new Error("ENOENT"), { code: "ENOENT" })),
     );
-    // The worktree directory exists; nothing else does.
     (fs.access as Mock).mockImplementation((probed: string) =>
       probed === WORKTREE_PATH
         ? Promise.resolve(undefined)
@@ -118,10 +108,6 @@ describe("GitService logger propagation", () => {
     expect(first.lines).toEqual([]);
   });
 
-  // The daemon builds GitService with no logger at all, so the sub-services
-  // start on Logger.createDefault() -- console. Under the TUI that writes
-  // beneath Ink's alternate screen, where the user never sees it, so the swap
-  // has to leave the console silent and not merely reach the new logger.
   it("stops the console-default sub-services writing to the console", async () => {
     const ui = createCapturingLogger();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -137,10 +123,6 @@ describe("GitService logger propagation", () => {
     expect(error).not.toHaveBeenCalled();
   });
 
-  // The services GitService delegates to (worktree registry and creation,
-  // branch refs, bare repo, LFS) read the logger through the shared context
-  // on every call rather than holding their own copy, so the swap reaches
-  // them without any re-wiring.
   it("moves the delegated services' logs onto the logger updateLogger installs", async () => {
     const first = createCapturingLogger();
     const second = createCapturingLogger();
@@ -164,7 +146,6 @@ describe("GitService logger propagation", () => {
     const second = createCapturingLogger();
     const gitService = new GitService(config, first.logger);
 
-    // Caches the bare-repo client (and its progress handler) before the swap.
     await gitService.listRefs("refs/heads/");
     const progress = clientOptions.find((options) => options.progress)?.progress;
     gitService.updateLogger(second.logger);

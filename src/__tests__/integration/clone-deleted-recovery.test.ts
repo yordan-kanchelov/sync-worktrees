@@ -9,9 +9,6 @@ import { WorktreeSyncService } from "../../services/worktree-sync.service";
 
 import type { Config } from "../../types";
 
-// A long-lived process (daemon, TUI, MCP server) reuses one service. A clone
-// removed out-of-band between ticks has to be re-cloned on the next sync
-// rather than failing (directory gone) or soft-skipping forever (.git gone).
 describe("Clone mode recovers a clone deleted out-of-band (E2E)", () => {
   let tempDir: string;
   let remote: string;

@@ -18,10 +18,6 @@ import type { Mock } from "vitest";
 const SHORTCUT = ENV_CONSTANTS.UNIT_TEST_SHORTCUT;
 const LOCK_DIR = ENV_CONSTANTS.LOCK_DIR;
 
-// No fs or proper-lockfile mocks here: these cases run the real lock against
-// a real lock directory, the way the CLI meets it on a CI container or a
-// hardened host where the lock directory cannot be created, and the way a
-// daemon and a shell-launched run meet each other on one workstation.
 describe("RepoOperationLock against a real lock directory", () => {
   const originalShortcut = process.env[SHORTCUT];
   const originalLockDir = process.env[LOCK_DIR];
@@ -33,7 +29,6 @@ describe("RepoOperationLock against a real lock directory", () => {
   let gitService: GitService;
 
   beforeEach(async () => {
-    // setup.ts opts the whole worker into the no-op lock; these tests exercise the real one.
     delete process.env[SHORTCUT];
     delete process.env[LOCK_DIR];
     tempDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-lock-state-")));
@@ -93,7 +88,6 @@ describe("RepoOperationLock against a real lock directory", () => {
     const lockTarget = path.join(target.dir, target.file);
     await fs.mkdir(target.dir, { recursive: true });
     await fs.writeFile(lockTarget, "");
-    // Same options the lock uses, so both sides contend for the same lockfile.
     const releaseHolder = await lockfile.lock(lockTarget, { realpath: false, stale: 60_000 });
 
     try {
@@ -104,7 +98,6 @@ describe("RepoOperationLock against a real lock directory", () => {
       await releaseHolder();
     }
 
-    // Once the holder lets go, the same lock is taken normally.
     const retry = await new RepoOperationLock(config, gitService, logger).acquire();
     expect(retry.acquired).toBe(true);
     if (retry.acquired) await retry.release();
@@ -112,7 +105,6 @@ describe("RepoOperationLock against a real lock directory", () => {
   });
 
   it("makes a run with XDG_STATE_HOME and HOME set contend with a holder that had neither (#T47)", async () => {
-    // Holder: a systemd/cron-started daemon with a minimal environment.
     delete process.env.XDG_STATE_HOME;
     const config = makeConfig();
     const holder = await new RepoOperationLock(config, gitService, logger).acquire();
@@ -120,22 +112,18 @@ describe("RepoOperationLock against a real lock directory", () => {
     if (!holder.acquired) throw new Error("expected the holder to acquire the lock");
 
     try {
-      // Contender: a --runOnce from an interactive shell whose dotfiles export
-      // XDG_STATE_HOME, under a different HOME (`sudo` without -E).
       process.env.XDG_STATE_HOME = path.join(tempDir, "x");
       process.env.HOME = path.join(tempDir, "other-home");
       const contender = await new RepoOperationLock(makeConfig(), gitService, logger).acquire();
 
       expect(contender).toEqual({ acquired: false, reason: "locked" });
       expect(warn).not.toHaveBeenCalled();
-      // Nothing was created under the contender's would-be state or home dirs.
       await expect(fs.access(path.join(tempDir, "x"))).rejects.toThrow();
       await expect(fs.access(path.join(tempDir, "other-home"))).rejects.toThrow();
     } finally {
       await holder.release();
     }
 
-    // With the holder gone the shell-launched run takes the very same lock.
     const retry = await new RepoOperationLock(makeConfig(), gitService, logger).acquire();
     expect(retry.acquired).toBe(true);
     if (retry.acquired) await retry.release();

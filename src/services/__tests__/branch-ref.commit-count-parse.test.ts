@@ -10,12 +10,6 @@ import type { Mock, Mocked } from "vitest";
 vi.mock("fs/promises");
 vi.mock("simple-git");
 
-// The real-git coverage of this counter is in
-// branch-ref.commits-not-on-remote.test.ts. What cannot be reached from there
-// is output real git never produces: `git rev-list --count` either prints a
-// number or exits non-zero. Two callers read a zero as "there is nothing here
-// worth preserving" — the trash bundle, and the reaper's permanent keep ref —
-// so a count that could not be read must never become one.
 describe("GitService.countCommitsNotOnAnyRemote output parsing", () => {
   const OID = "a".repeat(40);
   let service: GitService;
@@ -46,16 +40,9 @@ describe("GitService.countCommitsNotOnAnyRemote output parsing", () => {
     mockGit.raw.mockResolvedValue("  7\n" as never);
 
     await expect(service.countCommitsNotOnAnyRemote(OID)).resolves.toBe(7);
-    // Scoped to origin, not `--remotes`: a `refs/remotes/<removed-remote>/*`
-    // ref survives every `fetch --all --prune` and would make this read zero
-    // for commits no remote actually has.
     expect(mockGit.raw).toHaveBeenCalledWith(["rev-list", "--count", OID, "--not", "--glob=refs/remotes/origin/"]);
   });
 
-  // The one input the digit-string test cannot reject on its own: 400 digits
-  // are all digits, but parseInt reads them back as Infinity. Without the
-  // Number.isInteger clause that returns as a non-zero count, which happens to
-  // fail closed — but by accident rather than by rule.
   it("rejects a digit string too long to survive parseInt", async () => {
     mockGit.raw.mockResolvedValue("9".repeat(400) as never);
 

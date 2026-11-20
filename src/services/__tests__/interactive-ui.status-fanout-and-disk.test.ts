@@ -21,9 +21,6 @@ vi.mock("ink", () => ({
   render: vi.fn(() => ({ unmount: vi.fn(), waitUntilExit: vi.fn(() => new Promise<void>(() => {})) })),
 }));
 
-// Only `calculateDirectorySize` is stood in for: `calculateSyncDiskSpace` and
-// `formatBytes` stay real, so the header total this file asserts on is built by
-// the code that ships, and the cache under test is the one it really calls.
 vi.mock("../../utils/disk-space", async () => {
   const actual = await vi.importActual<typeof DiskSpaceModule>("../../utils/disk-space");
   return { ...actual, calculateDirectorySize: mocks.directorySizes };
@@ -65,8 +62,6 @@ function makeService(options: {
   const gitService = {
     getWorktrees: vi.fn(() => Promise.resolve(options.worktrees)),
     getFullWorktreeStatus: vi.fn(async (worktreePath: string) => {
-      // The count is taken here, inside the fake, so it records what actually
-      // overlapped rather than what the production code was asked to build.
       recorder.calls.push(worktreePath);
       recorder.inFlight += 1;
       if (recorder.inFlight > recorder.peak) recorder.peak = recorder.inFlight;
@@ -149,8 +144,6 @@ describe("getWorktreeStatusForRepo", () => {
 
     const entries = await ui.operations.getWorktreeStatusForRepo(0);
 
-    // The whole list, in order: the bug this pins was a short list that looked
-    // complete, so a prefix check would not have caught it.
     expect(entries).toHaveLength(3);
     expect(entries).toEqual<WorktreeStatusEntry[]>([
       { branch: "branch-0", path: "/tmp/worktrees/branch-0", status: cleanStatus },
@@ -292,9 +285,6 @@ describe("disk usage measurement", () => {
   });
 
   it("bounds the disk walks by the repository parallelism it was given", async () => {
-    // Counted from inside the fake, so this is what actually overlapped. The
-    // bound must come from the parallelism setting and not from a display one:
-    // lengthening a progress pane must never widen disk I/O.
     let inFlight = 0;
     let peak = 0;
     const release: Array<() => void> = [];
@@ -317,7 +307,6 @@ describe("disk usage measurement", () => {
       new AppEventEmitter(),
     );
 
-    // Six directories -- three bare, three worktree -- through a bound of three.
     const total = ui.calculateAndUpdateDiskSpace();
     for (let tick = 0; tick < 8; tick++) await Promise.resolve();
     expect(peak).toBe(3);
@@ -385,8 +374,6 @@ describe(".diverged directory sizes", () => {
     const first = await ui.operations.getDivergedDirectoriesForRepo(0);
     const second = await ui.operations.getDivergedDirectoriesForRepo(0);
 
-    // Two opens, one walk: the listing used to walk every `.diverged/`
-    // directory again on each open, and all of them at once besides.
     expect(first.map((entry) => entry.sizeBytes)).toEqual([1024]);
     expect(second.map((entry) => entry.sizeBytes)).toEqual([1024]);
     expect(mocks.directorySizes.mock.calls.map((call) => call[0])).toEqual([diverged]);
@@ -407,10 +394,6 @@ describe(".diverged directory sizes", () => {
 
     expect(remaining).toEqual([]);
     expect(usage.sizeBytes).toBe(2048);
-    // The worktree directory is walked again because the deletion shrank it --
-    // without that the view showed the old total for a whole TTL, across
-    // closing and reopening the modal. The bare repository, which the deletion
-    // did not touch, is still served from cache.
     expect(mocks.directorySizes.mock.calls.map((call) => call[0])).toEqual([bare, root, diverged, root]);
   });
 });

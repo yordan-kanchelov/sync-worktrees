@@ -22,26 +22,14 @@ export interface MaintenanceState {
 }
 
 interface MaintenanceTarget {
-  /** Directory `git gc` runs in (the clone working dir, or the bare repo). */
   cwd: string;
-  /** Git object-store dir that holds the persisted state file. */
   gitDir: string;
 }
 
 export type GitFactory = (cwd: string) => SimpleGit;
 
-/** Throws when the gc target is not a repository this tool may write to. */
 export type MaintenanceTargetGuard = () => Promise<void>;
 
-/**
- * Periodic `git gc` for the repository object store. Reclaims unreachable
- * objects (e.g. left by clone-mode single-branch ref narrowing and branch
- * churn) and consolidates pack files. Throttled by a persisted timestamp so a
- * daemon restart or repeated `runOnce` invocations don't re-run it every tick.
- *
- * Callers MUST already hold the repository operation lock — `runIfDueUnlocked`
- * mirrors `WorktreeSyncService.initializeUnlocked` and never re-acquires it.
- */
 export class GitMaintenanceService {
   private logger: Logger;
   private gitFactory: GitFactory;
@@ -76,7 +64,6 @@ export class GitMaintenanceService {
       return fallback;
     }
     const parsed = parseDuration(raw);
-    // Zero would disable throttling entirely — treat it like any other invalid value.
     if (parsed === null || parsed <= 0) {
       this.logger.warn(`Invalid maintenance.interval '${raw}', using default ${DEFAULT_CONFIG.MAINTENANCE.INTERVAL}.`);
       return fallback;
@@ -100,9 +87,6 @@ export class GitMaintenanceService {
   private async readState(statePath: string): Promise<MaintenanceState> {
     try {
       const parsed: unknown = JSON.parse(await fs.readFile(statePath, "utf-8"));
-      // Reject arrays and non-objects: spreading into a fresh plain object means a
-      // corrupt file (e.g. `[]`) can't silently swallow the lastAttemptAt we set on
-      // it, which would otherwise break throttling and re-run gc every sync.
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         return {};
       }
@@ -131,13 +115,6 @@ export class GitMaintenanceService {
     return now - last >= this.getIntervalMs();
   }
 
-  /**
-   * Run `git gc` if maintenance is enabled and due. MUST be called while the
-   * repository operation lock is already held. Never throws: a gc failure is
-   * recorded and warned so it cannot fail the surrounding sync. The attempt
-   * timestamp is persisted even on failure, so a perpetually-failing gc is
-   * throttled instead of retried every tick.
-   */
   async runIfDueUnlocked(now: number = Date.now()): Promise<void> {
     if (!this.isEnabled()) {
       return;
@@ -146,23 +123,10 @@ export class GitMaintenanceService {
     await this.runUnlocked(now, false);
   }
 
-  /**
-   * Callers must hold the repository operation lock. This intentionally bypasses
-   * isEnabled() and isDue() so an explicit request always attempts maintenance.
-   *
-   * It prunes on a grace window rather than `--prune=now` unless
-   * `maintenance.aggressive` asks for the latter — see
-   * MAINTENANCE_CONSTANTS.FORCE_CLEAN_PRUNE_EXPIRE for why, and for why the
-   * window does not cost the caller the reclamation it came for.
-   */
   async runNowUnlocked(now: number = Date.now()): Promise<boolean> {
     return this.runUnlocked(now, true);
   }
 
-  // Plain `gc` honours git's own two-week grace. `--prune=now` honours none, so
-  // it is reserved for the config flag that documents the hazard; an explicit
-  // run that has not opted in still prunes, just not into the window where a
-  // concurrent git command's objects live.
   private buildArgs(forcePrune: boolean): string[] {
     if (this.config.maintenance?.aggressive ?? false) return ["gc", "--prune=now"];
     if (forcePrune) return ["gc", `--prune=${MAINTENANCE_CONSTANTS.FORCE_CLEAN_PRUNE_EXPIRE}`];
@@ -170,21 +134,15 @@ export class GitMaintenanceService {
   }
 
   private async runUnlocked(now: number, forcePrune: boolean): Promise<boolean> {
-    // Outer guard: maintenance is best-effort and runs at the tail of sync(). Any
-    // failure here — target resolution, state IO, the gc itself — must be swallowed
-    // so it can never fail an otherwise-successful sync.
     try {
       const { cwd, gitDir } = this.resolveTarget();
 
       try {
         await fs.access(gitDir);
       } catch {
-        // Repo not initialized yet — nothing to maintain.
         return false;
       }
 
-      // A sync that soft-skipped never reached the write guard, so check here:
-      // gc in a linked worktree would rewrite the owning repository.
       if (this.targetGuard) {
         try {
           await this.targetGuard();

@@ -49,12 +49,6 @@ export class BranchCreatedActionsService {
         }
       }
       if (result.copied.length === 0 && result.skipped.length === 0 && result.errors.length === 0) {
-        // Configured and looking in the wrong place otherwise reads exactly
-        // like not configured at all — both say nothing — and the first is the
-        // one the user has to go and fix. Naming the patterns and the directory
-        // they were resolved against is what makes it fixable: the directory is
-        // the base branch's worktree in worktree mode and the config file's own
-        // directory in clone mode, which is the part people get wrong.
         logger.info(
           `📋 Copy for '${branchName}' matched 0 files for patterns [${patterns.join(", ")}] in ${sourceDir}`,
         );
@@ -64,19 +58,6 @@ export class BranchCreatedActionsService {
     }
   }
 
-  /**
-   * The directories the copy must never read out of: the checkout being filled,
-   * and every checkout the config file hands to a repository. Both callers
-   * reach this through copyFiles, so clone mode (source: the config file's
-   * directory, which the documented layout makes the parent of every checkout)
-   * and worktree mode (source: an existing worktree, which sits inside this
-   * repository's own worktreeDir, so what it has to keep out is the other
-   * repositories' checkouts and any worktreeDir a config nests inside this
-   * one's — allowed, with a warning, by detectPathCollisions) are covered by
-   * one rule. FileCopyOptions.excludeDirs says what happens to an entry that
-   * lies outside the source or contains it; this list does not have to
-   * pre-filter.
-   */
   private buildExcludeDirs(config: CopyFilesParams["config"], worktreePath: string): string[] {
     const configured = config.__configuredRepoDirs ?? [config.worktreeDir, config.bareRepoDir];
     const dirs = [worktreePath, ...configured].filter(
@@ -107,8 +88,6 @@ export class BranchCreatedActionsService {
         for (const command of commands) logger.warn(`[hook] Skipped after an earlier hook failed: ${command}`);
       },
       onComplete: (command, exitCode) => {
-        // Named, not counted: "exited with code 1" alone does not say which
-        // of several hooks the user has to go and fix.
         if (exitCode === 0) {
           logger.info(`[hook] Command completed successfully: ${command}`);
         } else if (exitCode !== null) {

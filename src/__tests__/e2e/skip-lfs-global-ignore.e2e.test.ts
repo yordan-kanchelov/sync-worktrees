@@ -14,14 +14,6 @@ interface CliRun {
   stderr: string;
 }
 
-// With `skipLfs: true` every status probe runs through a simple-git client
-// carrying an explicit env, and simple-git replaces the child environment
-// wholesale with it. If that env is only { GIT_LFS_SKIP_SMUDGE: "1" }, git runs
-// without HOME / XDG_CONFIG_HOME and never sees the user's global excludes
-// file: a globally-ignored `*.log` in a worktree reports as an untracked
-// change, the worktree reads as dirty, and a branch deleted upstream is never
-// pruned. The built CLI runs with HOME pointing at a directory whose
-// `.config/git/ignore` ignores `*.log`.
 describe("skipLfs status probes honour the global git excludes file", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   let tempDir: string;
@@ -54,8 +46,6 @@ describe("skipLfs status probes honour the global git excludes file", () => {
     await initGit.branch(["-M", "main"]);
     await initGit.addRemote("origin", bareRepo);
     await initGit.push("origin", "main");
-    // feature-1 sits on main's tip, so once its remote ref is gone nothing on
-    // it can read as unpushed — only the untracked-file check decides its fate.
     await initGit.branch(["feature-1"]);
     await initGit.push("origin", "feature-1");
     await simpleGit(bareRepo).raw(["symbolic-ref", "HEAD", "refs/heads/main"]);
@@ -84,10 +74,6 @@ describe("skipLfs status probes honour the global git excludes file", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  // HOME is the temp home so git resolves ~/.config/git/ignore there;
-  // XDG_CONFIG_HOME is removed so an inherited value cannot redirect that
-  // lookup and GIT_CONFIG_GLOBAL so an inherited global config cannot point
-  // core.excludesFile elsewhere.
   function runCli(): CliRun {
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: homeDir };
     delete env.XDG_CONFIG_HOME;

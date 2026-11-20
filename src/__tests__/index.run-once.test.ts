@@ -41,9 +41,6 @@ vi.mock("../services/logger.service", () => ({
 }));
 
 vi.mock("../services/worktree-sync.service", () => ({
-  // The name is passed through so a test can make one repository's
-  // initialization fail while the others succeed, the way a parallel run does.
-  // No `initialize`: run-once leaves that to sync().
   WorktreeSyncService: vi.fn(function (config: RepositoryConfig) {
     return {
       getRecordedSkips: mocks.getRecordedSkips,
@@ -137,7 +134,6 @@ describe("runMultipleRepositories", () => {
     expect(summary).toBeDefined();
     expect(summary).toContain("1 synced");
     expect(summary).toContain("1 with partial skips");
-    // Zero skips are not reported at all.
     expect(summary).not.toMatch(/skipped|clone-mode/);
     expect(summary).toContain("0 failed");
     expect(process.exitCode).toBeUndefined();
@@ -161,7 +157,6 @@ describe("runMultipleRepositories", () => {
     );
     const summary = summaryCall?.[0] as string | undefined;
     expect(summary).toBeDefined();
-    // 1 repo total — only counted as failed, never inflating skipped or partial-skip totals.
     expect(summary).toContain("0 synced");
     expect(summary).not.toMatch(/skipped|clone-mode/);
     expect(summary).toContain("1 failed");
@@ -170,9 +165,6 @@ describe("runMultipleRepositories", () => {
   });
 
   it("counts a repo whose lock could not be taken as failed and names it in the summary", async () => {
-    // Not contention: the state directory is a file / unwritable, so nothing
-    // synced this repo and nothing will. A green exit here would let a CI
-    // pipeline pass without a single clone, worktree or fetch.
     mocks.sync.mockResolvedValue({
       started: false,
       reason: "lock_unavailable",
@@ -254,11 +246,6 @@ describe("runMultipleRepositories", () => {
       .join("\n");
     expect(everything).not.toContain("s3cr3t-token");
   });
-  // Under parallelism the "📦 Repository: <name>" header is printed whenever
-  // that repository's task happens to start, so with N repositories in flight
-  // a bare "Failed to initialize repository:" left no way to tell which one
-  // died. allSettled hands the results back in the order it was given them, so
-  // the index is the answer.
   it("names the repository whose initialization failed", async () => {
     const repoB: RepositoryConfig = { ...repo, name: "repo-b", worktreeDir: "/tmp/repo-b" };
     const repoC: RepositoryConfig = { ...repo, name: "repo-c", worktreeDir: "/tmp/repo-c" };
@@ -276,8 +263,6 @@ describe("runMultipleRepositories", () => {
 
     const errors = mocks.logger.error.mock.calls.map((args) => String(args[0])).join("\n");
     expect(errors).toContain("Failed to initialize repository 'repo-b'");
-    // Not "a name was interpolated": the two that initialized fine must not be
-    // blamed, which is what reading the wrong index would do.
     expect(errors).not.toContain("repo-a");
     expect(errors).not.toContain("repo-c");
     expect(process.exitCode).toBe(1);
@@ -293,15 +278,11 @@ describe("runMultipleRepositories", () => {
 
     const lines = mocks.logger.info.mock.calls.map((args) => String(args[0]));
     expect(lines).toContain("\n🔄 Syncing 1 repository...");
-    // A worktree-only run has no skips of any kind to report.
     expect(lines.find((line) => line.includes("Processed"))).toMatch(
       /^\n📊 Processed 1 repo in \d+(ms|\.\ds): 1 synced, 0 failed$/,
     );
-    // The header's blank line is not routed through the repository's prefix,
-    // which printed a line holding nothing but "[repo-a] ".
     expect(lines).toContain("📦 Repository: repo-a");
     expect(lines.filter((line) => line.startsWith("\n📦"))).toEqual([]);
-    // Nothing failed, so there is nothing to hint about.
     expect(lines.join("\n")).not.toContain("--debug");
   });
 
@@ -323,8 +304,6 @@ describe("runMultipleRepositories", () => {
     await runMultipleRepositories(configFile, [{ ...repo, debug: true }]);
 
     expect(mocks.logger.info.mock.calls.map((args) => String(args[0])).join("\n")).not.toContain("💡");
-    // The run-level logger follows the repositories' debug setting, so it keeps
-    // the full error detail as well.
     expect(mocks.createLogger).toHaveBeenCalledWith(undefined, true);
   });
 
@@ -334,9 +313,6 @@ describe("runMultipleRepositories", () => {
       outcome: { actions: [], counts: emptyCounts(), mode: "worktree", started: true },
     });
 
-    // `syncOnStart` defaults to true and this config does not turn it off: the
-    // guard is the branch, not the flag. A one-shot run syncs in this function
-    // and must not also hand a startup cycle to a UI it never renders.
     await runMultipleRepositories({ ...configFile, defaults: { runOnce: true } }, [repo]);
 
     expect(vi.mocked(InteractiveUIService)).not.toHaveBeenCalled();
@@ -344,8 +320,6 @@ describe("runMultipleRepositories", () => {
     expect(mocks.sync).toHaveBeenCalledTimes(1);
   });
 
-  // --quiet is for cron, which mails whatever reaches stdout: the per-repo
-  // loggers go quiet, the banner goes, and the one summary line stays.
   it("under --quiet, builds quiet repository loggers and keeps only the summary line", async () => {
     mocks.sync.mockResolvedValue({
       started: true,
@@ -358,9 +332,7 @@ describe("runMultipleRepositories", () => {
     const infoLines = mocks.logger.info.mock.calls.map((args) => String(args[0]));
     expect(infoLines.some((line) => line.includes("Syncing"))).toBe(false);
     expect(infoLines.filter((line) => line.includes("Processed"))).toHaveLength(1);
-    // No leading blank line: it separated the summary from output that --quiet dropped.
     expect(infoLines.find((line) => line.includes("Processed"))).toMatch(/^📊 Processed 1 repo in /);
-    // Nor the blank line that separates each repository's header block.
     expect(infoLines).not.toContain("");
   });
 

@@ -70,8 +70,6 @@ describe("WorktreeCreationService stale directories (through GitService)", () =>
         (fs.rename as Mock<any>).mockResolvedValue(undefined);
       });
 
-      // Unknown content — files someone left at the managed path by hand — is
-      // never deleted permanently.
       it("quarantines a non-empty directory instead of deleting it", async () => {
         (fs.readdir as Mock<any>).mockResolvedValueOnce(["notes.txt"]);
 

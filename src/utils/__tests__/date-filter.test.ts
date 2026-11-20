@@ -86,18 +86,15 @@ describe("date-filter", () => {
     });
 
     it("should handle edge case of exact cutoff", () => {
-      // Use a fixed date to avoid timing issues
       const fixedNow = new Date("2024-01-15T12:00:00Z");
       const exactCutoffDate = new Date(fixedNow.getTime() - 30 * dayInMs);
       const exactCutoffBranches = [{ branch: "exact", lastActivity: exactCutoffDate }];
 
-      // Mock Date.now() to return our fixed date
       const originalDateNow = Date.now;
       Date.now = vi.fn(() => fixedNow.getTime());
 
       const result = filterBranchesByAge(exactCutoffBranches, "30d");
 
-      // Restore Date.now()
       Date.now = originalDateNow;
 
       expect(result).toHaveLength(1);

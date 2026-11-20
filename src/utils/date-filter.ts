@@ -10,18 +10,16 @@ export function parseDuration(durationStr: string): number | null {
   const unit = match[2];
 
   const multipliers: Record<string, number> = {
-    h: 60 * 60 * 1000, // hours
-    d: 24 * 60 * 60 * 1000, // days
-    w: 7 * 24 * 60 * 60 * 1000, // weeks
-    m: 30 * 24 * 60 * 60 * 1000, // months (approximate)
-    y: 365 * 24 * 60 * 60 * 1000, // years (approximate)
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+    w: 7 * 24 * 60 * 60 * 1000,
+    m: 30 * 24 * 60 * 60 * 1000,
+    y: 365 * 24 * 60 * 60 * 1000,
   };
 
   return value * multipliers[unit];
 }
 
-// The warning goes through the caller's logger: under the TUI a bare
-// console.warn would be written straight over the Ink frame.
 export function filterBranchesByAge(
   branches: { branch: string; lastActivity: Date }[],
   maxAge: string,

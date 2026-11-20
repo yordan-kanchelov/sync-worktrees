@@ -6,7 +6,7 @@ describe("LFS Error Detection", () => {
   describe("isLfsError", () => {
     it("should detect smudge filter LFS failed errors", () => {
       const errorMessage = "error: external filter 'git-lfs smudge' failed";
-      expect(isLfsError(errorMessage)).toBe(false); // This specific message is not in our patterns
+      expect(isLfsError(errorMessage)).toBe(false);
 
       const actualMessage = "smudge filter lfs failed";
       expect(isLfsError(actualMessage)).toBe(true);

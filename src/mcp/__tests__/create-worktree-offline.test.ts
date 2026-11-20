@@ -14,8 +14,6 @@ import type { RepositoryContext } from "../context";
 import type { RepositoryConfig } from "../../types";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
-// Real git: origin becomes unreachable after the first sync, and a
-// create_worktree that does not push must still work on local refs.
 describe("create_worktree with origin unreachable (real git)", () => {
   let tempDir: string;
   let remote: string;

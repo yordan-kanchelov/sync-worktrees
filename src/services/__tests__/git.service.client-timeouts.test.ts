@@ -39,16 +39,6 @@ vi.mock("../worktree-metadata.service", () => ({
   }),
 }));
 
-// simple-git's inactivity timeout (`timeout.block`) kills the child process
-// when no stdout/stderr data arrives inside the window — with SIGINT, no
-// matter what git was doing. `git worktree add` is silent for the whole
-// checkout (its internal `reset --hard` prints nothing on a pipe), so a
-// monorepo whose checkout takes longer than fetchTimeoutMs was killed on every
-// tick and could never be created. The knob guards *network* stalls, so only
-// the clients that run network commands carry it; every local command runs on
-// a client built without it. These tests pin which client each operation is
-// issued through, by inspecting the options every simple-git client was
-// constructed with.
 describe("GitService git client timeouts", () => {
   interface BuiltClient {
     baseDir: string | undefined;
@@ -64,7 +54,6 @@ describe("GitService git client timeouts", () => {
   let built: BuiltClient[];
   let logger: Logger;
 
-  // Answers for the commands the flows under test issue; anything else is "".
   const defaultRawOutput = (args: string[]): string => {
     const key = args.join(" ");
     if (key.startsWith("config --local --get remote.origin.url")) return TEST_URLS.github;
@@ -119,7 +108,6 @@ describe("GitService git client timeouts", () => {
     });
   };
 
-  // Every client through which a command starting with `prefix` was issued.
   const clientsThatRan = (...prefix: string[]): BuiltClient[] =>
     built.filter((client) =>
       client.commands.some((command) => prefix.every((token, index) => command[index] === token)),
@@ -137,7 +125,6 @@ describe("GitService git client timeouts", () => {
       logger,
     ) as unknown as GitService;
 
-  // The bare repository (and every worktree) exists unless a test says otherwise.
   const markMissing = (...missing: string[]): void => {
     (fs.access as unknown as Mock).mockImplementation(async (probed: unknown) => {
       if (typeof probed === "string" && missing.some((m) => probed === m || probed.startsWith(m + path.sep))) {
@@ -150,8 +137,6 @@ describe("GitService git client timeouts", () => {
     vi.clearAllMocks();
     built = [];
     logger = createMockLogger();
-    // The suite-wide shortcut zeroes both timeouts (see unit-test-shortcut.ts);
-    // these tests need the real ones to tell the two client kinds apart.
     delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
     markMissing();
     (fs.mkdir as unknown as Mock).mockResolvedValue(undefined);
@@ -268,9 +253,6 @@ describe("GitService git client timeouts", () => {
       });
     });
 
-    // The collision probe talks to origin, so it belongs on the network client
-    // like every other command that does: on the local one a stalled connection
-    // has nothing to end it, and the branch creation behind it hangs forever.
     it("asks origin whether a branch exists with the fetch block timeout", async () => {
       const service = newService();
 
@@ -283,8 +265,6 @@ describe("GitService git client timeouts", () => {
     });
 
     it("asks the remote for its default branch with the fetch block timeout", async () => {
-      // origin/HEAD unreadable: detectDefaultBranch falls through to
-      // `remote set-head -a`, the one command there that talks to the remote.
       installGitFactory((args) => (args[0] === "symbolic-ref" ? "" : defaultRawOutput(args)));
       const service = newService();
 
@@ -311,18 +291,10 @@ describe("GitService git client timeouts", () => {
       expect(localClient.env).toMatchObject({ [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" });
       expect(localClient.options.unsafe).toEqual(GIT_UNSAFE_ALLOWANCES);
       expect(networkClient.options.unsafe).toEqual(GIT_UNSAFE_ALLOWANCES);
-      // `progress` is a fresh closure per client, so compare the shape: the
-      // network client's options are the local ones plus the block timeout.
       expect(Object.keys(localClient.options).sort()).toEqual(["progress", "unsafe"]);
       expect(Object.keys(networkClient.options).sort()).toEqual(["progress", "timeout", "unsafe"]);
     });
 
-    // Error classification here matches on git's own stderr — the push-status
-    // reason a refused create-only lease is recognised by ("stale info"), the
-    // missing-remote-ref check, the LFS one. Those strings are translated, so
-    // under a non-English LANG/LC_ALL the matching silently stops firing and a
-    // lease rejection is reported as a hard failure instead of the collision it
-    // is. Clone mode pins the locale on its clients for exactly this reason.
     it("runs git under a pinned C locale on every client, like clone mode", async () => {
       const service = newService();
       await service.initialize();
@@ -341,8 +313,6 @@ describe("GitService git client timeouts", () => {
       const service = newService();
       await service.initialize();
 
-      // Interleave both kinds on the anchor path: the cache keys them apart,
-      // so neither kind can be served from the other's cache entry.
       await service.fetchAll();
       await service.checkoutHead(MAIN_WORKTREE_PATH);
       await service.fetchBranch("feature-1");
@@ -352,7 +322,6 @@ describe("GitService git client timeouts", () => {
       const timedOut = anchorClients.filter((client) => client.options.timeout !== undefined);
       const untimed = anchorClients.filter((client) => client.options.timeout === undefined);
 
-      // Exactly one client of each kind: both are cached and reused.
       expect(timedOut).toHaveLength(1);
       expect(untimed).toHaveLength(1);
       expect(timedOut[0].commands.every((command) => command[0] === "fetch")).toBe(true);

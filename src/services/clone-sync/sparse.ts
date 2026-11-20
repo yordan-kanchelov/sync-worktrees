@@ -4,15 +4,6 @@ import type { MutatingGitClients } from "./git-clients";
 import type { CloneSyncContext } from "./types";
 import type { SparseCheckoutConfig } from "../../types";
 
-// The initial narrowing of a fresh clone: `sparse-checkout set` then the
-// `checkout HEAD` that materializes the cone (the clone itself ran with
-// `--no-checkout`, so only in-cone paths are ever written or smudged).
-//
-// `lfsSkipped` runs both halves with LFS smudging forced off: after a clone
-// or checkout that only succeeded that way, the configured environment would
-// smudge the skipped objects and die again. `-f` because a failed attempt
-// may have left untracked files behind. Otherwise the sparse service keeps
-// its own factory, whose clients already carry the configured LFS setting.
 export async function applySparseCheckoutAfterClone(
   ctx: CloneSyncContext,
   clients: MutatingGitClients,
@@ -32,7 +23,6 @@ export type CloneSparseAssessment =
   | { kind: "unsafe-narrowing" }
   | { kind: "failed"; error: unknown };
 
-// The read-only half of reapplySparseCheckout, which a dry run reports.
 export async function assessSparseCheckout(
   ctx: CloneSyncContext,
   worktreeDir: string,
@@ -42,15 +32,6 @@ export async function assessSparseCheckout(
   try {
     if (!(await sparseService.needsUpdate(worktreeDir, cfg))) return { kind: "in-sync" };
 
-    // Narrowing drops paths out of the cone, and git then has to decide what
-    // to do with whatever the user left in them. It keeps modified, staged
-    // and untracked files: they stay on disk, and git warns about it on its
-    // own stderr, which simple-git captures and this tool never prints — so
-    // the preservation is real but silent. This gate is therefore not what
-    // stands between the user and data loss — docs/sparse-checkout.md's
-    // "Narrowing safety" section is the tool's promise to skip rather than
-    // git's promise to preserve, and worktree mode has always kept it. The
-    // deferred narrowing lands on the first tick that finds a clean tree.
     const currentMode = await sparseService.readCurrentMode(worktreeDir);
     const current = await sparseService.readCurrent(worktreeDir, currentMode);
     const narrowing = sparseService.isNarrowing(
@@ -59,9 +40,6 @@ export async function assessSparseCheckout(
       currentMode,
       sparseService.resolveMode(cfg),
     );
-    // The same notion of "clean" the ff-merge gate uses: uncommitted and
-    // untracked changes. Unpushed commits are a clone-mode skip of their
-    // own and their content is safe in the object store either way.
     if (narrowing && !(await ctx.gitService.checkWorktreeStatus(worktreeDir))) return { kind: "unsafe-narrowing" };
     return { kind: "apply", narrowing };
   } catch (error) {
@@ -69,14 +47,6 @@ export async function assessSparseCheckout(
   }
 }
 
-// Reconciles the clone's sparse patterns with the config, the same three
-// steps worktree mode runs over every worktree it manages: is an update
-// needed, is that update a narrowing one, and is the tree clean enough to
-// take it.
-//
-// `sparse-checkout set` writes core.sparseCheckout to the repository config,
-// so it is a mutation too — it takes a path, not a client, and stays correct
-// only because the primary-checkout guard in the caller already ran.
 export async function reapplySparseCheckout(
   ctx: CloneSyncContext,
   worktreeDir: string,
@@ -111,10 +81,6 @@ export async function reapplySparseCheckout(
     ctx.emitProgress({ phase: "sparse_checkout", message: `Sparse-checkout updated for '${ctx.repoName}'` });
     ctx.outcome?.recordUpdated(branch, worktreeDir, "sparse_checkout");
   } catch (error) {
-    // Not fatal — the fetch and merge after it are what the sync is for, and
-    // a stale pattern list does not block them. But it is recorded: warning
-    // and exiting 0 on every tick is how a sparse config that git rejects
-    // stays broken for weeks, because nothing watching the run ever learns.
     ctx.logger.warn(`Failed to reapply sparse-checkout for '${ctx.repoName}': ${getErrorMessage(error)}`);
     ctx.outcome?.recordFailed("sparse-checkout", getErrorMessage(error), {
       reason: "sparse_checkout_failed",

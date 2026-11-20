@@ -18,13 +18,6 @@ import type { RemovalAuditService } from "../removal-audit.service";
 const execFileAsync = promisify(execFile);
 const DAY_MS = 86_400_000;
 
-// The unit tests replace fs.rm to model a file this process cannot unlink.
-// This one does not model anything: a real immutable file, a real recursive
-// delete, a real refusal. Whether that is even possible is a property of the
-// host — the attribute needs CAP_LINUX_IMMUTABLE and a filesystem that
-// implements it, so an unprivileged runner, a container without the
-// capability, or tmpfs/overlay/macOS all legitimately cannot run it, and it
-// skips there rather than failing.
 async function immutableAttributeWorks(): Promise<boolean> {
   if (process.platform !== "linux") return false;
   const probeDir = await fs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-immutable-probe-"));
@@ -34,7 +27,6 @@ async function immutableAttributeWorks(): Promise<boolean> {
     await execFileAsync("chattr", ["+i", probe]);
     try {
       await fs.rm(probe, { force: true });
-      // The attribute was accepted but did not actually protect the file.
       return false;
     } catch {
       return true;
@@ -105,7 +97,6 @@ describe("TrashReaperService against a real immutable payload file", () => {
   });
 
   afterEach(async () => {
-    // Without this the temp tree itself cannot be removed either.
     if (immutablePath !== null) {
       await execFileAsync("chattr", ["-i", immutablePath]).catch(() => undefined);
       immutablePath = null;
@@ -150,7 +141,6 @@ describe("TrashReaperService against a real immutable payload file", () => {
     expect(afterFailure.invalid).toEqual([]);
     expect(gitStub.deleteRef).not.toHaveBeenCalled();
 
-    // The user does what the warning told them to.
     const moved = await findFile(entry.containerPath, "root-built.js");
     expect(moved).not.toBeNull();
     await execFileAsync("chattr", ["-i", moved as string]);

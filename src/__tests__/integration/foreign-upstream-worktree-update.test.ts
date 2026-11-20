@@ -15,15 +15,6 @@ import type { RepositoryConfig, SyncOutcome, SyncOutcomeAction } from "../../typ
 import type { SyncMetadata } from "../../types/sync-metadata";
 import type { Mock } from "vitest";
 
-// Real git, no mocks. The update phase used to decide "behind" from
-// `<branch>@{upstream}` while the fast-forward merged origin/<branch>. Point a
-// feature branch's upstream elsewhere (`git branch -u origin/main`) and every
-// push to main made the probe say "behind" while the merge had nothing to
-// bring in — yet each sync reported the worktree as updated/fast_forward and
-// rewrote its lastSyncCommit/lastSyncDate for updates that never happened. The probe now names origin/<branch>
-// itself, and the fast-forward reports whether HEAD actually moved, so a
-// merge with nothing to do is recorded as already_up_to_date and leaves the
-// sync metadata untouched.
 describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -40,7 +31,6 @@ describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
     seedDir = path.join(tempDir, "seed");
     worktreeDir = path.join(tempDir, "worktrees");
     bareRepoDir = path.join(tempDir, ".bare", "app");
-    // The default branch worktree sits directly under worktreeDir.
     mainPath = path.join(worktreeDir, "main");
     topicPath = pathResolution.getBranchWorktreePath(worktreeDir, "topic");
 
@@ -94,17 +84,12 @@ describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
 
   const headOf = async (dir: string): Promise<string> => (await simpleGit(dir).revparse(["HEAD"])).trim();
 
-  // branch.<name>.merge as seen from the worktree, or null when the branch has
-  // no upstream configured.
   const upstreamOf = async (dir: string, branch: string): Promise<string | null> =>
     simpleGit(dir)
       .raw(["config", "--get", `branch.${branch}.merge`])
       .then((out) => out.trim() || null)
       .catch(() => null);
 
-  // The fields a sync writes when it updates a worktree. lastKnownRemoteTip is
-  // left out on purpose: it is a live observation refreshed whenever the
-  // remote tip changes, not a record of an update.
   async function syncFieldsOf(
     git: GitService,
     dir: string,
@@ -115,7 +100,6 @@ describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
     return { lastSyncCommit, lastSyncDate };
   }
 
-  // A teammate's commit on the branch, pushed from the seed clone.
   async function pushCommit(branch: string, content: string): Promise<string> {
     const seed = simpleGit(seedDir);
     await seed.checkout(branch);
@@ -126,7 +110,6 @@ describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
     return (await seed.revparse([branch])).trim();
   }
 
-  // Publishes a new branch off main from the seed clone, with one commit.
   async function publishBranch(branch: string): Promise<string> {
     const seed = simpleGit(seedDir);
     await seed.checkout("main");
@@ -152,7 +135,6 @@ describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
     expect(await headOf(topicPath)).toBe(topicV1);
     expect(await upstreamOf(topicPath, "topic")).toBe("refs/heads/topic");
 
-    // The user points the branch at main instead.
     await simpleGit(topicPath).raw(["branch", "-u", "origin/main"]);
     expect(await upstreamOf(topicPath, "topic")).toBe("refs/heads/main");
     const before = await syncFieldsOf(git, topicPath);
@@ -160,7 +142,6 @@ describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
 
     const mainV2 = await pushCommit("main", "v2");
 
-    // Two ticks: the phantom update used to be recorded on every one.
     const first = await syncOutcome(service);
     expect(actionsFor(first, "main")).toEqual([
       { kind: "updated", branch: "main", path: mainPath, reason: "fast_forward" },
@@ -179,7 +160,6 @@ describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
     expect(lines).not.toContain("  - Updating worktree 'topic'...");
     expect(lines).not.toContain("    ✅ Successfully updated 'topic'.");
 
-    // A real push to topic is still picked up, and only that is recorded.
     const topicV2 = await pushCommit("topic", "v2");
     const outcome = await syncOutcome(service);
     expect(actionsFor(outcome, "topic")).toEqual([
@@ -189,15 +169,9 @@ describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
     const after = await syncFieldsOf(git, topicPath);
     expect(after.lastSyncCommit).toBe(topicV2);
     expect(after.lastSyncDate).not.toBe(before.lastSyncDate);
-    // The user's upstream choice is not touched by the update.
     expect(await upstreamOf(topicPath, "topic")).toBe("refs/heads/main");
   });
 
-  // The gap the reference fix cannot close: the probe is right that
-  // origin/topic is ahead, but by the time the fast-forward runs there is
-  // nothing left to merge — HEAD reached the remote tip in between, here
-  // through a `git pull` in the worktree slipped in right after the probe.
-  // Real git throughout; only the timing is arranged.
   it("records already_up_to_date, not an update, when HEAD reaches the remote tip between the probe and the fast-forward", async () => {
     const logger = createMockLogger();
     const service = new WorktreeSyncService(makeConfig(logger));
@@ -235,7 +209,6 @@ describe("Worktrees whose branch tracks a different upstream (E2E)", () => {
     expect(await headOf(topicPath)).toBe(topicV2);
     expect(await syncFieldsOf(git, topicPath)).toEqual(before);
 
-    // Nothing to do on the next tick either, and still no rewrite.
     spy.mockRestore();
     expect(actionsFor(await syncOutcome(service), "topic")).toEqual([
       expect.objectContaining({ kind: "noop", reason: "already_up_to_date", path: topicPath }),

@@ -28,9 +28,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // `readdir` resolves to an array or throws; it never resolves to undefined.
-    // These suites reach it through the trash listing even when they only care
-    // about update behaviour.
     (fs.readdir as Mock<any>).mockResolvedValue([]);
 
     mockLogger = createMockLogger();
@@ -46,7 +43,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
     service = new WorktreeSyncService(mockConfig);
 
-    // Mock GitService methods
     mockGitService = {
       initialize: vi.fn().mockResolvedValue(undefined),
       isInitialized: vi.fn().mockReturnValue(true),
@@ -64,11 +60,8 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         { path: "/test/worktrees/feature", branch: "feature", head: "feature-head" },
         { path: "/test/worktrees/develop", branch: "develop", head: "develop-head" },
       ]),
-      checkWorktreeStatus: vi.fn().mockResolvedValue(true), // All clean by default
-      // Nothing on either side by default: every worktree is up to date.
+      checkWorktreeStatus: vi.fn().mockResolvedValue(true),
       getAheadBehindCounts: vi.fn().mockResolvedValue({ ahead: 0, behind: 0 }),
-      // No tips by default, so no worktree takes the "nothing changed" fast
-      // path and every one of them reaches the probes.
       getRemoteBranchTips: vi.fn().mockResolvedValue(new Map()),
       recordRemoteTip: vi.fn().mockResolvedValue(undefined),
       updateWorktree: vi.fn().mockResolvedValue({ updated: true, before: "old111", after: "new222" }),
@@ -103,18 +96,15 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
   describe("Update functionality enabled (default)", () => {
     it("should update worktrees that are behind", async () => {
-      // Mock that feature branch is behind
       mockGitService.getAheadBehindCounts.mockImplementation(async (path: string) =>
         path.includes("feature") ? { ahead: 0, behind: 1 } : { ahead: 0, behind: 0 },
       );
 
       const result = await service.sync();
 
-      // Should check all worktrees
       expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledTimes(3);
       expect(mockGitService.getAheadBehindCounts).toHaveBeenCalledTimes(3);
 
-      // Should update only the feature branch
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(1);
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/feature", "feature");
       expect(result).toMatchObject({
@@ -130,13 +120,11 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     });
 
     it("should skip updating worktrees with an operation in progress", async () => {
-      // feature has an operation in progress
       mockGitService.hasOperationInProgress.mockImplementation(async (p) => p.includes("feature"));
       mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 1 });
 
       const result = await service.sync();
 
-      // Should not call update on feature
       expect(mockGitService.updateWorktree).not.toHaveBeenCalledWith("/test/worktrees/feature", "feature");
       expect(result).toMatchObject({
         started: true,
@@ -156,23 +144,18 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     });
 
     it("should skip updating worktrees with local changes", async () => {
-      // Mock that all branches are behind
       mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 1 });
 
-      // Mock that feature branch has local changes
       mockGitService.checkWorktreeStatus.mockImplementation(async (path) => {
-        return !path.includes("feature"); // feature is not clean
+        return !path.includes("feature");
       });
 
       await service.sync();
 
-      // Should check all worktrees
       expect(mockGitService.checkWorktreeStatus).toHaveBeenCalledTimes(3);
 
-      // Should only count ahead/behind for clean worktrees
       expect(mockGitService.getAheadBehindCounts).toHaveBeenCalledTimes(2);
 
-      // Should update only the clean worktrees that are behind
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(2);
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/main", "main");
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/develop", "develop");
@@ -180,10 +163,8 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     });
 
     it("should handle update failures gracefully", async () => {
-      // Mock that all branches are behind
       mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 1 });
 
-      // Mock update failure for feature branch
       mockGitService.updateWorktree.mockImplementation(async (path) => {
         if (path.includes("feature")) {
           throw new Error("Fast-forward merge failed");
@@ -193,12 +174,10 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
       await service.sync();
 
-      // Should attempt to update all worktrees
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(3);
     });
 
     it("should handle errors when checking worktree status", async () => {
-      // Mock error when checking feature branch
       mockGitService.checkWorktreeStatus.mockImplementation(async (path) => {
         if (path.includes("feature")) {
           throw new Error("Git status failed");
@@ -210,17 +189,10 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
       const result = await service.sync();
 
-      // Should only update worktrees that could be checked
       expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(2);
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/main", "main");
       expect(mockGitService.updateWorktree).toHaveBeenCalledWith("/test/worktrees/develop", "develop");
 
-      // A probe-only failure must NOT become a hard `recordFailed` (which would
-      // poison the exit code). It is recorded as `update_check_failed` skip,
-      // and it names the worktree it failed on: the git error carries the
-      // command and its stderr but not the directory it ran in, so without the
-      // branch and path a daemon with hundreds of worktrees reports a failure
-      // nobody can locate.
       expect(result.started).toBe(true);
       if (!result.started) throw new Error("sync did not start");
       expect(result.outcome?.counts.failed ?? 0).toBe(0);
@@ -242,10 +214,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       );
     });
 
-    // The ahead/behind probe names origin/<branch> explicitly, so it gets the
-    // branch from the runner: a worktree whose branch has no upstream
-    // configured (trash restore, create_worktree push:false) is fast-forwarded
-    // like any other once origin's tip differs, instead of passing as up to date.
     it("hands the branch to the ahead/behind probe and fast-forwards a worktree whose branch has no upstream", async () => {
       mockGitService.getAheadBehindCounts.mockImplementation(async (_worktreePath: string, branch: string) =>
         branch === "feature" ? { ahead: 0, behind: 1 } : { ahead: 0, behind: 0 },
@@ -270,11 +238,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       );
     });
 
-    // getAheadBehindCounts throws when its rev-list could not run (EMFILE,
-    // ENOMEM, a `fatal:`) rather than answering with counts: zero ahead and
-    // zero behind would read as up to date, and any other invented pair could
-    // read as diverged — and diverged handling can move a healthy, fully
-    // pushed worktree to trash and recreate it.
     describe("an ahead/behind probe that throws", () => {
       const runner = (): any => (service as any).worktreeModeSyncRunner;
 
@@ -290,7 +253,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
         expect(fs.rename).not.toHaveBeenCalled();
         expect(mockGitService.updateWorktree).not.toHaveBeenCalledWith("/test/worktrees/feature", "feature");
-        // The other two worktrees are still updated.
         expect(mockGitService.updateWorktree).toHaveBeenCalledTimes(2);
         expect(mockLogger.error).toHaveBeenCalledWith(
           "  - Error checking worktree 'feature' (/test/worktrees/feature):",
@@ -327,10 +289,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       });
     });
 
-    // Phase 4a saw origin/feature ahead of HEAD, but by the time Phase 4b ran
-    // the fast-forward there was nothing left to merge (HEAD reached the
-    // remote tip in between). That is not an update: the outcome records
-    // already_up_to_date and no "Successfully updated" line is logged.
     it("records already_up_to_date, not an update, when the fast-forward finds HEAD already at the remote tip", async () => {
       mockGitService.getAheadBehindCounts.mockImplementation(async (_worktreePath: string, branch: string) =>
         branch === "feature" ? { ahead: 0, behind: 1 } : { ahead: 0, behind: 0 },
@@ -361,13 +319,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       ]);
     });
 
-    // The comparison that keeps a tick where nothing changed off the
-    // repository's back: git's own registration listing already resolved every
-    // worktree's HEAD, and one for-each-ref gave origin's tip for every branch,
-    // so a worktree whose HEAD is that tip is settled before a single
-    // per-worktree git process runs.
     describe("worktrees whose HEAD already sits at origin's tip", () => {
-      // Only 'feature' moved on the remote.
       const tips = new Map([
         ["main", "main-head"],
         ["feature", "feature-remote-tip"],
@@ -380,9 +332,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       });
 
       afterEach(() => {
-        // fs/promises is module-mocked and `vi.clearAllMocks()` keeps
-        // implementations, so an access stub set here would otherwise follow
-        // every later test in the file.
         (fs.access as Mock<any>).mockReset();
       });
 
@@ -417,10 +366,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         }
       });
 
-      // The whole point of the item: the per-worktree work is what used to grow
-      // with the number of registered worktrees. With nothing changed, the calls
-      // that spawn git are the same handful whether there are three worktrees
-      // or thirty.
       it("keeps the git commands per attempt constant as the worktree count grows", async () => {
         const spawningCalls = async (worktreeCount: number): Promise<Record<string, number>> => {
           const branches = Array.from({ length: worktreeCount }, (_, index) => `b${index}`);
@@ -447,13 +392,10 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
           );
 
           return {
-            // Repo-level: one fetch, one branch listing, one worktree listing,
-            // one tip listing.
             fetchAll: mockGitService.fetchAll.mock.calls.length,
             getRemoteBranches: mockGitService.getRemoteBranches.mock.calls.length,
             getWorktrees: mockGitService.getWorktrees.mock.calls.length,
             getRemoteBranchTips: mockGitService.getRemoteBranchTips.mock.calls.length,
-            // Per-worktree: none of these may run.
             checkWorktreeStatus: mockGitService.checkWorktreeStatus.mock.calls.length,
             getAheadBehindCounts: mockGitService.getAheadBehindCounts.mock.calls.length,
             updateWorktree: mockGitService.updateWorktree.mock.calls.length,
@@ -479,8 +421,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         expect(total).toBeLessThanOrEqual(5);
       });
 
-      // A listing that failed answers nothing about any branch, so every
-      // worktree goes back through the probes rather than passing as up to date.
       it("falls back to the per-worktree probes when the tip listing could not be read", async () => {
         mockGitService.getRemoteBranchTips.mockRejectedValue(new Error("fatal: not a git repository"));
         mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 0 });
@@ -494,8 +434,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         expect(result.outcome.counts).toEqual(expect.objectContaining({ noop: 3, updated: 0, failed: 0 }));
       });
 
-      // A registration git listed without a HEAD line (a prunable entry, an
-      // unborn branch) has nothing to compare, so it is probed like any other.
       it("falls back to the per-worktree probes for a registration listed without a HEAD", async () => {
         mockGitService.getWorktrees.mockResolvedValue([
           { path: "/test/worktrees/main", branch: "main", head: "main-head" },
@@ -514,9 +452,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         expect(result.outcome.counts).toEqual(expect.objectContaining({ noop: 3, failed: 0 }));
       });
 
-      // Skipping the probes must not skip the two answers that do not cost a
-      // git process: an unfinished merge/rebase and a directory that is gone
-      // are still reported for a worktree that is at the remote tip.
       it("still reports an operation in progress rather than up to date", async () => {
         mockGitService.hasOperationInProgress.mockImplementation(async (p: string) => p.includes("develop"));
 
@@ -533,9 +468,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
         });
       });
 
-      // Not ENOENT: a directory that is provably gone is dropped from the
-      // inventory earlier in the sync and rebuilt as a create. What Phase 4a
-      // still has to answer for is a path it cannot verify.
       it("still reports a worktree directory it cannot reach rather than up to date", async () => {
         (fs.access as Mock<any>).mockImplementation(async (target: unknown) => {
           if (String(target) === "/test/worktrees/develop") {
@@ -560,23 +492,18 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
   describe("Default branch retention with branchMaxAge", () => {
     it("should not prune default branch even if filtered by age", async () => {
-      // Recreate service with branchMaxAge configured
       mockConfig.branchMaxAge = "1d";
       service = new WorktreeSyncService(mockConfig);
       attachMockGitService();
 
-      // Simulate that age filtering removed all but (intentionally) not returning main
       (mockGitService.getRemoteBranches as Mock).mockResolvedValue(["feature", "develop"]);
 
-      // Pretend worktreeDir contains main only. The trash root is read with
-      // `withFileTypes` and must not be handed these plain names.
       (fs.readdir as Mock<any>).mockImplementation(async (dirPath: unknown) =>
         String(dirPath).endsWith(".trash") ? [] : ["main"],
       );
 
       await service.sync();
 
-      // Ensure we did not try to remove the main worktree
       expect(mockGitService.removeWorktree).not.toHaveBeenCalledWith("/test/worktrees/main");
     });
   });
@@ -631,7 +558,7 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
   describe("Branch name filtering runs before age filtering", () => {
     it("should apply name filter then age filter", async () => {
       const now = new Date();
-      const oldDate = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000); // 60 days ago
+      const oldDate = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
 
       mockConfig.branchInclude = ["feature/*", "main"];
       mockConfig.branchMaxAge = "30d";
@@ -649,7 +576,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
       await service.sync();
 
-      // bugfix/typo excluded by name filter, feature/old excluded by age
       expect(mockGitService.addWorktree).toHaveBeenCalledTimes(1);
       expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature/new", expect.any(String));
     });
@@ -672,15 +598,8 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     });
   });
 
-  // Retaining the default branch is only right while origin still has it.
-  // After the remote renamed or deleted it, keeping it in the inventory left
-  // its worktree a permanent update candidate (failing every sync, since
-  // origin/<old> no longer exists) that was never pruned, while the new
-  // default was created as an ordinary hashed peer directory.
   describe("Default branch that origin no longer has", () => {
     beforeEach(() => {
-      // Trash off so a prune ends in a plain removeWorktree; the audit record
-      // written before it needs a file handle from the mocked fs.
       mockConfig.trash = { enabled: false };
       service = new WorktreeSyncService(mockConfig);
       attachMockGitService();
@@ -700,7 +619,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
     it("re-resolves the default, records its new worktree and prunes the old default instead of retaining it", async () => {
       (mockGitService.refreshDefaultBranch as Mock).mockImplementation(async () => {
-        // The switch re-points the anchor, as GitService does.
         (mockGitService.getMainWorktreePath as Mock).mockReturnValue("/test/worktrees/trunk");
         return { previous: "main", defaultBranch: "trunk", mainWorktreePath: "/test/worktrees/trunk", created: true };
       });
@@ -709,7 +627,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
 
       expect(mockGitService.refreshDefaultBranch).toHaveBeenCalledTimes(1);
       expect(mockLogger.info).not.toHaveBeenCalledWith(expect.stringContaining("Ensuring default branch 'main'"));
-      // main went through the prune pipeline, never the update phase.
       expect(mockGitService.getFullWorktreeStatus).toHaveBeenCalledWith(
         "/test/worktrees/main",
         undefined,
@@ -717,7 +634,6 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
       );
       expect(mockGitService.removeWorktree).toHaveBeenCalledWith("/test/worktrees/main");
       expect(mockGitService.getAheadBehindCounts).not.toHaveBeenCalledWith("/test/worktrees/main", "main");
-      // trunk's worktree was created by the switch, not planned again.
       expect(mockGitService.addWorktree).not.toHaveBeenCalled();
       expect(result).toMatchObject({
         started: true,
@@ -769,12 +685,10 @@ describe("WorktreeSyncService - Update Existing Worktrees", () => {
     });
 
     it("should not update any worktrees when disabled", async () => {
-      // Mock that all branches are behind
       mockGitService.getAheadBehindCounts.mockResolvedValue({ ahead: 0, behind: 1 });
 
       await service.sync();
 
-      // Should not check or update any worktrees
       expect(mockGitService.checkWorktreeStatus).not.toHaveBeenCalled();
       expect(mockGitService.getAheadBehindCounts).not.toHaveBeenCalled();
       expect(mockGitService.updateWorktree).not.toHaveBeenCalled();

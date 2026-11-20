@@ -11,19 +11,6 @@ import { createMockLogger } from "../test-utils";
 
 import type { SimpleGit } from "simple-git";
 
-// Real git, answering for itself how far a worktree is from its upstream.
-//
-// `git status -b` already prints `## <branch>...<upstream> [ahead N, behind M]`
-// and simple-git parses it, so the status snapshot can report ahead/behind
-// without the separate `rev-list --left-right --count HEAD...@{upstream}` the
-// MCP layer used to spawn per worktree on a client of its own. What that
-// rev-list is owed is its tolerance: a worktree with nothing to compare against
-// answered null rather than throwing, and null is what every caller reads as
-// "cannot say". A fabricated 0/0 there would read as "in sync".
-//
-// Spawns are counted with a `git` shim first on PATH: every client the service
-// builds carries the parent environment (see sanitizeGitEnv), so a shim
-// installed before the service is constructed sees every git process it runs.
 describe("Worktree divergence from the status snapshot (E2E)", () => {
   let tempDir: string;
   let worktreesDir: string;
@@ -32,23 +19,13 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
 
   const realGit = execSync("command -v git", { shell: "/bin/sh" }).toString().trim();
 
-  // Named so each case says what it is measuring; the branch name is the
-  // worktree directory name.
   const AHEAD = "ahead-two";
   const BEHIND = "behind-one";
   const DIVERGED = "diverged-one-one";
   const IN_SYNC = "in-sync";
   const NO_UPSTREAM = "no-upstream";
   const GONE = "gone-upstream";
-  // Tracks a local branch (`branch.<name>.remote = "."`), not a remote-tracking
-  // ref. `git status -b` prints the same ahead/behind header for it, and the
-  // rev-list this replaced answered for it too -- so it is a real divergence,
-  // even though the upstream is nothing `git branch -r` will ever list. A
-  // guard that demanded a remote-tracking upstream would quietly turn this
-  // into null, and judging it against the remote-tracking refs used to call
-  // it gone (FU-T101-1).
   const LOCAL_UPSTREAM = "local-upstream";
-  // Tracks a local branch that has since been deleted.
   const LOCAL_GONE = "local-upstream-gone";
   const BRANCHES = [AHEAD, BEHIND, DIVERGED, IN_SYNC, NO_UPSTREAM, GONE, LOCAL_UPSTREAM, LOCAL_GONE];
 
@@ -60,8 +37,6 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     await git.commit(name);
   }
 
-  // Pushes a commit straight to the upstream repository, behind the bare
-  // clone's back, so the bare clone can then fetch it and be "behind".
   async function pushRemoteCommitTo(upstream: string, branch: string, name: string): Promise<void> {
     const scratch = path.join(tempDir, `scratch-${branch}`);
     await simpleGit().clone(upstream, scratch, ["--branch", branch]);
@@ -101,8 +76,6 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     const bareRepo = path.join(tempDir, "app.git");
     await simpleGit().clone(upstream, bareRepo, ["--bare"]);
     const bare = simpleGit(bareRepo);
-    // `clone --bare` records no fetch refspec, so remote-tracking refs (which
-    // is what @{upstream} resolves to) would never appear without this.
     await bare.addConfig("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
     await bare.fetch("origin");
 
@@ -122,8 +95,6 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     await bare.fetch("origin");
 
     await simpleGit(worktreeFor(NO_UPSTREAM)).raw(["branch", "--unset-upstream", NO_UPSTREAM]);
-    // Each branch is main plus its own seed commit, so this one is exactly one
-    // commit ahead of the local branch it now tracks.
     await simpleGit(worktreeFor(LOCAL_UPSTREAM)).raw(["branch", "--set-upstream-to=main", LOCAL_UPSTREAM]);
     await bare.raw(["branch", "doomed-base", "main"]);
     await simpleGit(worktreeFor(LOCAL_GONE)).raw(["branch", "--set-upstream-to=doomed-base", LOCAL_GONE]);
@@ -131,7 +102,6 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     await simpleGit(upstream).raw(["branch", "-D", GONE]);
     await bare.fetch(["--prune", "origin"]);
 
-    // Install the shim last: nothing above it should be counted.
     const shimDir = path.join(tempDir, "shim");
     await fs.mkdir(shimDir, { recursive: true });
     shimLog = path.join(tempDir, "spawns.log");
@@ -167,7 +137,6 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     const status = await service.getFullWorktreeStatus(worktreeFor(branch));
 
     expect(status.divergence).toEqual(expected);
-    // The same numbers git itself produces from the command this replaced.
     const counts = await simpleGit(worktreeFor(branch)).raw([
       "rev-list",
       "--left-right",
@@ -177,8 +146,6 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     expect(counts.trim().split(/\s+/)).toEqual([String(expected.ahead), String(expected.behind)]);
   });
 
-  // Strictly null, never undefined and never 0/0: a caller distinguishes "no
-  // upstream to compare against" from "level with its upstream".
   it.each([{ branch: NO_UPSTREAM }, { branch: GONE }, { branch: LOCAL_GONE }])(
     "reports $branch divergence as null rather than zero",
     async ({ branch }) => {
@@ -187,7 +154,6 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
       const status = await service.getFullWorktreeStatus(worktreeFor(branch));
 
       expect(status.divergence).toBeNull();
-      // Precondition: the command this replaced could not answer here either.
       await expect(
         simpleGit(worktreeFor(branch)).raw(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]),
       ).rejects.toThrow();
@@ -202,25 +168,17 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     expect(status.divergence).toEqual({ ahead: 1, behind: 1 });
 
     const commands = await spawnedCommands();
-    // Guard the guard: if the shim ever stopped being seen, the assertions
-    // below would pass while proving nothing.
     expect(commands.length).toBeGreaterThan(0);
     expect(commands.filter((command) => command.includes("@{upstream}") && command.startsWith("rev-list"))).toEqual([]);
     expect(commands.filter((command) => command.includes("--left-right"))).toEqual([]);
-    // One `status` is what carries the answer, and there is only one.
     expect(commands.filter((command) => command.startsWith("status "))).toHaveLength(1);
   });
 
-  // upstreamGone is judged against the upstream git itself derives from
-  // branch.<b>.remote/merge (see RefScan): a remote-tracking ref for a remote,
-  // a local branch for `remote = .`.
   it.each([
     { branch: IN_SYNC, gone: false },
     { branch: AHEAD, gone: false },
     { branch: NO_UPSTREAM, gone: false },
-    // FU-T101-1: a healthy branch tracking a local branch is not stale.
     { branch: LOCAL_UPSTREAM, gone: false },
-    // FU-T101-2: a pruned upstream, where `rev-parse @{upstream}` exits 128.
     { branch: GONE, gone: true },
     { branch: LOCAL_GONE, gone: true },
   ])("reports upstreamGone=$gone for $branch", async ({ branch, gone }) => {
@@ -232,10 +190,6 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     expect(status.reasons.includes("upstream gone")).toBe(gone);
   });
 
-  // The per-tick cost: what a pass over every worktree of the repository
-  // spawns. `branch`, `branch -r` and `rev-parse @{upstream}` are gone from
-  // every snapshot, and the branch/remote-ref listing runs once for the
-  // repository when the pass shares a RefScanScope.
   it("scans the repository's refs once per pass, not once per worktree", async () => {
     const worktrees = BRANCHES.map(worktreeFor);
     const probeAll = async (refScans?: RefScanScope): Promise<string[]> => {
@@ -259,8 +213,6 @@ describe("Worktree divergence from the status snapshot (E2E)", () => {
     }
     expect(count(shared, "stash list")).toBe(1);
     expect(count(unshared, "stash list")).toBe(worktrees.length);
-    // Per worktree: status, submodule status and one unpushed rev-list; plus
-    // the one scan and the one stash listing. It used to be seven per worktree.
     expect(shared).toHaveLength(3 * worktrees.length + 2);
     expect(unshared).toHaveLength(5 * worktrees.length);
   });

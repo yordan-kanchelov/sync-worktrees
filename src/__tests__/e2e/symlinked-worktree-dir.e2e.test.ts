@@ -9,9 +9,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PathResolutionService } from "../../services/path-resolution.service";
 import { symlinksSupported } from "../helpers/symlink-support";
 
-// git records canonical (realpath) worktree paths. A worktreeDir reached
-// through a symlink (every path under /tmp on macOS) used to fail the first
-// run with "main worktree ... is not registered ... after creation".
 describe("worktreeDir under a symlinked directory (E2E)", async () => {
   const canSymlink = await symlinksSupported();
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");

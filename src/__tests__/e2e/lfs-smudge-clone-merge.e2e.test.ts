@@ -12,17 +12,6 @@ interface CliRun {
   stderr: string;
 }
 
-// Real git, no git-lfs binary: a `filter.lfs` smudge driver that fails plus
-// `filter.lfs.required` is what a repository whose LFS server cannot be reached
-// does to a checkout. Here the checkout is the one inside `merge --ff-only`, so
-// git stops at the first path it cannot produce with the paths that sort before
-// it already written, and with HEAD and the index still on the old commit.
-//
-// What that used to leave behind wedged the repository for good: `git status`
-// reported the stray files, every following tick soft-skipped with "working
-// tree has local changes" at info level and exit 0, and even a repaired LFS
-// server could not end it — git refuses to overwrite the untracked files the
-// first attempt left.
 describe("clone-mode fast-forward that dies on an LFS smudge", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   const POINTER = "version https://git-lfs.github.com/spec/v1\noid sha256:d0d0\nsize 12\n";
@@ -53,9 +42,6 @@ describe("clone-mode fast-forward that dies on an LFS smudge", () => {
     await seed.addConfig("user.name", "Test User");
     await seed.addConfig("user.email", "test@example.com");
     await fs.writeFile(path.join(seedDir, "README.md"), "# app\n");
-    // Sorts before the LFS path, so the incoming commit's deletion of it is
-    // applied before git gives up — the other half of the half-applied
-    // checkout, and the one the cleanup has to put back rather than delete.
     await fs.writeFile(path.join(seedDir, "README-old.md"), "# retired\n");
     await seed.add(".");
     await seed.commit("Initial commit");
@@ -86,31 +72,18 @@ describe("clone-mode fast-forward that dies on an LFS smudge", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  // `honorsSkipEnv: true` stands in for git-lfs itself, which writes the
-  // pointer file instead of failing when GIT_LFS_SKIP_SMUDGE=1; false is the
-  // filter that has no such escape hatch. The config is reached through
-  // GIT_CONFIG_GLOBAL, which is also where `git lfs install` puts it.
   async function installFakeLfsFilter(honorsSkipEnv: boolean): Promise<void> {
     const body = honorsSkipEnv
       ? '#!/bin/sh\nif [ "$GIT_LFS_SKIP_SMUDGE" = "1" ]; then exec cat; fi\nexit 1\n'
       : "#!/bin/sh\nexit 1\n";
     await fs.writeFile(smudgeScript, body, { mode: 0o755 });
-    // `clean = cat` mirrors git-lfs turning a working-tree file back into its
-    // pointer: without a clean filter a required one fails every `git status`.
     await fs.writeFile(gitConfigPath, `[filter "lfs"]\n\tsmudge = ${smudgeScript}\n\tclean = cat\n\trequired = true\n`);
   }
 
-  // The LFS server coming back: from here the smudge filter answers for
-  // everything.
   async function repairLfsFilter(): Promise<void> {
     await fs.writeFile(smudgeScript, "#!/bin/sh\nexec cat\n", { mode: 0o755 });
   }
 
-  // The upstream commit the failing filter cannot check out. Everything but the
-  // LFS file sorts before it, so git writes all of it and then gives up:
-  // a plain file, a symlink, a symlink whose target the merge never reaches
-  // (`hash-object` follows a symlink and dies on a dangling one, so neither can
-  // be proved by hashing), and the removal of a tracked file.
   async function pushLfsCommit(): Promise<string> {
     const seed = simpleGit(seedDir);
     await fs.writeFile(path.join(seedDir, ".gitattributes"), "*.bin filter=lfs\n");
@@ -136,8 +109,6 @@ describe("clone-mode fast-forward that dies on an LFS smudge", () => {
     return { status: result.status, stdout: result.stdout, stderr: result.stderr };
   }
 
-  // Run with the same filter config the CLI saw, so `git status` classifies the
-  // working tree exactly as the tool's own status call did.
   function git(...args: string[]): string {
     return execFileSync("git", ["-C", worktreeDir, ...args], {
       encoding: "utf8",
@@ -156,16 +127,11 @@ describe("clone-mode fast-forward that dies on an LFS smudge", () => {
     const failed = runCli();
     const failedOutput = failed.stdout + failed.stderr;
 
-    // A filter with no escape hatch: the sync fails, loudly, naming the cause.
     expect(failed.status, failedOutput).toBe(1);
     expect(failedOutput).toContain("smudge filter lfs failed");
     expect(failed.stdout).toContain("1 failed");
-    // Not the silent skip this item is about.
     expect(failedOutput).not.toContain("working tree has local changes");
 
-    // The half-applied checkout is gone: the files git had already written are
-    // removed — symlinks and the dangling one included — the one it had already
-    // deleted is back, and HEAD never moved.
     expect(git("status", "--porcelain")).toBe("");
     expect(git("rev-parse", "HEAD")).toBe(before);
     for (const written of [".gitattributes", "0-plain.txt", "0-link.md", "0-dangling.md"]) {
@@ -173,12 +139,8 @@ describe("clone-mode fast-forward that dies on an LFS smudge", () => {
     }
     await expect(fs.readFile(path.join(worktreeDir, "README-old.md"), "utf8")).resolves.toBe("# retired\n");
     expect(failed.stdout).toContain("Undid the half-applied fast-forward");
-    // Nothing was left unproved: a dangling symlink used to fail the batch
-    // `hash-object` and disqualify every path with it.
     expect(failedOutput).not.toContain("Could not hash");
 
-    // Which is what lets the repository heal itself once LFS is reachable
-    // again — the run that used to skip forever.
     await repairLfsFilter();
     const repaired = runCli();
     expect(repaired.status, repaired.stdout + repaired.stderr).toBe(0);
@@ -198,8 +160,6 @@ describe("clone-mode fast-forward that dies on an LFS smudge", () => {
     const synced = runCli();
     const syncedOutput = synced.stdout + synced.stderr;
 
-    // Attempt 1 dies on the smudge, the retry policy disables smudging, and the
-    // retry's merge now actually runs with GIT_LFS_SKIP_SMUDGE=1.
     expect(synced.status, syncedOutput).toBe(0);
     expect(syncedOutput).toContain("Temporarily disabling LFS downloads");
     expect(synced.stdout).toContain("Updated 'app' to origin/main");
@@ -207,12 +167,9 @@ describe("clone-mode fast-forward that dies on an LFS smudge", () => {
     expect(git("rev-parse", "HEAD")).toBe(tip);
     expect(git("status", "--porcelain")).toBe("");
     expect(await fs.readlink(path.join(worktreeDir, "0-link.md"))).toBe("README.md");
-    // Honest about what the retry produced: the LFS path holds its pointer.
     await expect(fs.readFile(path.join(worktreeDir, "assets", "big.bin"), "utf8")).resolves.toBe(POINTER);
   }, 60_000);
 
-  // A rename lists only its new name under rename detection; the old path,
-  // deleted by the half-applied merge, must still be put back.
   it("restores the old path of a rename that sorts before the failing path", async () => {
     await installFakeLfsFilter(false);
     const seed = simpleGit(seedDir);
@@ -244,8 +201,6 @@ describe("clone-mode fast-forward that dies on an LFS smudge", () => {
     expect(git("status", "--porcelain")).toBe("");
   }, 60_000);
 
-  // The cleanup only ever weighs paths the merge itself would have written, so
-  // a clone somebody is working in still skips for the reason it always did.
   it("still skips with dirty_tree for a change of the user's own", async () => {
     await installFakeLfsFilter(true);
 

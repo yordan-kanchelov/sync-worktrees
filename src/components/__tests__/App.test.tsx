@@ -8,7 +8,6 @@ import { AppEventEmitter } from "../../utils/app-events";
 import type { RepositoryDashboardRow } from "../../utils/app-events";
 import { resizeTerminal } from "./terminal-size";
 
-// Helper to wait for React state updates
 const waitForStateUpdate = () => new Promise((resolve) => setTimeout(resolve, 100));
 
 describe("App", () => {
@@ -95,15 +94,6 @@ describe("App", () => {
   });
 
   describe("event subscriptions", () => {
-    // index.ts kicks off the daemon's startup sync in the same synchronous turn
-    // as InteractiveUIService's constructor — the turn render() runs in. Log
-    // lines survive a late mount either way, because addLog buffers until
-    // `uiReady` and flushLogBuffer replays in call order; setStatus and
-    // setSyncProgress have no buffer at all. Emitted before this effect has
-    // subscribed they are dropped on the floor, and the status bar would read
-    // Running for the whole of the first sync with an empty progress panel.
-    // Ink flushes a mount effect synchronously inside render(); pin it, because
-    // that is what makes the startup sync's status reach the screen.
     it("emits uiReady before render() returns", () => {
       const seen: string[] = [];
       appEvents.on("uiReady", () => seen.push("uiReady"));
@@ -224,10 +214,6 @@ describe("App", () => {
   });
 
   describe("updateLastSyncTime functionality", () => {
-    // The stamp is not the end of the sync. The service emits it from inside a
-    // cycle, and with cycles overlapping, the one that stamps is not
-    // necessarily the last one out: ending the sync here put the bar back to
-    // `Running` and took another cycle's progress rows off the screen mid-fetch.
     it("does not end the sync or clear the progress rows when the last sync time is stamped", async () => {
       const { lastFrame } = render(<App {...defaultProps} maxProgressLines={2} />);
 
@@ -245,7 +231,6 @@ describe("App", () => {
       expect(lastFrame()).toContain("[repo-a] fetch receiving: 40%");
       expect(lastFrame()).not.toContain("N/A");
 
-      // `setStatus` is the one gate, and it still ends it.
       appEvents.emit("setStatus", "idle");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("Idle");
@@ -301,9 +286,6 @@ describe("App", () => {
       await waitForStateUpdate();
 
       stdin.write("\x1b");
-      // Ink v7 buffers a lone ESC and flushes it as `key.escape` after a 20ms
-      // debounce (to disambiguate it from the start of an escape sequence), so
-      // this has to wait rather than assert on the next tick.
       await waitForStateUpdate();
 
       expect(onQuit).not.toHaveBeenCalled();
@@ -311,9 +293,6 @@ describe("App", () => {
     });
 
     it("does not quit on the Esc that follows the one closing the help screen", async () => {
-      // Esc is this interface's "back out" key everywhere it is bound, so it
-      // arrives in runs: one to close the screen, and whatever the hand adds.
-      // The extra ones have to land on nothing.
       const onQuit = vi.fn().mockResolvedValue(undefined);
       const { stdin, lastFrame } = render(<App {...defaultProps} onQuit={onQuit} />);
 
@@ -336,7 +315,7 @@ describe("App", () => {
     it("should toggle help modal when ? is pressed", async () => {
       const { stdin, lastFrame } = render(<App {...defaultProps} />);
 
-      await waitForStateUpdate(); // Wait for useEffect to set up
+      await waitForStateUpdate();
 
       expect(lastFrame()).not.toContain("Keyboard Shortcuts");
 
@@ -354,7 +333,7 @@ describe("App", () => {
     it("should toggle help modal when h is pressed", async () => {
       const { stdin, lastFrame } = render(<App {...defaultProps} />);
 
-      await waitForStateUpdate(); // Wait for useEffect to set up
+      await waitForStateUpdate();
 
       expect(lastFrame()).not.toContain("Keyboard Shortcuts");
 
@@ -409,8 +388,6 @@ describe("App", () => {
       await waitForStateUpdate();
 
       expect(defaultProps.forceClean).toHaveBeenCalledTimes(1);
-      // `y` authorizes the set behind the counts it just read out, so that is
-      // what reaches the service — not "whatever is in the trash by then".
       expect(defaultProps.forceClean).toHaveBeenCalledWith([
         {
           repoIndex: 0,
@@ -521,8 +498,6 @@ describe("App", () => {
       expect(lastFrame()).toContain("2 hooks still running");
     });
 
-    // After the confirmed quit the service is waiting on the sync, and its own
-    // notice says a second q forces the exit. Asking again would swallow it.
     it("passes every q after a confirmed quit straight through", async () => {
       const onQuit = vi.fn().mockResolvedValue(undefined);
       const { stdin } = render(<App {...defaultProps} onQuit={onQuit} />);
@@ -561,8 +536,6 @@ describe("App", () => {
   });
 
   describe("commands available while syncing", () => {
-    // create/open/status no longer require an idle status: they either don't touch
-    // git (open/status) or queue behind the sync (create). See the repo-mutex design.
     it("should open the branch creation wizard with c while syncing", async () => {
       const { stdin, lastFrame } = render(<App {...defaultProps} />);
       await waitForStateUpdate();
@@ -619,8 +592,6 @@ describe("App", () => {
   });
 
   describe("repositoriesReloaded event", () => {
-    // A reload that reorders the repositories at the same count used to leave
-    // an open picker on the old list, so its indexes named other repositories.
     it("closes an open picker so no call goes out with a stale index", async () => {
       const getRepositoryList = vi.fn().mockReturnValue([
         { index: 0, name: "api", repoUrl: "" },
@@ -651,8 +622,6 @@ describe("App", () => {
       expect(getWorktreesForRepo).not.toHaveBeenCalled();
     });
 
-    // The branch wizard hands its index to a creation that keeps running after
-    // the wizard closes. After a reload that index names another repository.
     describe("a worktree creation in flight", () => {
       const deferred = <T,>() => {
         let resolve: (value: T) => void = () => {};
@@ -851,8 +820,6 @@ describe("App", () => {
       expect(frame).toContain("Third log");
     });
 
-    // A message with newlines in it rendered as several rows out of a panel
-    // that had budgeted one, which is how the frame grew past the terminal.
     it("splits a multi-line message into one entry per line", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 
@@ -867,7 +834,6 @@ describe("App", () => {
       expect(frame).toContain("(2 entries)");
     });
 
-    // A terminator is not a line of its own: the panel would spend a row on it.
     it("does not turn a trailing newline into an empty entry", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 
@@ -877,14 +843,9 @@ describe("App", () => {
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("(1 entries)");
-      // One entry and one row: the newline that used to survive into the entry
-      // rendered as a second row and pushed the frame past the terminal.
       expect(lastFrame()!.split("\n")).toHaveLength(24);
     });
 
-    // Nor a leading one, and both multi-line producers open with one:
-    // `Logger.table` wraps its content in newlines at both ends, and the sync
-    // failure line starts with one.
     it("does not turn a leading newline into an empty entry", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
 
@@ -898,9 +859,6 @@ describe("App", () => {
     });
   });
 
-  // The frame is sized to the terminal: one row over and Ink stops rendering
-  // incrementally, clears the whole screen on every render and scrolls the top
-  // row out of view.
   describe("frame height", () => {
     it("fills exactly the terminal height once the log panel is full", async () => {
       const { lastFrame } = render(<App {...defaultProps} />);
@@ -947,7 +905,6 @@ describe("App", () => {
       const lines = lastFrame()!.split("\n");
       expect(lines.length).toBeLessThanOrEqual(24);
       expect(lines.filter((line) => line.includes("Progress:"))).toHaveLength(1);
-      // Status, Last Sync, one progress row, Disk Space, bottom border.
       const statusIndex = lines.findIndex((line) => line.includes("Status:"));
       expect(lines.length - statusIndex).toBe(5);
     });
@@ -1022,8 +979,6 @@ describe("App", () => {
       expect(lastFrame()).not.toContain("Log line 39");
     });
 
-    // The whole point of the guard: a mouse report is one `input` string, and
-    // anything that echoes input would otherwise paint the escape sequence.
     it("never renders a mouse report as text", async () => {
       const { stdin, lastFrame } = render(<App {...defaultProps} />);
       await waitForStateUpdate();
@@ -1037,7 +992,6 @@ describe("App", () => {
       expect(lastFrame()).not.toContain("64;10;5");
     });
 
-    // A stray click must not trip a single-key shortcut such as quit.
     it("does not fire shortcuts on a click report", async () => {
       const { stdin } = render(<App {...defaultProps} />);
       await waitForStateUpdate();
@@ -1051,9 +1005,6 @@ describe("App", () => {
     });
   });
 
-  // Every log line used to copy the whole buffer and re-render the tree on its
-  // own, and a sync delivers its lines one tick apart, so React could not batch
-  // them either.
   describe("log batching", () => {
     const nextTick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
@@ -1070,7 +1021,6 @@ describe("App", () => {
 
       expect(lastFrame()).toContain("Burst line 19");
       expect(lastFrame()).toContain("(20 entries)");
-      // One flush, with slack for a slow machine splitting the burst in two.
       expect(frames.length - framesBefore).toBeLessThanOrEqual(3);
     });
 
@@ -1298,7 +1248,6 @@ describe("App", () => {
         for (const line of lines) {
           expect([...line].length).toBeLessThanOrEqual(columns);
         }
-        // The status bar is always the last thing on screen.
         expect(lines[lines.length - 1]).toMatch(/^└/);
       });
 

@@ -13,15 +13,6 @@ import { createMockLogger } from "../test-utils";
 import type { Logger } from "../../services/logger.service";
 import type { RepositoryConfig, SyncOutcome } from "../../types";
 
-// Real git, no mocks. `git worktree lock` is how a user tells git "leave this
-// directory alone" — a demo box, a mounted volume, a long-running build. Git
-// then refuses `worktree remove` even with a single --force ("cannot remove a
-// locked working tree ... use 'remove -f -f'"). Sync used to walk a locked
-// worktree whose remote branch was deleted straight into the prune pipeline:
-// with trash on it size-scanned the directory, renamed it into .trash/, failed
-// to unregister and renamed it back — every tick; with trash off git's refusal
-// fell through to the generic handler, so every sync logged
-// "❌ Failed to remove worktree" and exited 1.
 describe("Locked worktrees are skipped, not pruned (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -53,8 +44,6 @@ describe("Locked worktrees are skipped, not pruned (E2E)", () => {
     await seed.branch(["-M", "main"]);
     await seed.addRemote("origin", remote);
     await seed.push("origin", "main");
-    // feature/a carries no commits of its own, so nothing but the lock can
-    // stand between it and removal once its remote branch is gone.
     await seed.checkoutLocalBranch("feature/a");
     await seed.push("origin", "feature/a");
     await simpleGit(remote).raw(["symbolic-ref", "HEAD", "refs/heads/main"]);
@@ -107,7 +96,6 @@ describe("Locked worktrees are skipped, not pruned (E2E)", () => {
 
       const second = await syncOnce(service);
 
-      // The removal is a deliberate skip that names the lock, not a failure.
       expect(second.counts.failed).toBe(0);
       expect(second.actions.filter((action) => action.kind === "failed")).toEqual([]);
       expect(second.actions).toContainEqual(
@@ -119,17 +107,13 @@ describe("Locked worktrees are skipped, not pruned (E2E)", () => {
         }),
       );
 
-      // The worktree is untouched: still on disk, still registered, still locked.
       await expect(fs.access(path.join(featPath, "README.md"))).resolves.toBeUndefined();
       const registered = await simpleGit(bareRepoDir).raw(["worktree", "list", "--porcelain"]);
       expect(registered).toContain(featPath);
       expect(registered).toContain("locked demo box");
 
-      // And nothing was moved into trash on the way to that skip.
       await expect(fs.readdir(path.join(worktreeDir, GIT_CONSTANTS.TRASH_DIR_NAME))).rejects.toThrow();
 
-      // A second tick behaves the same way — no exit-code churn, no repeated
-      // rename of the whole directory.
       const third = await syncOnce(service);
       expect(third.counts.failed).toBe(0);
       await expect(fs.access(featPath)).resolves.toBeUndefined();

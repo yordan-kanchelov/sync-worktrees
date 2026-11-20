@@ -10,8 +10,6 @@ import type { MockedFunction } from "vitest";
 vi.mock("child_process", () => ({ execFile: vi.fn() }));
 vi.mock("@inquirer/prompts", () => ({ confirm: vi.fn() }));
 
-// promisify(execFile) calls execFile(cmd, args, opts, callback). Our mock drives
-// that callback so we can simulate ENOENT / non-zero exit / success per command.
 type ExecCb = (err: NodeJS.ErrnoException | null, stdout?: string, stderr?: string) => void;
 type ExecArgs = [string, string[], unknown, ExecCb];
 
@@ -33,11 +31,10 @@ function exitFailure(stderr = "sync-worktrees MCP server not found"): NodeJS.Err
 
 function ambiguousFailure(): NodeJS.ErrnoException {
   const err = new Error("timed out") as NodeJS.ErrnoException;
-  err.code = 2 as unknown as string; // any non-1, non-ENOENT failure = "don't know"
+  err.code = 2 as unknown as string;
   return err;
 }
 
-/** Route each mocked call by tool + `mcp <verb>`. */
 function routeExecFile(handler: (tool: string, verb: string) => NodeJS.ErrnoException | null): void {
   mockExecFile.mockImplementation((tool, args, _opts, cb) => {
     const result = handler(tool, args[1]);
@@ -78,12 +75,11 @@ describe("maybeRegisterMcpClients", () => {
     await maybeRegisterMcpClients();
 
     expect(mockConfirm).not.toHaveBeenCalled();
-    // Only the two `mcp get` probes ran, no `mcp add`.
     expect(mockExecFile).toHaveBeenCalledTimes(2);
   });
 
   it("skips tools that already have the server registered", async () => {
-    routeExecFile(() => null); // every `mcp get` succeeds → already registered
+    routeExecFile(() => null);
 
     await maybeRegisterMcpClients();
 
@@ -92,7 +88,7 @@ describe("maybeRegisterMcpClients", () => {
   });
 
   it("does not prompt when the probe fails ambiguously (only ask when we know it's missing)", async () => {
-    routeExecFile(() => ambiguousFailure()); // e.g. timeout / unexpected exit / no `mcp get`
+    routeExecFile(() => ambiguousFailure());
 
     await maybeRegisterMcpClients();
 
@@ -121,7 +117,6 @@ describe("maybeRegisterMcpClients", () => {
     const addCalls = mockExecFile.mock.calls.filter((call) => call[1][1] === "add");
     expect(addCalls).toHaveLength(2);
     expect(addCalls[0][0]).toBe("claude");
-    // Claude Code's default `local` scope is per directory, so it would not reach other worktrees.
     expect(addCalls[0][1]).toEqual([
       "mcp",
       "add",
@@ -177,7 +172,6 @@ describe("maybeRegisterMcpClients", () => {
     mockConfirm.mockRejectedValue(new Error("User force closed the prompt"));
 
     await expect(maybeRegisterMcpClients()).resolves.toBeUndefined();
-    // Aborting stops the whole flow; no `mcp add` should run.
     const addCalls = mockExecFile.mock.calls.filter((call) => call[1][1] === "add");
     expect(addCalls).toHaveLength(0);
   });

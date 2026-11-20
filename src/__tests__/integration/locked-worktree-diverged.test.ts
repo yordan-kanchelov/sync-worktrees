@@ -13,10 +13,6 @@ import { createMockLogger } from "../test-utils";
 import type { Logger } from "../../services/logger.service";
 import type { RepositoryConfig, SyncOutcome } from "../../types";
 
-// Real git. A locked worktree whose branch diverges with local changes must be
-// left in place as a worktree_locked skip: git refuses to remove it, so moving
-// it aside either strands a locked registration (trash off) or fails every
-// tick (trash on).
 describe("Locked diverged worktrees are skipped, not moved (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -137,7 +133,6 @@ describe("Locked diverged worktrees are skipped, not moved (E2E)", () => {
         );
         expect(outcome.actions.filter((action) => action.kind === "preserved-diverged")).toEqual([]);
 
-        // The worktree is untouched: same commit, still registered and locked.
         expect((await simpleGit(featPath).revparse(["HEAD"])).trim()).toBe(localCommit);
         await expect(fs.readFile(path.join(featPath, "local-only.txt"), "utf8")).resolves.toBe("never pushed");
         const registered = await simpleGit(bareRepoDir).raw(["worktree", "list", "--porcelain"]);

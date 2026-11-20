@@ -103,10 +103,6 @@ describe("WorktreeStatusView", () => {
     cleanup();
   });
 
-  // An async loader that returns [] is a legitimate answer (clone mode before
-  // the first sync, or a repo whose every status probe rejected), not a reason
-  // to ask again: the effect used to re-fire on every commit where the list was
-  // still empty, so the modal spun git spawns and renders until it was closed.
   describe("empty status list", () => {
     const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -129,12 +125,6 @@ describe("WorktreeStatusView", () => {
       expect(lastFrame()).toContain("No worktrees found");
     });
 
-    // The loop the guard is actually for. `App` passes `getWorktreeStatusForRepo`
-    // as an arrow written in its JSX, so the prop -- and with it the
-    // `useCallback` that wraps it and the effect that depends on that -- is a
-    // new identity on every App render, and App re-renders on every log line. A
-    // test that hands the view one stable `vi.fn()` never re-runs the effect at
-    // all and would pass with no guard in place.
     it("loads once although the loader prop is a new function on every render", async () => {
       const load = vi.fn(async (repoIndex: number) => {
         expect(repoIndex).toBe(0);
@@ -158,9 +148,6 @@ describe("WorktreeStatusView", () => {
       expect(lastFrame()).toContain("No worktrees found");
     });
 
-    // The loader runs from an effect, which is a commit later than the
-    // keystroke: without a loading state of its own that first frame says there
-    // are no worktrees, for a repository nothing has looked at yet.
     it("does not flash the empty state between the keypress and the load", async () => {
       const getWorktreeStatusForRepo = vi.fn(async () => {
         await delay(50);
@@ -176,14 +163,9 @@ describe("WorktreeStatusView", () => {
 
       await delay(300);
       expect(frames.some((frame) => frame.includes("No worktrees found"))).toBe(true);
-      // And there it stays: the empty state is the answer, not a sign that the
-      // load has not happened yet.
       expect(getWorktreeStatusForRepo).toHaveBeenCalledTimes(1);
     });
 
-    // Going back to the project list forgets what was loaded, so the same
-    // repository can be opened again and is probed again rather than showing
-    // the list the view cleared on the way out.
     it("loads again when the same repository is picked a second time", async () => {
       const getWorktreeStatusForRepo = vi.fn(async () => {
         await delay(20);
@@ -221,7 +203,6 @@ describe("WorktreeStatusView", () => {
       expect(getWorktreeStatusForRepo).toHaveBeenCalledTimes(1);
       expect(getWorktreeStatusForRepo).toHaveBeenLastCalledWith(0);
 
-      // ESC back to the project list, then pick the second repository.
       stdin.write("\u001B");
       await waitForStateUpdate();
       stdin.write("\u001B[B");
@@ -310,8 +291,6 @@ describe("WorktreeStatusView", () => {
       await waitForStateUpdate();
       expect(lastFrame()).toContain("Size: calculating");
 
-      // What App does on every addLog/setSyncProgress/setDiskSpace event:
-      // same repositories, brand new array identity.
       rerender(
         <WorktreeStatusView
           {...defaultProps}
@@ -372,7 +351,6 @@ describe("WorktreeStatusView", () => {
 
       expect(lastFrame()).toContain("feature/x");
       expect(lastFrame()).toContain("! status unknown");
-      // The row that probed fine still reads as it always did.
       expect(lastFrame()).toContain("main");
       expect(lastFrame()).toContain("✓");
     });
@@ -409,9 +387,6 @@ describe("WorktreeStatusView", () => {
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      // One predicate for the count and for the row. On truthiness the count
-      // said one worktree could not be probed while the row beneath it rendered
-      // ordinary status flags for that same worktree.
       expect(lastFrame()).toContain("1 of 2 worktrees could not be probed");
       expect(lastFrame()).toContain("! status unknown");
     });
@@ -628,10 +603,10 @@ describe("WorktreeStatusView", () => {
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      stdin.write("\u001B[B"); // Navigate to feature/auth
+      stdin.write("\u001B[B");
       await waitForStateUpdate();
 
-      stdin.write("\r"); // Enter to expand
+      stdin.write("\r");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Modified: 2");
@@ -651,11 +626,11 @@ describe("WorktreeStatusView", () => {
       stdin.write("\u001B[B");
       await waitForStateUpdate();
 
-      stdin.write("\r"); // Expand
+      stdin.write("\r");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("Modified: 2");
 
-      stdin.write("\r"); // Collapse
+      stdin.write("\r");
       await waitForStateUpdate();
       expect(lastFrame()).not.toContain("Modified: 2");
     });
@@ -663,11 +638,11 @@ describe("WorktreeStatusView", () => {
     it("should go back to project selection on ESC with multiple repos", async () => {
       const { stdin, lastFrame } = render(<WorktreeStatusView {...defaultProps} />);
 
-      stdin.write("\r"); // Select repo
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      stdin.write("\x1b"); // ESC
+      stdin.write("\x1b");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Select repository");
@@ -807,9 +782,6 @@ describe("WorktreeStatusView", () => {
     });
   });
 
-  // The filter appends any printable input, and Ink hands a mouse report over
-  // as one string. Without the guard a scroll over this view types the escape
-  // sequence into the filter box and hides every entry.
   describe("mouse reports", () => {
     const ESC = String.fromCharCode(27);
 
@@ -890,9 +862,6 @@ describe("WorktreeStatusView", () => {
       expect(lastFrame()).toContain("bugfix/y");
     });
 
-    // The confirmation stays on screen until the delete resolves, so without a
-    // guard every extra keypress fires another delete for the same directory —
-    // each one queuing on the repository lock behind the first.
     it("ignores further keys while a delete is in flight", async () => {
       let resolveDelete: () => void = () => undefined;
       const deleteMock = vi.fn().mockImplementation(
@@ -918,7 +887,7 @@ describe("WorktreeStatusView", () => {
       stdin.write("[B");
       await waitForStateUpdate();
 
-      stdin.write("\u0004"); // Ctrl-D
+      stdin.write("\u0004");
       await waitForStateUpdate();
 
       stdin.write("y");
@@ -931,8 +900,6 @@ describe("WorktreeStatusView", () => {
       await waitForStateUpdate();
       expect(deleteMock).toHaveBeenCalledTimes(1);
 
-      // Escape must not drop the confirmation out from under a running delete
-      // either, or the next `d` would show "Deleting..." on an unrelated entry.
       stdin.write("");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("Deleting");
@@ -955,13 +922,12 @@ describe("WorktreeStatusView", () => {
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      // Navigate to diverged entry
       stdin.write("\u001B[B");
       await waitForStateUpdate();
       stdin.write("\u001B[B");
       await waitForStateUpdate();
 
-      stdin.write("\u0004"); // Ctrl-D
+      stdin.write("\u0004");
       await waitForStateUpdate();
 
       stdin.write("n");
@@ -983,18 +949,14 @@ describe("WorktreeStatusView", () => {
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      // Start on "main", press down twice (should skip separator)
       stdin.write("\u001B[B");
       await waitForStateUpdate();
       stdin.write("\u001B[B");
       await waitForStateUpdate();
 
-      // Should be on the diverged entry, not stuck on separator
       expect(lastFrame()).toContain("Ctrl-D to delete");
     });
 
-    // Index 0 is the separator when no worktree is listed; the selection must
-    // never rest on it or past the end of the list.
     describe("selection never rests on a non-selectable row", () => {
       const singleRepo = [{ index: 0, name: "repo", repoUrl: "https://example.com/repo.git" }];
 
@@ -1052,7 +1014,7 @@ describe("WorktreeStatusView", () => {
           stdin.write("\u001B[B");
           await waitForStateUpdate();
         }
-        stdin.write("\u0004"); // Ctrl-D
+        stdin.write("\u0004");
         await waitForStateUpdate();
         stdin.write("y");
         await waitForStateUpdate();
@@ -1105,8 +1067,6 @@ describe("WorktreeStatusView", () => {
   });
 
   describe("a diverged directory that cannot be deleted", () => {
-    // The failure used to be stored for the ERROR step while the view stayed on
-    // the list, so the confirmation just vanished and nothing said why.
     it("says so on the list it was deleted from", async () => {
       const deleteMock = vi.fn().mockRejectedValue(new Error("permission denied"));
       const { stdin, lastFrame } = render(
@@ -1134,7 +1094,7 @@ describe("WorktreeStatusView", () => {
       await waitForStateUpdate();
       stdin.write("\u001B[B");
       await waitForStateUpdate();
-      stdin.write("\u0004"); // Ctrl-D
+      stdin.write("\u0004");
       await waitForStateUpdate();
       stdin.write("y");
       await waitForStateUpdate();
@@ -1143,12 +1103,10 @@ describe("WorktreeStatusView", () => {
       expect(deleteMock).toHaveBeenCalled();
       const frame = lastFrame() ?? "";
       expect(frame).toContain("Failed to delete 2024-01-15-feature-x-abc123: permission denied");
-      // Still the list, with the entry that was not deleted.
       expect(frame).toContain("Diverged Directories");
       expect(frame).toContain("feature/x");
 
-      // Asking again clears the old failure.
-      stdin.write("\u0004"); // Ctrl-D
+      stdin.write("\u0004");
       await waitForStateUpdate();
       expect(lastFrame()).not.toContain("Failed to delete");
     });
@@ -1181,8 +1139,6 @@ describe("WorktreeStatusView", () => {
     });
   });
 
-  // A load that resolves after the user has gone back and picked another
-  // repository must not replace that repository's list.
   describe("a late load for a repository the user left", () => {
     it("keeps the second repository's rows and deletes from that repository", async () => {
       const divergedFor = (name: string): DivergedDirectoryInfo => ({

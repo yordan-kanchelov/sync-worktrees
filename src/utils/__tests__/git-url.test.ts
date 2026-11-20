@@ -22,18 +22,8 @@ describe("git-url utilities", () => {
     });
   });
 
-  // The validator (which the config loader calls on every `repoUrl`) and the
-  // extractor (which names `.bare/<repo>`) used to be two independent sets of
-  // regexes. They disagreed: `https://host/org/repo.git/` and
-  // `git://host/repo.git` validated and then died in getDefaultBareRepoDir with
-  // "Invalid Git URL format", contradicting the validation that had just
-  // passed, while `deploy@host:org/repo.git` was refused although git takes it.
-  // Both now answer from parseGitUrl, and these tests hold that shut.
   describe("one grammar for isValidGitUrl and extractRepoNameFromUrl", () => {
-    // [url, extracted name, which syntax it is]. Every branch of the grammar
-    // is reached by at least one row.
     const ACCEPTED: Array<[string, string, ParsedGitUrl["kind"]]> = [
-      // https, the shapes that already worked
       ["https://github.com/acme/repo.git", "repo", "scheme"],
       ["https://github.com/acme/repo", "repo", "scheme"],
       ["http://git.example.com/acme/repo.git", "repo", "scheme"],
@@ -41,24 +31,19 @@ describe("git-url utilities", () => {
       ["https://ci-bot:s3cr3t-token@github.com/acme/repo.git", "repo", "scheme"],
       ["https://git.example.com/repo.git", "repo", "scheme"],
       ["https://gitlab.com/group/subgroup/repo.git", "repo", "scheme"],
-      // https with the trailing slash a copy-paste from a browser leaves behind
       ["https://github.com/acme/repo.git/", "repo", "scheme"],
       ["https://github.com/acme/repo/", "repo", "scheme"],
       ["https://github.com/acme/repo.git//", "repo", "scheme"],
-      // git://, which had no branch in the extractor at all
       ["git://git.example.com/repo.git", "repo", "scheme"],
       ["git://git.example.com/acme/repo.git", "repo", "scheme"],
       ["git://git.example.com:9418/acme/repo.git", "repo", "scheme"],
       ["git://git.example.com/acme/repo.git/", "repo", "scheme"],
-      // ssh://
       ["ssh://git@github.com/acme/repo.git", "repo", "scheme"],
       ["ssh://git@git.example.com:2222/acme/repo.git", "repo", "scheme"],
       ["ssh://git@github.com/acme/repo.git/", "repo", "scheme"],
       ["ssh://git.example.com/acme/repo.git", "repo", "scheme"],
-      // RFC 3986 makes the scheme case-insensitive and git agrees
       ["GIT://git.example.com/acme/repo.git", "repo", "scheme"],
       ["HTTPS://github.com/acme/repo.git", "repo", "scheme"],
-      // scp form: the classic, and the non-`git` user self-hosted forges use
       ["git@github.com:acme/repo.git", "repo", "scp"],
       ["git@github.com:acme/repo", "repo", "scp"],
       ["git@gitlab.com:group/subgroup/repo.git", "repo", "scp"],
@@ -68,29 +53,18 @@ describe("git-url utilities", () => {
       ["git@github.com:acme/repo.git/", "repo", "scp"],
       ["git@github.com:/srv/git/repo.git", "repo", "scp"],
       ["git@github.com:~acme/repo.git", "repo", "scp"],
-      // git's bracketed IPv6 literal, which only the scp form spells this way.
-      // A one-segment path is the shape that proves the brackets are really
-      // part of the host: split anywhere else and the name comes out as
-      // "db8::1]:repo", which is what this function used to return.
       ["git@[2001:db8::1]:repo.git", "repo", "scp"],
       ["git@[2001:db8::1]:acme/repo.git", "repo", "scp"],
-      // file:// with an empty authority, and with a host
       ["file:///srv/git/repo.git", "repo", "scheme"],
       ["file:///srv/git/repo", "repo", "scheme"],
       ["file:///srv/git/repo.git/", "repo", "scheme"],
       ["file://nas.example.com/srv/repo.git", "repo", "scheme"],
-      // absolute local paths
       ["/srv/git/repo.git", "repo", "local"],
       ["/srv/git/repo.git/", "repo", "local"],
       ["C:\\srv\\git\\repo.git", "repo", "local"],
       ["C:\\srv\\git\\repo.git\\", "repo", "local"],
     ];
 
-    // Remotes git dials happily that carry no path segment to name a directory
-    // after: a repository published at a web root. `git clone https://host`
-    // clones one, so refusing these would hard-block a working configuration
-    // with no other spelling to move to. They parse, with no name, and only an
-    // entry without an explicit `bareRepoDir` has to care.
     const VALID_WITHOUT_NAME: string[] = [
       "https://github.com",
       "https://github.com/",
@@ -101,13 +75,6 @@ describe("git-url utilities", () => {
       "https://ci-bot:s3cr3t-token@git.example.com",
     ];
 
-    // Refused by the validator *and* by the extractor. The first group is the
-    // reason the validator had to be narrowed as well as widened: each of these
-    // validated before and then had no final path segment to name a directory
-    // after, so the run died later with the message this grammar exists to
-    // prevent. Unlike the http(s) rows above, git cannot use any of them:
-    // `ssh://git@host`, `git://host` and `file://` get "fatal: no path
-    // specified" from git itself, and a path of `/` is not a repository either.
     const REJECTED: string[] = [
       "git://git.example.com",
       "git://git.example.com/",
@@ -122,7 +89,6 @@ describe("git-url utilities", () => {
       "https:///acme/repo.git",
       "/",
       "//",
-      // never accepted, and still not
       "relative/path",
       "not-a-url",
       "",
@@ -130,18 +96,11 @@ describe("git-url utilities", () => {
       "ftp://example.com/acme/repo.git",
       "git+ssh://git@host.example/acme/repo.git",
       "@github.com:acme/repo.git",
-      // an scp form needs a host as well as a user
       "git@:repo.git",
-      // surrounding whitespace: the config file must hold the exact string git
-      // is handed, so a padded repoUrl is refused rather than silently trimmed.
-      // Both ends are listed separately: a guard that checked only one of them
-      // still passes a both-ends-padded row, so only these pin it.
       "  https://github.com/acme/repo.git  ",
       "https://github.com/acme/repo.git ",
       " https://github.com/acme/repo.git",
       "git://git.example.com/ ",
-      // an embedded newline is refused too. This one is a narrowing: the old
-      // extractor matched it and named a directory after it, newline and all.
       "https://github.com/acme/re\npo.git",
       "git@github.com:acme/re\npo.git",
     ];
@@ -161,20 +120,10 @@ describe("git-url utilities", () => {
     it.each(VALID_WITHOUT_NAME.map((url) => [url]))("accepts %j as a remote but derives no name from it", (url) => {
       expect(isValidGitUrl(url)).toBe(true);
       expect(parseGitUrl(url)).toEqual({ kind: "scheme", repoName: null });
-      // The "derive a name" entry point still throws — with its own message,
-      // because calling this URL malformed would be wrong.
       expect(() => extractRepoNameFromUrl(url)).toThrow("has no repository path segment");
       expect(() => extractRepoNameFromUrl(url)).not.toThrow("Invalid Git URL format");
     });
 
-    // The invariant the whole change exists for, asserted over every row above
-    // rather than one shape at a time: nothing the config loader accepts may
-    // fail later for a reason the loader could have seen at validation time. A
-    // URL that validates either names a directory, or is one of the rows the
-    // loader knows to demand an explicit `bareRepoDir` for. The converse holds
-    // too for every URL that is not space-padded — padding is the one
-    // deliberate asymmetry, and it runs the safe way round (refused at load,
-    // never accepted and then dropped later).
     it("never validates a URL that getDefaultBareRepoDir then refuses", () => {
       const disagreements: string[] = [];
       for (const url of [...ACCEPTED.map(([u]) => u), ...REJECTED, ...VALID_WITHOUT_NAME]) {
@@ -195,32 +144,20 @@ describe("git-url utilities", () => {
       expect(disagreements).toEqual([]);
     });
 
-    // `git://host/ ` is the trap: its path is a one-character space segment, so
-    // a grammar that did not refuse surrounding whitespace would validate it
-    // and then find nothing left to name once the extractor trimmed.
     it("refuses a padded URL rather than validating one name and extracting another", () => {
       expect(isValidGitUrl("git://git.example.com/ ")).toBe(false);
       expect(() => extractRepoNameFromUrl("git://git.example.com/ ")).toThrow("Invalid Git URL format");
       expect(isValidGitUrl("  https://github.com/acme/repo.git  ")).toBe(false);
-      // The extractor still trims, because the init wizard calls it with raw
-      // keystrokes before its own answer is trimmed and stored.
       expect(extractRepoNameFromUrl("  https://github.com/acme/repo.git  ")).toBe("repo");
     });
 
     it("tells the scp form apart from ssh:// URLs and from Windows paths", () => {
-      // `://` is checked first, and the scp user/host classes exclude `/` and
-      // `:`, so an ssh:// URL can never be read as scp.
       expect(parseGitUrl("ssh://git@github.com/acme/repo.git")?.kind).toBe("scheme");
-      // A Windows path has no `user@`, which the scp form requires.
       expect(parseGitUrl("C:\\repos\\repo.git")?.kind).toBe("local");
       expect(parseGitUrl("deploy@git.example.com:team/repo.git")?.kind).toBe("scp");
-      // Unchanged: a drive letter with forward slashes was refused by both
-      // functions before this grammar and is still refused by it.
       expect(isValidGitUrl("C:/repos/repo.git")).toBe(false);
     });
 
-    // Names that change move an existing user's .bare/<name> and force a
-    // re-clone, so the odd corners keep the names they always had.
     it("keeps the names the extractor already produced for its odd corners", () => {
       expect(extractRepoNameFromUrl("https://h/o/.git")).toBe(".git");
       expect(extractRepoNameFromUrl("/srv/project/.git")).toBe("");
@@ -232,8 +169,6 @@ describe("git-url utilities", () => {
       expect(extractRepoNameFromUrl("git@h:.")).toBe(".");
     });
 
-    // Widening the grammar must not widen what reaches a log. These are the
-    // newly-accepted shapes, carrying a real token.
     it("still redacts credentials in every newly-accepted shape", () => {
       expect(redactRepoUrl("git://ci-bot:s3cr3t-token@git.example.com/acme/repo.git")).toBe(
         "git://***@git.example.com/acme/repo.git",
@@ -247,10 +182,7 @@ describe("git-url utilities", () => {
       expect(redactSecretsInText("fatal: unable to access 'git://ci-bot:s3cr3t-token@h/acme/repo.git/': 403")).toBe(
         "fatal: unable to access 'git://***@h/acme/repo.git/': 403",
       );
-      // scp form carries no password field; a username is not a secret, and it
-      // was returned unchanged before this grammar accepted a non-`git` one.
       expect(redactRepoUrl("deploy@git.example.com:team/repo.git")).toBe("deploy@git.example.com:team/repo.git");
-      // And the error the extractor throws is still scrubbed.
       expect(() => extractRepoNameFromUrl("git://ci-bot:s3cr3t-token@git.example.com")).toThrow(
         "Invalid Git URL format: git://***@git.example.com",
       );
@@ -387,9 +319,6 @@ describe("git-url utilities", () => {
   });
 
   describe("extractRepoNameFromUrl error messages", () => {
-    // Both ways this can fail carry the URL into the message, so both have to
-    // redact. `https://user:token@example.com` is a remote git dials, it just
-    // has no name in it, so it takes the second message rather than the first.
     it("redacts credentials from the invalid-URL error", () => {
       expect(() => extractRepoNameFromUrl("git+ssh://ci-bot:s3cr3t-token@example.com/r.git")).toThrow(
         "Invalid Git URL format: git+ssh://***@example.com/r.git",

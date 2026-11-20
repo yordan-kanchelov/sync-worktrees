@@ -16,39 +16,17 @@ import type { GitService } from "./git.service";
 
 export type RepoLockRelease = () => Promise<void>;
 
-// `locked` is contention (proper-lockfile's ELOCKED: another process holds the
-// lock) and a clean skip. `lock_unavailable` is everything else — the lock
-// directory or file could not be prepared or locked — and must surface as a
-// failure with its cause, never as "another process holds the lock".
 export type RepoLockAcquireResult =
   | { acquired: true; release: RepoLockRelease }
   | { acquired: false; reason: "locked" }
   | ({ acquired: false } & RepoLockUnavailable);
 
 export interface RepoLockAcquireOptions {
-  /**
-   * How long to keep retrying a lock another process already holds, in
-   * milliseconds. 0 (the default) keeps the fail-fast behaviour every periodic
-   * caller depends on: a cron tick that cannot take the lock is a clean skip,
-   * because whoever holds it is doing the same work.
-   *
-   * A non-zero budget is for the opposite case — an explicit, one-shot user
-   * command (a trash restore or purge) where "the daemon is mid-sync" is not a
-   * reason to give up. It is a BUDGET, not "wait for it": the window is an
-   * absolute deadline shared by both locks a worktree-mode repo takes, so the
-   * whole acquire is bounded by it however the time is spent, and a scripted
-   * or non-interactive run always terminates.
-   */
   waitMs?: number;
 }
 
-// Fixed-interval retry rather than proper-lockfile's exponential default, so
-// the budget above is the wall clock a caller can quote to a user.
 const LOCK_RETRY_INTERVAL_MS = 1000;
 
-// `retries: 0` — the literal proper-lockfile default — for every caller without
-// a budget, so the no-wait path is byte-for-byte what it has always been and
-// stays a single failed attempt rather than a retry loop with a zero count.
 function retriesUntil(
   deadline: number,
 ): number | { retries: number; factor: number; minTimeout: number; maxTimeout: number } {
@@ -78,8 +56,6 @@ export class RepoOperationLock {
       return { acquired: true, release: async () => {} };
     }
 
-    // An absolute deadline, resolved once here: worktree mode takes two locks
-    // one after the other, and a per-lock budget would double the worst case.
     const waitMs = options.waitMs ?? 0;
     const deadline = waitMs > 0 ? Date.now() + waitMs : 0;
 
@@ -116,11 +92,6 @@ export class RepoOperationLock {
     const bare = await this.lockPath(barePath, deadline);
     if (!bare.acquired) return bare;
 
-    // The bare-repo lock alone does not serialize what this lock exists to
-    // protect: every destructive operation happens under worktreeDir, and the
-    // default bare path is derived per config file, so two configs can point
-    // different bare repos at the same worktreeDir and both hold "their" bare
-    // lock. Hold the worktreeDir-keyed lock as well.
     const worktreeDir = await this.acquireWorktreeDirLock(deadline);
     if (!worktreeDir.acquired) {
       try {
@@ -152,11 +123,6 @@ export class RepoOperationLock {
         update: DEFAULT_CONFIG.LOCK_UPDATE_MS,
         retries: retriesUntil(deadline),
         realpath: false,
-        // proper-lockfile's default onCompromised throws from inside its
-        // refresh timer — uncatchable by any caller, so it would take down
-        // the whole multi-repo process mid-operation. Losing the lock only
-        // means another process may start concurrently, the lesser harm:
-        // finish the in-flight operation and say so.
         onCompromised: (compromiseError: Error): void => {
           this.logger.warn(
             `Repo lock at '${lockTarget}' was compromised (${getErrorMessage(compromiseError)}); ` +
@@ -169,16 +135,10 @@ export class RepoOperationLock {
       if ((error as NodeJS.ErrnoException).code === "ELOCKED") {
         return { acquired: false, reason: "locked" };
       }
-      // EACCES/EROFS/EPERM surfaced at lock time rather than during prep.
       return this.unavailable("acquire the repo lock", lockTarget, error);
     }
   }
 
-  // A lock this process cannot take (read-only FS, ENOSPC, EACCES, a lock
-  // dir that is a file) must never crash the whole multi-repo run, but it is
-  // not contention either: nothing was synced and no other process is
-  // responsible. Name the path and errno here, where the cause is known, and
-  // hand the caller a typed reason so it reports a failure, not a skip.
   private unavailable(what: string, lockPath: string, error: unknown): RepoLockAcquireResult {
     const code = (error as NodeJS.ErrnoException).code;
     const message = getErrorMessage(error);

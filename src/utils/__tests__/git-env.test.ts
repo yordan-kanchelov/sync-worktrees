@@ -20,13 +20,6 @@ describe("sanitizeGitEnv", () => {
     expect(env).not.toHaveProperty("GIT_SEQUENCE_EDITOR");
   });
 
-  // simple-git only sets the child's cwd, so each of these outranks the
-  // baseDir a client was built with: the eight that redirect point git at
-  // another repository, working tree, index or object store, and the two that
-  // bound discovery can take the checkout away entirely. git hands GIT_DIR and
-  // GIT_INDEX_FILE to some of its own hooks (see GIT_REPOSITORY_SELECTION_VARS
-  // in ../git-env for which), so a sync-worktrees run started from one inherits
-  // them without anybody exporting anything.
   it("strips every repository-selection variable", () => {
     const env = sanitizeGitEnv({
       ...base,
@@ -48,9 +41,6 @@ describe("sanitizeGitEnv", () => {
     expect(env).toMatchObject(base);
   });
 
-  // The other half of the same decision: what reaches git has to keep
-  // authenticating, finding git, and reading the configuration the caller
-  // chose for whichever repository we picked.
   it("keeps the authentication, discovery-independent and config-content variables", () => {
     const env = sanitizeGitEnv({
       ...base,
@@ -109,8 +99,6 @@ describe("sanitizeGitEnv", () => {
     expect(input).toEqual({ ...base, GIT_DIR: "/elsewhere/.git" });
   });
 
-  // git prompts for credentials on /dev/tty whenever a terminal is attached,
-  // regardless of stdio pipes; in the TUI that prompt can never be answered.
   it("disables git's terminal credential prompt", () => {
     expect(sanitizeGitEnv(base).GIT_TERMINAL_PROMPT).toBe("0");
   });
@@ -120,9 +108,6 @@ describe("sanitizeGitEnv", () => {
     expect(sanitizeGitEnv({ ...base, GIT_TERMINAL_PROMPT: "" }).GIT_TERMINAL_PROMPT).toBe("");
   });
 
-  // git gives GIT_SSH_COMMAND precedence over the core.sshCommand config key,
-  // so no ssh command may be injected here: it would silently replace a
-  // user's configured one (includeIf keys, `ssh -i work_key`, agent wrappers).
   it("never adds an ssh command of its own", () => {
     const env = sanitizeGitEnv(base);
 
@@ -145,9 +130,6 @@ describe("sanitizeGitEnv", () => {
 });
 
 describe("GIT_UNSAFE_ALLOWANCES", () => {
-  // One entry per environment variable @simple-git/argv-parser maps to an
-  // allowance (plus credential.helper through GIT_CONFIG_KEY_n). A forwarded
-  // shell environment must never make a git call throw.
   it("covers every environment variable simple-git validates", () => {
     expect(GIT_UNSAFE_ALLOWANCES).toEqual({
       allowUnsafeAskPass: true,
@@ -168,9 +150,6 @@ describe("GIT_UNSAFE_ALLOWANCES", () => {
 });
 
 describe("GIT_REPOSITORY_SELECTION_VARS", () => {
-  // Spelled out rather than derived, so adding or dropping one is a deliberate
-  // edit with a reason: each entry is a variable git reads instead of the
-  // directory a command runs in, and everything else git honours stays.
   it("is git's repository-selection set and nothing else", () => {
     expect([...GIT_REPOSITORY_SELECTION_VARS]).toEqual([
       "GIT_DIR",
@@ -203,8 +182,6 @@ describe("stripGitRepositorySelection", () => {
     expect(stripped).toEqual({ PATH: "/usr/bin", EDITOR: "vim" });
   });
 
-  // Unlike sanitizeGitEnv this one is also used for the user's hook commands,
-  // where an editor, a pager and a terminal prompt are all legitimate.
   it("adds nothing of its own", () => {
     expect(stripGitRepositorySelection({ PATH: "/usr/bin" })).toEqual({ PATH: "/usr/bin" });
   });
@@ -227,8 +204,6 @@ describe("sshNoPromptEnv", () => {
     expect(sshNoPromptEnv(url, { PATH: "/usr/bin" }, "darwin")).toEqual(NO_PROMPT);
   });
 
-  // git itself reads SSH_ASKPASS for HTTPS credentials, so setting it there
-  // would only put an askpass error in front of "terminal prompts disabled".
   it.each(["https://github.com/org/repo.git", "http://127.0.0.1:8080/r.git", "/srv/repo.git", "file:///srv/r"])(
     "adds nothing for a repository not reached over ssh (%s)",
     (url) => {
@@ -236,8 +211,6 @@ describe("sshNoPromptEnv", () => {
     },
   );
 
-  // Neither variable names an ssh command: whatever core.sshCommand,
-  // GIT_SSH_COMMAND or GIT_SSH says is still what runs.
   it("never sets an ssh command", () => {
     const env = sshNoPromptEnv(SSH_URLS[0], { GIT_SSH_COMMAND: "ssh -i ~/.ssh/work_key" }, "linux");
 

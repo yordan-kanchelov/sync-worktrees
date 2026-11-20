@@ -6,9 +6,6 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-// An interrupted diverged replacement reserves its original path for restore.
-// Once replacement creation is recorded, removing that replacement later must
-// not re-arm the reservation and leave the branch permanently unsynced.
 describe("Diverged branch reservation E2E test", () => {
   let tempDir: string;
   let bareRepo: string;
@@ -79,7 +76,6 @@ describe("Diverged branch reservation E2E test", () => {
     expect(featureDir).toBeDefined();
     const featurePath = path.join(worktreeDir, featureDir!);
 
-    // Diverge: an unpushed local commit here, a rewritten history upstream.
     const wt = simpleGit(featurePath);
     await wt.addConfig("user.name", "Test User");
     await wt.addConfig("user.email", "test@example.com");
@@ -110,11 +106,8 @@ describe("Diverged branch reservation E2E test", () => {
     const divergedEntry = trashEntries.find(({ manifest }) => manifest.reason === "diverged-replace");
     expect(divergedEntry).toBeDefined();
     expect(divergedEntry!.manifest.replacedAt).toEqual(expect.any(String));
-    // A fresh worktree took the original path back.
     await expect(fs.readFile(path.join(featurePath, "feature-1.txt"), "utf8")).resolves.toBe("upstream v2");
 
-    // The user drops the fresh worktree themselves — cleanly, so git keeps no
-    // stale registration and the original path is genuinely free again.
     await simpleGit(bareRepoDir).raw(["worktree", "remove", "--force", featurePath]);
     await expect(fs.access(featurePath)).rejects.toThrow();
 

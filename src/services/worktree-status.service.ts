@@ -41,15 +41,9 @@ export interface WorktreeStatusResult {
   hasOperationInProgress: boolean;
   hasModifiedSubmodules: boolean;
   upstreamGone: boolean;
-  // True when commits look unpushed only because the upstream ref was deleted
-  // (squash-merge + branch deletion): metadata recorded the upstream tip while
-  // it existed, that ref is now gone, and HEAD is an ancestor of (or equal to)
-  // the recorded tip — so every local commit was on the remote at some point.
   fullyPushedUpstreamDeleted: boolean;
   canRemove: boolean;
   reasons: string[];
-  // Commits HEAD has that @{upstream} lacks and the other way round. null when
-  // there is no upstream ref to compare against — see getFullWorktreeStatus.
   divergence: { ahead: number; behind: number } | null;
   details?: WorktreeStatusDetails;
 }
@@ -63,20 +57,6 @@ const OPERATION_FILES: ReadonlyArray<{ file: string; type: string }> = [
   { file: GIT_OPERATIONS.REBASE_APPLY, type: "rebase (apply)" },
 ];
 
-// `git submodule status` prints one line per submodule: a single status
-// character in column 0, the recorded object id, the path, and — only for an
-// initialized submodule — a " (<describe>)" suffix.
-//
-//   " " in sync   "-" not initialized   "+" commit differs   "U" merge conflicts
-//
-// Only "+" and "U" mean the worktree holds submodule state that could be lost.
-// "-" is the state every tool-created worktree starts in, because `git worktree
-// add` never initializes submodules; counting it as modified made every
-// worktree of a repo with submodules permanently un-prunable.
-//
-// A submodule path can contain spaces, so the path is everything after the
-// object id minus the describe suffix — not the first \S+ run (which used to
-// hand callers the object id itself).
 const SUBMODULE_STATUS_LINE = /^(.)(\S+)[ \t]+(.+)$/;
 const SUBMODULE_DESCRIBE_SUFFIX = /[ \t]+\([^()]*\)$/;
 
@@ -101,15 +81,6 @@ function collectModifiedSubmodules(submoduleStatus: string): string[] {
   return modified;
 }
 
-// refs/stash lives in the common git dir, so `git stash list` in any worktree
-// lists the stashes of every worktree of the repository. Each entry is
-// attributed back to the worktree it was made in, or one stash anywhere would
-// block every prune and diverged replace and label every worktree dirty.
-//
-// `git stash` writes the reflog subject "WIP on <branch>: ..." or
-// "On <branch>: <message>", with "(no branch)" for a detached HEAD. A refname
-// can contain neither ':' nor whitespace, so the name up to the first ':' is
-// exact even when the user's own message contains colons.
 const STASH_LIST_FORMAT = { hash: "%H", parents: "%P", subject: "%gs" } as const;
 const STASH_SUBJECT_BRANCH = /^(?:WIP on|On) ([^\s:]+):/;
 
@@ -119,32 +90,16 @@ interface StashEntry {
   subject: string;
 }
 
-/** The branch a stash was made on, or null when its subject does not name one. */
 export function stashSubjectBranch(subject: string): string | null {
   const match = STASH_SUBJECT_BRANCH.exec(subject);
   return match ? match[1] : null;
 }
 
-// Structural, not simple-git's type: RefScanScope is in the public typings.
 interface StashListing {
   readonly total: number;
   readonly all: ReadonlyArray<unknown>;
 }
 
-// Every local branch and remote-tracking ref of a repository, from one
-// `for-each-ref`. refs/heads and refs/remotes live in the common git dir, so
-// the answer is the same from every worktree: a caller probing many worktrees
-// of one repository shares a single scan through a RefScanScope instead of
-// each snapshot listing them again.
-//
-// %(upstream) is the full ref a branch tracks, derived from its
-// branch.<name>.remote/merge config -- refs/remotes/<remote>/<b> for a remote,
-// refs/heads/<b> for `remote = .` -- and it is printed whether or not that ref
-// still exists. That is what tells a pruned upstream (configured, absent) from
-// no upstream at all, which `rev-parse <b>@{upstream}` cannot: it fails the
-// same way for both. Only names are read, never objects: a %(objecttype) would
-// make one ref pointing at a missing object fail the whole scan. Fields are
-// NUL-separated because a refname can hold neither NUL nor newline.
 const REF_SCAN_ARGS = [
   "for-each-ref",
   "--format=%(refname)%00%(upstream)%00%(symref)",
@@ -153,11 +108,8 @@ const REF_SCAN_ARGS = [
 ];
 const REMOTE_TRACKING_PREFIX = "refs/remotes/";
 
-// Past this many changed paths a skip reason counts them instead of naming them.
 const MAX_NAMED_UNCOMMITTED_PATHS = 3;
 
-// simple-git buckets only some porcelain codes: a type change (` T`, `T `) or a
-// mixed state (`MD`, `AD`) is in `files` alone, so cleanliness is read from it.
 export function unbucketedTrackedPaths(status: StatusResult): string[] {
   const bucketed = new Set([
     ...status.modified,
@@ -181,11 +133,8 @@ function hasTrackedChanges(status: StatusResult): boolean {
 }
 
 export interface RefScan {
-  /** Full names of every branch and remote-tracking ref, symrefs excluded. */
   refs: ReadonlySet<string>;
-  /** Whether any remote-tracking ref exists at all. */
   hasRemoteRefs: boolean;
-  /** Each local branch's full upstream ref by branch name; "" when it tracks nothing. */
   upstreams: ReadonlyMap<string, string>;
 }
 
@@ -195,7 +144,6 @@ export function parseRefScan(raw: string): RefScan {
   let hasRemoteRefs = false;
   for (const line of raw.split("\n")) {
     const [ref, upstream = "", symref = ""] = line.split("\0");
-    // A symref (refs/remotes/origin/HEAD) is an alias, not a branch.
     if (!ref || symref) continue;
     refs.add(ref);
     if (ref.startsWith(GIT_CONSTANTS.REFS.HEADS)) {
@@ -207,24 +155,14 @@ export function parseRefScan(raw: string): RefScan {
   return { refs, hasRemoteRefs, upstreams };
 }
 
-/**
- * Shares one ref scan per repository between every status snapshot taken
- * with it. Create one per pass over a set of worktrees (a sync tick's prune
- * checks, one listing) and drop it afterwards: the scan is a point-in-time
- * read, so a decision that must see the refs as they are now -- the re-check
- * right before a removal -- takes a snapshot without one.
- */
 export class RefScanScope {
   private readonly scans = new Map<string, Promise<RefScan | null>>();
-  // refs/stash lives in the common git dir too: one listing per repository.
   private readonly stashes = new Map<string, Promise<StashListing | null>>();
 
-  /** The scan already started for this common git dir, or `scan()`'s. */
   share(commonDir: string, scan: () => Promise<RefScan | null>): Promise<RefScan | null> {
     return shareOnce(this.scans, commonDir, scan);
   }
 
-  /** The stash listing already started for this common git dir, or `list()`'s. */
   shareStashes(commonDir: string, list: () => Promise<StashListing | null>): Promise<StashListing | null> {
     return shareOnce(this.stashes, commonDir, list);
   }
@@ -239,30 +177,18 @@ function shareOnce<T>(cache: Map<string, Promise<T>>, key: string, start: () => 
   return pending;
 }
 
-// What a snapshot knows about the checked-out branch's upstream:
-//   none     no upstream configured, or no branch checked out
-//   present  the upstream ref exists
-//   gone     an upstream is configured and its ref does not exist
-//   unknown  the ref scan failed, or does not know this branch
 type UpstreamState = "none" | "present" | "gone" | "unknown";
 
 interface WorktreeSnapshot {
   status: Awaited<ReturnType<SimpleGit["status"]>> | null;
   currentBranch: string | null;
   detached: boolean;
-  // A plain detached HEAD: detached with no rebase or bisect in progress (and
-  // the operation probe answered). Only then is the unpushed gate waived; a
-  // paused rebase also reads as detached but sits on the branch's own commits.
   plainDetached: boolean;
   upstream: UpstreamState;
-  // lastKnownRemoteTip's ref is verifiably absent from a scan that saw
-  // remote-tracking refs (none at all may mean a failed fetch: fail closed).
   recordedRefGone: boolean;
   unpushedAnyRemoteCount: number | null;
   sinceSyncCount: number | null;
   sinceSyncChecked: boolean;
-  // null = no recorded tip to check against; false also covers probe errors
-  // (e.g. the recorded oid was gc'd away), which must read as "not proven".
   headPushedToRecordedTip: boolean | null;
   stashTotal: number | null;
   submoduleStatus: string | null;
@@ -273,41 +199,20 @@ interface WorktreeSnapshot {
 }
 
 export interface FullWorktreeStatusOptions {
-  /** HEAD as of the last sync; commits made since then count as unpushed. */
   lastSyncCommit?: string;
-  /** The upstream ref and tip recorded while it existed (squash-merge override). */
   lastKnownRemoteTip?: LastKnownRemoteTip;
-  /** Shares one ref scan between every worktree probed with it in one pass. */
   refScans?: RefScanScope;
 }
 
 export interface WorktreeStatusServiceConfig {
   skipLfs?: boolean;
-  /**
-   * Ceiling on the git processes this service has running at once, across every
-   * worktree it is asked about. Defaults to `maxStatusChecks`.
-   */
   maxConcurrentGitProcesses?: number;
-  /** Extra environment for every git command this service runs (GitService's read-only mode). */
   extraEnv?: Readonly<Record<string, string | undefined>>;
 }
 
 export class WorktreeStatusService {
   private gitInstances = new GitClientCache();
   private logger: Logger;
-  // One budget for every git process this service spawns, shared by all
-  // worktrees. A single snapshot fans out to four commands at once, and the
-  // prune phase asks for `maxStatusChecks` snapshots in parallel — so without a
-  // shared ceiling that setting bounded worktrees rather than processes and the
-  // real peak was a multiple of what the user configured. A slot is held around a
-  // single git command only, never around a helper that runs more of them, so
-  // the budget can never wait on itself.
-  //
-  // The trade: these clients carry no inactivity timeout (see createGitInstance),
-  // so a git command that hangs now holds a shared slot instead of delaying only
-  // its own worktree, and `maxStatusChecks` hung commands stall every remaining
-  // probe. Giving status clients a block timeout is the fix, and a change with
-  // its own risk — `git status` is legitimately silent on a large worktree.
   private readonly gitBudget: LimitFunction;
 
   constructor(
@@ -324,28 +229,16 @@ export class WorktreeStatusService {
     this.logger = logger;
   }
 
-  /** Runs one git command against the shared process budget. */
   private runGit<T>(command: () => Promise<T>): Promise<T> {
     return this.gitBudget(command);
   }
 
-  // Only gates fast-forwards, which never touch a submodule's working tree, so
-  // the repository's own `submodule.<name>.ignore` is respected here. Forcing
-  // `--ignore-submodules=none` would override the standard way repos keep
-  // vendored build output from dirtying the superproject, and a worktree that
-  // reads as permanently dirty silently stops updating. Removal is the decision
-  // that must not be fooled by a quiet submodule — see getFullWorktreeStatus.
   async checkWorktreeStatus(worktreePath: string): Promise<boolean> {
     const worktreeGit = this.createGitInstance(worktreePath);
     const status = await this.runGit(() => worktreeGit.status());
 
     if (hasTrackedChanges(status)) return false;
 
-    // `status.not_added` is already the untracked-and-not-ignored list: git
-    // only writes a path to a `??` line when no exclude rule matched it, and
-    // even `--ignored` (which nothing here passes) reports ignored paths on
-    // separate `!!` lines that simple-git parses into `status.ignored`. See
-    // untracked-ignored-status.e2e.test.ts.
     return status.not_added.length === 0;
   }
 
@@ -369,8 +262,6 @@ export class WorktreeStatusService {
         divergence: null,
       };
     }
-    // A failed probe (EMFILE/EINTR under load) is indistinguishable from a live
-    // worktree — never report it as removable.
     if (pathProbe === "unknown") {
       return {
         isClean: false,
@@ -390,44 +281,15 @@ export class WorktreeStatusService {
 
     const isClean = this.deriveIsClean(snap);
 
-    // Ahead/behind against @{upstream}, read off the `## <branch>...<upstream>
-    // [ahead N, behind M]` header `git status -b` already printed. It is the
-    // same symmetric-difference count `rev-list --left-right --count
-    // HEAD...@{upstream}` answers with, so no rev-list is spawned for it.
-    //
-    // Reported only when the upstream ref exists. For a pruned upstream `git
-    // status` still prints its name with `[gone]`, which simple-git parses as
-    // 0/0, and a fabricated 0/0 reads as "in sync" to every caller -- null is
-    // "cannot say". The ref scan (see RefScan) knows which upstream is
-    // configured and whether its ref exists, for a remote-tracking upstream
-    // and a local-branch one (`branch.<b>.remote = .`) alike. Checked against
-    // real git on: in sync, ahead, behind, diverged, a local branch as
-    // upstream, no upstream, a pruned upstream and a deleted local upstream;
-    // see worktree-divergence.e2e.test.ts.
-    //
-    // Where the upstream ref exists but its object does not (a ref left
-    // pointing at a missing oid) the scan, which reads names only, reports it
-    // present while `git status` cannot compare and prints `[gone]`: that
-    // corrupt state reads as 0/0. Telling it apart would need a process that
-    // reads the object, per worktree (FU-T101-5).
     const divergence =
       snap.status !== null && snap.upstream === "present"
         ? { ahead: snap.status.ahead, behind: snap.status.behind }
         : null;
 
-    // Removal requires BOTH unpushed checks to pass independently: commits
-    // missing from every remote AND commits made since the last sync. Relying
-    // on lastSyncCommit alone hides unpushed work when metadata records HEAD.
-    // lastSyncCommit only moves when this tool creates or fast-forwards the
-    // worktree, so commits pushed (or pulled) from inside it would count
-    // forever; they are waived only once HEAD is on its own existing upstream.
     const anyRemoteUnpushed = (snap.unpushedAnyRemoteCount ?? 1) > 0;
     const headOnUpstream = divergence !== null && divergence.ahead === 0;
     const sinceSyncUnpushed = snap.sinceSyncChecked && (snap.sinceSyncCount ?? 1) > 0 && !headOnUpstream;
     const hasUnpushedCommits = !snap.plainDetached && (anyRemoteUnpushed || sinceSyncUnpushed);
-    // "Unpushed" override for squash-merge + branch deletion: only when the
-    // recorded upstream ref is verifiably gone (see recordedRefGone) AND HEAD
-    // is an ancestor of the tip recorded while the ref still existed.
     const fullyPushedUpstreamDeleted =
       hasUnpushedCommits && snap.recordedRefGone && snap.headPushedToRecordedTip === true;
     const hasStashedChanges = snap.stashTotal === null ? true : snap.stashTotal > 0;
@@ -443,8 +305,6 @@ export class WorktreeStatusService {
     if (hasOperationInProgress) reasons.push("operation in progress");
     if (hasModifiedSubmodules) reasons.push("modified submodules");
     if (upstreamGone) reasons.push("upstream gone");
-    // A detached HEAD may sit on commits unreachable from any ref; this tool
-    // only manages branch-tracking worktrees, so never auto-remove one.
     if (snap.detached) reasons.push("detached HEAD");
 
     const canRemove =
@@ -472,12 +332,6 @@ export class WorktreeStatusService {
     };
   }
 
-  // Per worktree: `status`, `submodule status` and the unpushed-commit
-  // rev-lists; `stash list` is per repository in a RefScanScope pass. The checked-out branch and whether HEAD is
-  // detached come off the `## ` header `status -b` prints anyway, and what the
-  // branch tracks and whether that ref still exists come from the
-  // repository-wide ref scan, so no `git branch`, `branch -r` or `rev-parse
-  // @{upstream}` is spawned per worktree.
   private async collectSnapshot(
     worktreePath: string,
     lastSyncCommit?: string,
@@ -487,7 +341,6 @@ export class WorktreeStatusService {
     const git = this.createGitInstance(worktreePath);
 
     const gitDirProbe = this.resolveGitDir(worktreePath);
-    // Keys the scope's per-repository reads; null runs them unshared.
     const commonDirProbe = refScans
       ? gitDirProbe.then((gitDir) => this.resolveCommonDir(gitDir)).catch(() => null)
       : Promise.resolve(null);
@@ -515,11 +368,6 @@ export class WorktreeStatusService {
       }),
     ]);
 
-    // `## HEAD (no branch)` -- a detached HEAD, and also a rebase or bisect in
-    // progress -- is the one header simple-git reports as detached. A failed
-    // status leaves the branch unknown: not detached (which would waive the
-    // unpushed-commit gate), and with no branch to run the unpushed probes
-    // for, so it reports unpushed commits (fail closed).
     const detached = status?.detached ?? false;
     const currentBranch = status && !detached ? status.current || null : null;
 
@@ -530,10 +378,6 @@ export class WorktreeStatusService {
       refScan.hasRemoteRefs &&
       !refScan.refs.has(`${REMOTE_TRACKING_PREFIX}${lastKnownRemoteTip.ref}`);
 
-    // A rebase or bisect in progress also prints `## HEAD (no branch)`, so it
-    // reads as detached; its HEAD is the branch being worked on, replayed or
-    // not, and must not waive the unpushed gate. An unanswered operation probe
-    // counts as one in progress (fail closed).
     const operationProbe = gitDirResult ? await this.detectOperationFile(gitDirResult) : { file: null, unknown: false };
     const operationRunning = gitDirResult === null || operationProbe.file !== null || operationProbe.unknown;
     const plainDetached = detached && !operationRunning;
@@ -541,20 +385,11 @@ export class WorktreeStatusService {
     let unpushedAnyRemoteCount: number | null = null;
     let sinceSyncCount: number | null = null;
     let headPushedToRecordedTip: boolean | null = null;
-    // The probes below all ask about HEAD, so they run for a checked-out branch
-    // and for a detached HEAD mid-operation alike.
     if (currentBranch || (detached && !plainDetached)) {
       const countSince = (oid: string): Promise<string> =>
         this.runGit(() => git.raw(["rev-list", "--count", `${oid}..HEAD`]));
       const sinceSyncProbe = lastSyncCommit ? countSince(lastSyncCommit) : null;
       const [anyRemoteResult, sinceSyncResult, recordedTipResult] = await Promise.all([
-        // HEAD, never the short branch name: git resolves a bare name through
-        // refs/tags/<name> before refs/heads/<name>, so a tag sharing the
-        // branch's name (`git checkout -b 1.4.2 1.4.2`) answers for the tag —
-        // with nothing but `warning: refname '<name>' is ambiguous.` on stderr
-        // and exit 0 — and local-only commits count as zero, which would let
-        // the prune pipeline remove the worktree. HEAD is the checked-out
-        // branch's tip, or where a paused rebase or bisect has it.
         this.runGit(() => git.raw(["rev-list", "--count", "HEAD", "--not", "--remotes"])).then(
           (raw) => ({ ok: true as const, value: raw }),
           (error: unknown) => ({ ok: false as const, error }),
@@ -565,14 +400,6 @@ export class WorktreeStatusService {
               (error: unknown) => ({ ok: false as const, error }),
             )
           : Promise.resolve(null),
-        // Zero commits in <tip>..HEAD ⟺ HEAD is the recorded tip or behind it.
-        // NOT merge-base --is-ancestor: simple-git resolves its silent exit-1
-        // ("not an ancestor") as success because nothing is written to stderr.
-        // Any failure (e.g. the recorded oid was gc'd) reads as "not proven".
-        // Only asked when the answer can matter: the proof is consulted only
-        // once the recorded ref is gone, and while it exists the ordinary
-        // unpushed check already covers the branch.
-        // The same range as the since-sync count in the usual prune case.
         lastKnownRemoteTip && recordedRefGone
           ? (sinceSyncProbe && lastKnownRemoteTip.oid === lastSyncCommit
               ? sinceSyncProbe
@@ -601,14 +428,9 @@ export class WorktreeStatusService {
       }
     }
 
-    // A failed status leaves the checked-out branch unknown (undefined), which
-    // counts every stash that names a branch; so does a rebase or bisect in
-    // progress, whose HEAD is detached while the stashes made before it name
-    // the branch being worked on. A plain detached HEAD is null.
     const stashBranch = status === null || (detached && operationRunning) ? undefined : currentBranch;
     const stashTotal = stashResult ? await this.countOwnStashes(git, stashResult, stashBranch) : null;
 
-    // Untracked-and-not-ignored straight from status — see checkWorktreeStatus.
     const untrackedNotIgnored = status?.not_added ?? [];
 
     return {
@@ -631,30 +453,16 @@ export class WorktreeStatusService {
     };
   }
 
-  // Resolves FU-T101-1 and FU-T101-2: the upstream is the full ref the scan
-  // derived from branch.<b>.remote/merge, so a branch tracking a local branch
-  // is judged against refs/heads (not against remote-tracking refs it can
-  // never be among), and a pruned upstream still has a name to be missing.
   private upstreamState(scan: RefScan | null, branch: string | null): UpstreamState {
     if (branch === null) return "none";
-    // No scan, or a branch it has never heard of (unborn, or created since
-    // the scan): nothing to judge by.
     const upstreamRef = scan?.upstreams.get(branch);
     if (scan === null || upstreamRef === undefined) return "unknown";
     if (upstreamRef === "") return "none";
     if (scan.refs.has(upstreamRef)) return "present";
-    // No remote-tracking refs at all may be a failed fetch rather than a
-    // deletion: do not call a remote upstream gone on that (fail closed).
     if (upstreamRef.startsWith(REMOTE_TRACKING_PREFIX) && !scan.hasRemoteRefs) return "unknown";
     return "gone";
   }
 
-  /**
-   * The ref scan for this worktree's repository: shared through `refScans`
-   * when one is given, keyed by the common git dir so two worktrees of the
-   * same repository share it and two repositories never do. Without a scope,
-   * or when the common dir cannot be read, the snapshot scans on its own.
-   */
   private async scanRefsFor(
     git: SimpleGit,
     commonDirProbe: Promise<string | null>,
@@ -672,8 +480,6 @@ export class WorktreeStatusService {
     });
   }
 
-  // A linked worktree's git dir names the shared one in its `commondir` file
-  // (relative to itself); a main worktree's git dir is the common dir.
   private async resolveCommonDir(gitDir: string): Promise<string> {
     try {
       const content = await fs.readFile(path.join(gitDir, "commondir"), "utf-8");
@@ -696,13 +502,9 @@ export class WorktreeStatusService {
     return snap.untrackedNotIgnored.length === 0;
   }
 
-  // Names the paths deriveIsClean found while they are few, so a skip reason
-  // tells a stray file (an accidental lockfile) from real work at a glance.
-  // Keeps the "uncommitted changes" prefix every reader already knows.
   private describeUncommitted(snap: WorktreeSnapshot): string {
     const status = snap.status;
     if (!status) return "uncommitted changes";
-    // A path staged as added and then modified sits in two lists: one change.
     const tracked = new Set([
       ...status.modified,
       ...status.deleted,
@@ -726,7 +528,6 @@ export class WorktreeStatusService {
 
   private buildStatusDetails(snap: WorktreeSnapshot): WorktreeStatusDetails {
     const status = snap.status;
-    // Type changes and mixed states (` T`, `MD`) are listed as modified.
     const modified = status ? [...status.modified, ...unbucketedTrackedPaths(status)] : [];
     const details: WorktreeStatusDetails = {
       modifiedFiles: modified.length,
@@ -773,8 +574,6 @@ export class WorktreeStatusService {
     );
     const idx = results.findIndex((result) => result === "present");
     if (idx >= 0) return { file: OPERATION_FILES[idx].file, unknown: false };
-    // An unreadable probe may be hiding MERGE_HEAD etc. — report it so the
-    // caller treats the worktree as having an operation in progress.
     return { file: null, unknown: results.includes("unknown") };
   }
 
@@ -790,15 +589,12 @@ export class WorktreeStatusService {
       return (await this.countOwnStashes(worktreeGit, stashList, currentBranch)) > 0;
     } catch (error) {
       this.logger.error(`Error checking stash`, error);
-      return true; // Conservative: assume unsafe to delete
+      return true;
     }
   }
 
-  // The checked-out branch; null for a plain detached HEAD; undefined when
-  // unreadable or a rebase or bisect is paused (its stashes name the branch).
   private async readCurrentBranch(worktreePath: string, git: SimpleGit): Promise<string | null | undefined> {
     try {
-      // -q: a detached HEAD exits 1 silently, which simple-git resolves as "".
       const ref = (await this.runGit(() => git.raw(["symbolic-ref", "-q", "HEAD"]))).trim();
       if (ref.startsWith(GIT_CONSTANTS.REFS.HEADS)) return ref.slice(GIT_CONSTANTS.REFS.HEADS.length);
       if (ref) return undefined;
@@ -808,43 +604,26 @@ export class WorktreeStatusService {
     }
   }
 
-  // simple-git types stashList's options as flat CLI options, but it parses a
-  // `format` map exactly as it does for `git log` (the fields come back on
-  // each entry of `all`).
   private listStashes(git: SimpleGit): Promise<StashListing> {
     return this.runGit(() =>
       git.stashList({ format: STASH_LIST_FORMAT } as unknown as Parameters<SimpleGit["stashList"]>[0]),
     );
   }
 
-  /**
-   * How many entries of the repository-wide stash list belong to this
-   * worktree (see STASH_LIST_FORMAT).
-   *
-   * @param currentBranch the checked-out branch; null for a detached HEAD;
-   *   undefined when it could not be read, which counts every named stash.
-   */
   private async countOwnStashes(
     git: SimpleGit,
     listing: StashListing,
     currentBranch: string | null | undefined,
   ): Promise<number> {
-    // simple-git derives `total` from `all.length`, so every entry is here.
     const entries = (listing.all ?? []) as unknown as ReadonlyArray<Partial<StashEntry>>;
     const baseReachable = new Map<string, Promise<boolean>>();
     let count = 0;
     for (const entry of entries) {
       const branch = stashSubjectBranch(entry.subject ?? "");
       if (branch !== null) {
-        // The stash names its branch: it belongs to whichever worktree has
-        // that branch checked out, and to no other.
         if (currentBranch === undefined || branch === currentBranch) count++;
         continue;
       }
-      // A detached-HEAD stash or a custom `git stash store -m` subject names
-      // no branch. Its first parent is the commit it was made on; count it
-      // here when that commit is in this worktree's history, and whenever
-      // that cannot be established.
       const base = (entry.parents ?? "").trim().split(/\s+/)[0];
       if (!/^[0-9a-f]+$/i.test(base)) {
         count++;
@@ -860,9 +639,6 @@ export class WorktreeStatusService {
     return count;
   }
 
-  // Zero commits in HEAD..<oid> ⟺ oid is HEAD or one of its ancestors. Not
-  // merge-base --is-ancestor: simple-git resolves its silent exit 1 as success.
-  // Any failure answers true, the conservative side for a safety gate.
   private isInHeadHistory(git: SimpleGit, oid: string): Promise<boolean> {
     return this.runGit(() => git.raw(["rev-list", "--count", `HEAD..${oid}`])).then(
       (raw) => {
@@ -911,10 +687,6 @@ export class WorktreeStatusService {
 
   private createGitInstance(worktreePath: string): SimpleGit {
     return this.gitInstances.get(worktreePath, this.config.skipLfs ? "1" : "0", () =>
-      // createGitClient carries the (sanitized) process env: without HOME /
-      // XDG_CONFIG_HOME git ignores the global excludes file and every
-      // globally-ignored file reads as an untracked change, and without PATH
-      // the spawn itself can fail.
       createGitClient(worktreePath, {
         ...this.config.extraEnv,
         ...(this.config.skipLfs ? { [ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE]: "1" } : {}),
@@ -922,12 +694,6 @@ export class WorktreeStatusService {
     );
   }
 
-  /**
-   * Drops the client cached for a worktree that no longer exists. Called by
-   * GitService, which owns this service and is where every removal lands — a
-   * status client is built per worktree path, so without this the cache keeps
-   * one for every branch the repository ever had.
-   */
   forgetWorktree(worktreePath: string): void {
     this.gitInstances.forget(worktreePath);
   }

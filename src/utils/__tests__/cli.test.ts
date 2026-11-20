@@ -182,12 +182,10 @@ describe("parseArguments", () => {
     ["purge against restore", ["trash", "--purge", "entry", "--restore", "entry"]],
     ["purge against dropKeepRef", ["trash", "--purge", "entry", "--dropKeepRef", "keep"]],
     ["purge against dropAllKeepRefs", ["trash", "--purge", "entry", "--dropAllKeepRefs"]],
-    // --json describes the listing; an action produces no listing to describe.
     ["json against restore", ["trash", "--json", "--restore", "entry"]],
     ["json against purge", ["trash", "--json", "--purge", "entry"]],
     ["json against dropKeepRef", ["trash", "--json", "--dropKeepRef", "keep"]],
     ["json against dropAllKeepRefs", ["trash", "--json", "--dropAllKeepRefs"]],
-    // --wait is about the repository lock, which the listing never takes.
     ["wait against json", ["trash", "--wait", "--json"]],
     ["wait against dropKeepRef", ["trash", "--wait", "--dropKeepRef", "keep"]],
     ["wait against dropAllKeepRefs", ["trash", "--wait", "--dropAllKeepRefs"]],
@@ -195,11 +193,6 @@ describe("parseArguments", () => {
     expect(() => parseArguments(argv)).toThrow(/process\.exit/);
   });
 
-  // `--help` is the CLI's own reference, and it is the only one that ships with
-  // the binary rather than with the README. A subcommand that exists but is not
-  // listed there is invisible: `trash` was added in 5.2.0 and went unmentioned
-  // in the README's Subcommands list until now, which is exactly the failure
-  // this pins on the side that the suite can see.
   it("lists every subcommand in --help", () => {
     expect(() => parseArguments(["--help"])).toThrow(/process\.exit/);
 
@@ -307,9 +300,6 @@ describe("parseArguments", () => {
     expect(output.trim()).toBe(packageJson.version);
   });
 
-  // The version comes from the build-time define, not from yargs' package.json
-  // lookup, which starts at yargs' own install directory: from a pnpm global
-  // install that finds pnpm's manifest and prints "unknown".
   it("prints the build-time version for -V", () => {
     expect(() => parseArguments(["-V"])).toThrow(/process\.exit/);
 

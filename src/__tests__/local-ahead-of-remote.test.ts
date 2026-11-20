@@ -40,13 +40,9 @@ const { mockGitServiceInstance } = vi.hoisted(() => {
       getCurrentCommit: vi.fn<any>().mockResolvedValue("abc123"),
       getRemoteCommit: vi.fn<any>().mockResolvedValue("def456"),
       getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
-      // The one probe the update phase runs per worktree, and the one diverged
-      // handling re-verifies with before it moves anything. Default: up to date.
       getAheadBehindCounts: vi.fn<any>().mockResolvedValue({ ahead: 0, behind: 0 }),
       getRemoteBranchTips: vi.fn<any>().mockResolvedValue(new Map()),
       recordRemoteTip: vi.fn<any>().mockResolvedValue(undefined),
-      // The trash-disabled diverged flow pins a keep ref and deletes the stale
-      // local branch before recreating the worktree.
       updateRef: vi.fn<any>().mockResolvedValue(undefined),
       deleteLocalBranch: vi.fn<any>().mockResolvedValue(undefined),
       getGit: vi.fn<any>(),
@@ -77,8 +73,6 @@ describe("Local Branch Ahead of Remote", () => {
       runOnce: true,
       updateExistingWorktrees: true,
       logger: mockLogger,
-      // These suites assert the direct-delete mechanism; the trash pipeline
-      // has its own suites.
       trash: { enabled: false },
     };
 
@@ -94,19 +88,15 @@ describe("Local Branch Ahead of Remote", () => {
       (fs.readdir as Mock<any>).mockResolvedValue([]);
       (fs.access as Mock<any>).mockResolvedValue(undefined);
 
-      // feature-ahead has commits of its own and none from the remote: it
-      // cannot fast-forward, but it is not diverged either.
       mockGitService.getAheadBehindCounts.mockImplementation(async (path: string) =>
         path.includes("feature-ahead") ? { ahead: 2, behind: 0 } : { ahead: 0, behind: 0 },
       );
 
       await service.sync();
 
-      // Should NOT move to diverged
       expect(fs.rename).not.toHaveBeenCalled();
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
       expect(mockGitService.resetToUpstream).not.toHaveBeenCalled();
-      // Should NOT create fresh worktree
       expect(mockGitService.addWorktree).not.toHaveBeenCalledWith("feature-ahead", "/test/worktrees/feature-ahead");
     });
 
@@ -131,7 +121,6 @@ describe("Local Branch Ahead of Remote", () => {
       (fs.readdir as Mock<any>).mockResolvedValue([]);
       (fs.access as Mock<any>).mockResolvedValue(undefined);
 
-      // Has uncommitted changes - should skip before even checking fast-forward
       mockGitService.checkWorktreeStatus.mockImplementation(async (path) => {
         return !path.includes("feature-ahead");
       });
@@ -142,10 +131,8 @@ describe("Local Branch Ahead of Remote", () => {
 
       await service.sync();
 
-      // Should NOT move to diverged - uncommitted changes check should skip first
       expect(fs.rename).not.toHaveBeenCalled();
       expect(mockGitService.removeWorktree).not.toHaveBeenCalled();
-      // The ahead/behind probe is never spawned for it: the dirty check exits first.
       expect(mockGitService.getAheadBehindCounts).not.toHaveBeenCalledWith(
         "/test/worktrees/feature-ahead",
         "feature-ahead",

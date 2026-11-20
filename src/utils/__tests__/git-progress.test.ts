@@ -71,7 +71,6 @@ describe("makeGitProgressHandler", () => {
     handler(makeEvent("fetch", "Receiving objects", 100));
     debugSpy.mockClear();
 
-    // Second fetch on same cached SimpleGit instance: progress resets to 5%.
     handler(makeEvent("fetch", "Receiving objects", 5));
     handler(makeEvent("fetch", "Receiving objects", 30));
     expect(debugSpy).toHaveBeenCalledTimes(2);

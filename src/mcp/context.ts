@@ -78,12 +78,6 @@ export interface ConfiguredWorktreeRepositorySummary extends ConfiguredRepositor
 
 export type ConfiguredRepositorySummary = ConfiguredCloneRepositorySummary | ConfiguredWorktreeRepositorySummary;
 
-/**
- * Presentation view of a discovered checkout, returned to MCP clients. Every
- * `repoUrl` in it (and in the sibling / configured-repository summaries) is
- * passed through {@link redactRepoUrl}; the working URL stays on the entry's
- * `config`, which is what the services use for git operations.
- */
 export interface DiscoveredRepoContext {
   isWorktree: boolean;
   kind: "managed" | "unmanaged" | "unsupported";
@@ -108,15 +102,7 @@ interface RepoEntry {
   source: "config" | "detected";
   service?: WorktreeSyncService;
   discovered?: DiscoveredRepoContext;
-  // Auto-detected entries only: the last detection could not agree on a
-  // worktreeDir, so config.worktreeDir holds a placeholder no tool may write
-  // under. Durable on the entry rather than only on `discovered`, which
-  // invalidateDiscovered() clears while leaving the entry itself in place.
-  // (RepoEntry is not exported, but __registerForTest names it, so tsc emits
-  // this interface into the .d.ts -- a /** */ comment here would ship too.)
   worktreeDirUndetermined?: boolean;
-  // Config entries: bareRepoDir/worktreeDir realpathed at load, since git
-  // reports canonical paths.
   realPaths?: { bareRepoDir: string | null; worktreeDir: string };
 }
 
@@ -132,9 +118,6 @@ interface RepositorySelectionState {
   defaultDecision: RepositorySelectionDecision;
 }
 
-// Identity of the config file that failed to auto-load, as it was on disk at
-// the moment of the failure. Both halves are null when the file could not be
-// read at all, which the gate treats as "unknown", never as "unchanged".
 interface ConfigFingerprint {
   mtimeMs: number | null;
   contentHash: string | null;
@@ -155,18 +138,6 @@ interface CachedDiscovery {
 
 const AUTO_DETECT_PREFIX = "__auto_detected__:";
 const DISCOVERY_CACHE_TTL_MS = 5000;
-// How many probed paths the discovery cache keeps, least-recently-used first
-// out. The cache is keyed by the path detect_context was pointed at and each
-// entry holds a whole DiscoveredRepoContext -- including that repository's
-// full `allWorktrees` array -- so an unbounded map retained one such array per
-// distinct subdirectory a long-lived MCP session ever probed, which for a repo
-// with many worktrees is quadratic in the worktree count.
-//
-// 64 is far above the working set the cache exists for: entries only stay
-// usable for DISCOVERY_CACHE_TTL_MS, and the paths a client probes inside a
-// five-second window are the one or two it is working in. Eviction cannot
-// change an answer either -- a dropped entry is re-detected from disk, exactly
-// as a TTL expiry or any mutating tool's invalidateDiscovered() already forces.
 const DISCOVERY_CACHE_LIMIT = 64;
 const NO_REMOTE_URL_REASON = "no remote origin URL detected";
 const NO_CONFIG_NO_URL_REASON = "no config and no remote URL";
@@ -222,10 +193,6 @@ export class RepositoryContext {
   private repos = new Map<string, RepoEntry>();
   private currentRepo: string | null = null;
   private configPath: string | null = null;
-  // Explicitly stderr-bound: this loader runs inside the stdio server, whose
-  // stdout is the JSON-RPC stream. `console.warn` already goes to stderr, so
-  // this is belt and braces rather than a fix — it makes the destination a
-  // property of this call site instead of a property of `console`.
   private configLoader = new ConfigLoaderService({ logger: createStderrLogger() });
   private discoveryCache = new Map<string, CachedDiscovery>();
   private lastConfigLoadFailure: ConfigLoadFailure | null = null;
@@ -260,8 +227,6 @@ export class RepositoryContext {
     }
 
     this.configPath = absolutePath;
-    // Reached only past every throw in this method, so it marks a config that
-    // is genuinely loaded -- from the auto-load below or from load_config.
     this.lastConfigLoadFailure = null;
     this.loadedConfigFingerprint = fingerprint;
     this.loadedConfigCheckedMtimeMs = fingerprint.mtimeMs;
@@ -292,14 +257,11 @@ export class RepositoryContext {
 
   async detectFromPath(dirPath: string): Promise<DiscoveredRepoContext> {
     const lexicalPath = path.resolve(dirPath);
-    // Agents pass $PWD, which keeps symlinks; git lists canonical paths.
     const absolutePath = await resolveRealPathAsync(lexicalPath);
     await this.checkLoadedConfigChanged();
 
     const cached = this.discoveryCache.get(absolutePath);
     if (cached && (await this.isCacheFresh(cached))) {
-      // A Map iterates in insertion order, so re-inserting a hit makes it the
-      // newest entry and rememberDiscovery evicts the least recently used one.
       this.discoveryCache.delete(absolutePath);
       this.discoveryCache.set(absolutePath, cached);
       return cached.result;
@@ -310,10 +272,6 @@ export class RepositoryContext {
       if (found === null) {
         this.lastConfigLoadFailure = null;
       } else {
-        // Fingerprinted before the attempt, never after: an edit that lands
-        // while the import is running must be re-imported next time, and
-        // recording the post-failure bytes would pin the repair as "already
-        // tried".
         const fingerprint = await configFileFingerprint(found);
         if (this.shouldReimportConfig(found, fingerprint)) {
           try {
@@ -321,11 +279,6 @@ export class RepositoryContext {
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             this.lastConfigLoadFailure = { path: found, error: message, ...fingerprint };
-            // Kept next to the note rather than replaced by it. The note is for
-            // an MCP client; this line is for whoever is tailing the server in a
-            // terminal, who never sees tool output. It costs nothing on the wire
-            // -- stderr is not the JSON-RPC stream -- and it is now written once
-            // per broken revision instead of once per cache miss.
             process.stderr.write(`[sync-worktrees] auto-loaded config failed: ${message}\n`);
           }
         }
@@ -352,14 +305,6 @@ export class RepositoryContext {
   }
 
   private rememberDiscovery(absolutePath: string, entry: CachedDiscovery): void {
-    // Caches one detection, dropping the oldest entries past
-    // DISCOVERY_CACHE_LIMIT. Written here rather than above the member: esbuild
-    // ships a comment that leads a class-body member into the bundle, and drops
-    // one that leads a statement in a method body.
-    //
-    // The leading delete is what makes this least-recently-used rather than
-    // first-inserted-first-out: a Map keeps a re-`set` key in its original
-    // position, so re-caching a hot path would not move it off the front.
     this.discoveryCache.delete(absolutePath);
     this.discoveryCache.set(absolutePath, entry);
     while (this.discoveryCache.size > DISCOVERY_CACHE_LIMIT) {
@@ -376,17 +321,14 @@ export class RepositoryContext {
     }
   }
 
-  /** @internal Test-only helper — registers a repo entry without going through config loading. */
   __registerForTest(name: string, entry: Omit<RepoEntry, "name">): void {
     this.repos.set(name, { ...entry, name });
   }
 
-  /** @internal Test-only helper — sets the current repo pointer. */
   __setCurrentRepoForTest(name: string | null): void {
     this.currentRepo = name;
   }
 
-  /** @internal Test-only helper — returns the size of the discovery cache. */
   __discoveryCacheSizeForTest(): number {
     return this.discoveryCache.size;
   }
@@ -472,7 +414,6 @@ export class RepositoryContext {
   }
 
   private dropDetectedEntriesCoveredByConfig(): void {
-    // One entry (and one service) per repository: the config entry wins.
     for (const [name, entry] of this.repos) {
       if (entry.source !== "detected") continue;
       const match = this.findConfiguredEntryForDetected(entry);
@@ -503,8 +444,6 @@ export class RepositoryContext {
   }
 
   private async checkLoadedConfigChanged(): Promise<void> {
-    // A stat per detect; the file is hashed only when its mtime moves, so a
-    // bare `touch` does not raise CONFIG_CHANGED.
     const loaded = this.loadedConfigFingerprint;
     if (this.configPath === null || loaded === null || loaded.contentHash === null) return;
     const mtimeMs = await safeMtimeMs(this.configPath);
@@ -522,9 +461,6 @@ export class RepositoryContext {
     const failure = this.lastConfigLoadFailure;
     if (failure === null) return true;
     if (!pathsEqual(failure.path, configPath)) return true;
-    // Fail open when either side could not be fingerprinted. An unreadable file
-    // must never be mistaken for an unchanged one, or a config nobody can stat
-    // is pinned as broken for the life of the process.
     if (fingerprint.contentHash === null || failure.contentHash === null) return true;
     return fingerprint.mtimeMs !== failure.mtimeMs || fingerprint.contentHash !== failure.contentHash;
   }
@@ -545,11 +481,6 @@ export class RepositoryContext {
     absolutePath: string,
   ): Promise<{ result: DiscoveredRepoContext; adminDir: string | null }> {
     const notes: string[] = [];
-    // Seeded before any of the branches below so the note survives every shape
-    // this returns -- unmanaged, unsupported and clone-mode alike. Without it a
-    // found-but-broken config reaches the client as configPath: null with no
-    // hint that a config file exists, and the agent's next move is to write a
-    // second one.
     const configFailure = this.lastConfigLoadFailure;
     if (configFailure !== null) {
       notes.push(
@@ -564,11 +495,6 @@ export class RepositoryContext {
     }
 
     const located = await findEnclosingCheckout(absolutePath, (dir) => this.findConfiguredCloneEntry(dir));
-    // When the walk found nothing, report the deepest .git it stepped over as
-    // the location rather than the probed path: that is the directory the agent
-    // is actually standing in a repository of, and it is what this reported
-    // before the walk resumed. A .git that could not be read is the shallowest
-    // of the three, so it only names the location when nothing was stepped over.
     const worktreeRoot =
       located.found?.worktreeRoot ?? located.skipped[0]?.path ?? located.undetermined?.path ?? absolutePath;
 
@@ -598,15 +524,7 @@ export class RepositoryContext {
     };
 
     if (located.found === null) {
-      // The old message named only the absence of a .git. Saying that after
-      // stepping over three nested repositories tells the agent something
-      // false, so the exhausted answer enumerates what the walk passed. It is
-      // the only note in this case, which is why the per-skip notes below are
-      // not also pushed here.
       const reason = describeExhaustedWalk(absolutePath, located);
-      // Not a checkout, but tools without repoName still act on the default
-      // repository: report what they will do there. An unreadable .git stops
-      // short of answering for any enclosing repository.
       const decision = located.undetermined === null ? this.selectDefaultRepository() : null;
       const selected = decision?.kind === "selected" ? this.repos.get(decision.repoName) : undefined;
       if (selected) {
@@ -686,10 +604,6 @@ export class RepositoryContext {
       }
     }
 
-    // A matching config is authoritative: its worktreeDir is the directory the
-    // tools will actually write under, so report that rather than anything read
-    // back from git. Only an auto-detected repository has to be derived, and
-    // only it reports null when the derivation could not agree on an answer.
     const worktreeDir = matchedConfig ? path.resolve(matchedConfig.config.worktreeDir) : derivedWorktreeDir;
     notes.push(
       worktreeDir === null
@@ -707,15 +621,6 @@ export class RepositoryContext {
       const detectedKey = `${AUTO_DETECT_PREFIX}${path.basename(bareRepoPath)}@${bareRepoPath}`;
       entry = this.repos.get(detectedKey) ?? null;
       if (entry) {
-        // Detection re-runs on every cache miss and the registered list can
-        // change between runs, so keep the stored entry in step with the value
-        // reported here instead of leaving the first run's answer frozen in.
-        // getService builds the service from a spread copy of this config, so
-        // an already-built one keeps the directory it was born with: drop it
-        // too, or detect_context reports the new directory while
-        // create_worktree keeps writing under the old one. Both locks a repo
-        // operation takes are keyed by paths, not by this object, so a rebuilt
-        // service is still serialized against one that is mid-operation.
         if (derivedWorktreeDir !== null && !pathsEqual(entry.config.worktreeDir, derivedWorktreeDir)) {
           entry.config.worktreeDir = derivedWorktreeDir;
           entry.service = undefined;
@@ -723,10 +628,6 @@ export class RepositoryContext {
       } else {
         const syntheticConfig: Config = {
           repoUrl,
-          // Only reached when the derivation failed. The read-only tools work
-          // off the bare repo and never touch this directory; createWorktree
-          // and updateWorktree, the two that would write under it, are marked
-          // unavailable below, so nothing is placed on disk from this guess.
           worktreeDir: derivedWorktreeDir ?? path.dirname(worktreeRoot),
           bareRepoDir: bareRepoPath,
           cronSchedule: DEFAULT_CONFIG.CRON_SCHEDULE,
@@ -735,16 +636,9 @@ export class RepositoryContext {
         entry = { name: detectedKey, config: syntheticConfig, source: "detected" };
         this.repos.set(detectedKey, entry);
       }
-      // Record the outcome where invalidateDiscovered cannot erase it: that
-      // call drops `discovered` but keeps the entry, and ensureCapability
-      // stops at the base capabilities when there is no discovery snapshot.
       entry.worktreeDirUndetermined = derivedWorktreeDir === null;
     }
 
-    // Start from the entry's durable capabilities so that discovery can only
-    // narrow them, never widen them (see computeBaseCapabilities).
-    // No entry means nothing is registered for this repository, so no tool can
-    // select it.
     const capabilities: Capabilities = entry
       ? this.computeBaseCapabilities(entry)
       : {
@@ -753,15 +647,10 @@ export class RepositoryContext {
           initialize: { available: false, reason: NO_CONFIG_NO_URL_REASON },
         };
     if (repoUrl === null) {
-      // Without an origin URL there is nothing to create from or fast-forward
-      // to, even when a loaded config lists the repository.
       capabilities.createWorktree = { available: false, reason: NO_REMOTE_URL_REASON };
       capabilities.updateWorktree = { available: false, reason: NO_REMOTE_URL_REASON };
     }
     if (worktreeDir === null) {
-      // Both tools resolve a target under worktreeDir — createWorktree through
-      // getBranchWorktreePath, updateWorktree through the initialize() that
-      // rebuilds the default-branch worktree — so neither may run on a guess.
       capabilities.createWorktree = { available: false, reason: UNDETERMINED_WORKTREE_DIR_REASON };
       capabilities.updateWorktree = { available: false, reason: UNDETERMINED_WORKTREE_DIR_REASON };
     }
@@ -814,8 +703,6 @@ export class RepositoryContext {
     }
     if (!entry.service) {
       const logger = createStderrLogger(entry.name);
-      // A tool call has to answer: "unlimited" would retry an unreachable
-      // remote forever while holding the repository lock.
       const retry = entry.config.retry;
       entry.service = new WorktreeSyncService({
         ...entry.config,
@@ -945,31 +832,16 @@ export class RepositoryContext {
     return entry?.discovered ?? null;
   }
 
-  /**
-   * Capabilities derived from the entry's durable state (source, mode, repoUrl
-   * and whether a loaded config lists it) rather than from the discovery
-   * cache. Handlers gate on these first: every mutating tool clears the cache,
-   * so an empty cache must never re-enable a tool that detection declared
-   * unavailable. Returns null when no entry is selected or found.
-   */
   getBaseCapabilities(repoName?: string): Capabilities | null {
     const entry = this.getEntry(repoName);
     return entry ? this.computeBaseCapabilities(entry) : null;
   }
 
-  /**
-   * Single source of truth for capability decisions. Discovery starts from
-   * this map and may only narrow it with facts read from git.
-   */
   private computeBaseCapabilities(entry: RepoEntry): Capabilities {
     const worktreeMutation = (): CapabilityState => {
       if (resolveMode(entry.config) === REPOSITORY_MODES.CLONE) {
         return { available: false, reason: CLONE_MODE_REASON };
       }
-      // An auto-detected entry whose worktreeDir could not be derived carries a
-      // placeholder directory. Both tools resolve their target under it, so the
-      // refusal has to be durable rather than live only in the discovery
-      // snapshot that every mutating tool — and load_config — clears.
       if (entry.worktreeDirUndetermined) {
         return { available: false, reason: UNDETERMINED_WORKTREE_DIR_REASON };
       }
@@ -1015,7 +887,6 @@ export class RepositoryContext {
     return Array.from(this.repos.values()).map((e) => ({
       name: e.name,
       repoUrl: redactRepoUrl(e.config.repoUrl),
-      // null, as detect_context reports it, not the placeholder.
       worktreeDir: e.worktreeDirUndetermined ? null : e.config.worktreeDir,
       source: e.source,
     }));
@@ -1067,7 +938,6 @@ export class RepositoryContext {
 
           if (entry.config.bareRepoDir) {
             summary.bareRepoDir = path.resolve(entry.config.bareRepoDir);
-            // HEAD, not the dir: the repo lock creates the dir before any clone.
             summary.localReady = await pathExists(path.join(summary.bareRepoDir, "HEAD"));
           } else {
             summary.localReady = false;
@@ -1219,7 +1089,6 @@ async function realRepoPaths(config: Config): Promise<NonNullable<RepoEntry["rea
   return { bareRepoDir, worktreeDir };
 }
 
-// True when the entry's configured path, as written or realpathed, is `target`.
 function configPathMatches(entry: RepoEntry, key: "bareRepoDir" | "worktreeDir", target: string): boolean {
   const configured = entry.config[key];
   if (!configured) return false;
@@ -1228,25 +1097,6 @@ function configPathMatches(entry: RepoEntry, key: "bareRepoDir" | "worktreeDir",
   return !!real && pathsEqual(real, target);
 }
 
-// Where a registered worktree says its parent directory is, or null when its
-// path is not one this tool would have produced.
-//
-// Two shapes exist and they are not alike. A branch worktree sits at
-// `<worktreeDir>/<name>`: one component, either the branch name flattened
-// (`feature/x` -> `feature-x`) or, for worktrees created before plain names and
-// for names that were ambiguous, that flattening suffixed with a hash of the
-// branch name. Which one a worktree got depended on its siblings at creation
-// time, so both are accepted. The default-branch worktree is the
-// exception -- GitService anchors it at the plain join(worktreeDir, branch), so
-// a nested name such as `release/2024` contributes two components, which is
-// exactly what made dirname() the wrong answer here. Both shapes invert, so a
-// candidate parent is rebuilt back into a path and kept only if it reproduces
-// the registered one. Only a path matching neither shape abstains outright -- a
-// detached entry carrying the pseudo-name `(detached abc1234)`, a directory
-// named after neither the branch nor its flattening. The anchor shape is
-// `<dir>/<branch>`, so a hand-run `git worktree add ../hotfix hotfix` outside
-// worktreeDir is recognized and votes for `../`; deriveWorktreeDir outvotes it
-// rather than relying on it to abstain.
 function worktreeDirCandidate(worktree: DiscoveredWorktree): string | null {
   const resolved = path.resolve(worktree.path);
   const flatParent = path.dirname(resolved);
@@ -1263,25 +1113,6 @@ function worktreeDirCandidate(worktree: DiscoveredWorktree): string | null {
   return pathsEqual(path.join(anchorParent, ...segments), resolved) ? anchorParent : null;
 }
 
-// Two independent signals have to agree, or nothing is answered.
-//
-// The count decides first. Abstaining entries do not vote, and a minority of
-// recognized ones is outvoted rather than allowed to refuse for everyone --
-// the anchor shape is `<dir>/<branch>`, so the conventional hand-run
-// `git worktree add ../hotfix hotfix` is recognized and would otherwise veto a
-// repository whose other entries agree. A tie leaves no answer to prefer.
-//
-// Then the worktree this detection was run from has to corroborate that count.
-// It is the one entry known to be real and relevant, but it is a sample of one
-// and an agent is most likely to be standing in exactly the hand-placed
-// worktree that disagrees, so it confirms rather than overrides: letting it
-// override put a new worktree beside one stray while five tool-made ones said
-// otherwise. When it is absent from the list or abstains (a detached entry),
-// the count stands alone -- there is nothing to corroborate with, not a reason to refuse.
-//
-// A single vote still wins: the shape it matched already fixes how many
-// components its branch name contributed, which is the fact a probe path cannot
-// supply, and there is no second entry to weigh it against.
 function deriveWorktreeDir(worktrees: DiscoveredWorktree[]): string | null {
   const votes = new Map<string, { dir: string; count: number }>();
   for (const worktree of worktrees) {
@@ -1346,30 +1177,6 @@ interface CheckoutWalkResult {
   undetermined: SkippedGitDir | null;
 }
 
-// A found-but-broken config is re-read on every cache-missing detect, and past
-// the first failure each read costs a whole worker thread: ConfigLoaderService
-// records a path as evaluated *before* it imports it, so even a failed first
-// import pushes every later one onto T35's reload path. This fingerprint is
-// what lets the gate skip that repeat -- but only while the file is still
-// byte-for-byte the one that failed, because a config the user has just fixed
-// has to load on the very next detect_context.
-//
-// mtime alone cannot keep that promise. It is nanosecond-resolution on ext4 and
-// APFS but one-second on HFS+ and on most NFS/SMB mounts, and the smallest real
-// syntax fix -- one '}' becoming ']' -- leaves the size identical, so a repair
-// landing in the same second as the failure is invisible to a stat-only check.
-// The hash reads a file of a few KB, once per auto-load attempt. A config that
-// loads is fingerprinted exactly once in the life of the process -- `configPath`
-// is set from then on and this whole path is skipped -- so a healthy workspace
-// pays one read of one file, ever, and never a read per detect. While a config
-// is broken it is computed on each attempt, which is exactly where it replaces
-// spawning a worker.
-//
-// Either half changing re-imports, so `touch` alone releases the gate. That is
-// the deliberate escape for a fault that lives in a module the config imports
-// rather than in the config file: such a SyntaxError names no file at all, in
-// the message or the stack, so there is nothing else here to fingerprint. The
-// note points at load_config, which does not come through this path.
 async function configFileFingerprint(filePath: string): Promise<ConfigFingerprint> {
   try {
     const [contents, stat] = await Promise.all([fs.readFile(filePath), fs.stat(filePath)]);
@@ -1431,12 +1238,6 @@ async function readCurrentBranch(worktreePath: string): Promise<string> {
   return head ? `(detached ${head})` : "(detached)";
 }
 
-// Every clause of the exhausted reason carries a whole absolute path, and the
-// reason is repeated once per capability plus once in the notes, so enumerating
-// one clause per level makes the answer grow with the square of the depth: a
-// probe under thirty nested repositories produced a 16 KB reason and a 116 KB
-// tool result. The deepest few are the ones the agent is standing in; the rest
-// are counted.
 const MAX_ENUMERATED_SKIPS = 5;
 
 function describeSkippedGitDirs(skipped: SkippedGitDir[]): string {
@@ -1449,10 +1250,6 @@ function describeSkippedGitDirs(skipped: SkippedGitDir[]): string {
 function describeExhaustedWalk(absolutePath: string, walk: CheckoutWalkResult): string {
   const walkedPast = walk.skipped.length === 0 ? "" : `; walked past ${describeSkippedGitDirs(walk.skipped)}`;
   if (walk.undetermined !== null) {
-    // Not "no worktree here" -- "cannot tell". Answering with the repository
-    // that encloses an unreadable .git would name a different repository than
-    // the one the agent is standing in, and every mutating tool would then act
-    // on that name.
     return (
       `Cannot determine whether ${walk.undetermined.path} is a sync-worktrees worktree: ` +
       `${walk.undetermined.reason}. Detection stopped there rather than answer with an enclosing repository` +
@@ -1469,10 +1266,6 @@ function classifyGitFile(
   dir: string,
   gitFileContent: string,
 ): Extract<EnclosingCheckout, { kind: "worktree" }> | string {
-  // Returns the enclosing worktree this .git file points at, or the reason it
-  // is not one. A submodule lands on the second branch: its gitdir resolves to
-  // <admin>/modules/<name>, which carries a path separator after /worktrees/
-  // and so cannot match.
   const gitdirMatch = gitFileContent.match(/^gitdir:\s*(.+)$/m);
   if (!gitdirMatch) {
     return "a nested repository (.git file without a gitdir line)";
@@ -1495,26 +1288,6 @@ async function findEnclosingCheckout(
   startPath: string,
   resolveCloneRoot: (dir: string) => RepoEntry | null,
 ): Promise<CheckoutWalkResult> {
-  // Walks up from startPath and stops at the first directory that is a shape
-  // this tool can act on: a worktree whose gitdir points into
-  // <bare>/worktrees/<name>, or a configured clone-mode root. Every other .git
-  // on the way -- a vendored `git init`, a submodule, an unreadable one -- is
-  // recorded and stepped over rather than answered with, so an agent sitting in
-  // a nested repository still learns about the managed worktree above it.
-  //
-  // A clone-mode root is a terminal answer, not something to step over:
-  // resuming past a checkout the config names would trade a real repository
-  // for whatever happens to sit further up.
-  //
-  // A .git that cannot be READ is the one thing the walk may not step over. A
-  // .git folder and a gitdir line that points elsewhere are both positive
-  // identifications -- git itself would not call either of them a linked
-  // worktree -- but an errno says only that this process could not look. Passing
-  // it over lets a managed worktree whose own .git is briefly unreadable be
-  // answered with the DIFFERENT repository that encloses it, capabilities and
-  // all, where the honest answer is "cannot tell". So the walk stops there,
-  // unless the config names that very directory as a clone-mode root, which
-  // identifies the repository without reading anything.
   let current = path.resolve(startPath);
   const root = path.parse(current).root;
   const skipped: SkippedGitDir[] = [];
@@ -1531,11 +1304,6 @@ async function findEnclosingCheckout(
       if (code === "EISDIR") {
         skipReason = "a nested repository (.git folder: regular repo, not a sync-worktrees worktree)";
       } else if (code !== "ENOENT") {
-        // One unreadable .git used to abort the walk for the whole tree and
-        // then report "No .git file found in path or any parent directory",
-        // which is false. It still ends the walk -- see above -- but as its own
-        // outcome, carrying the errno and the directory, so the caller can say
-        // which .git it could not read instead of claiming there was none.
         unreadableReason = `an unreadable .git (${code ?? "unknown error"})`;
       }
     }
@@ -1557,14 +1325,6 @@ async function findEnclosingCheckout(
     }
 
     if (skipReason !== null) {
-      // The clone lookup runs wherever the walk would otherwise step over
-      // something, not only on a .git folder. A clone-mode checkout usually has
-      // one, but `git clone --separate-git-dir` leaves a .git *file* holding a
-      // gitdir that points nowhere near <bare>/worktrees/<name>, and a checkout
-      // whose .git cannot be read at all is still the configured repository the
-      // config names. Ruling out the worktree shape first keeps a .git file
-      // that is a real worktree pointer answering as a worktree, as it always
-      // has.
       const cloneEntry = resolveCloneRoot(current);
       if (cloneEntry) {
         return { found: { kind: "clone-root", worktreeRoot: current, entry: cloneEntry }, skipped, undetermined: null };
@@ -1574,10 +1334,6 @@ async function findEnclosingCheckout(
 
     if (current === root) return { found: null, skipped, undetermined: null };
     const parent = path.dirname(current);
-    // path.dirname is its own fixed point at a filesystem root, and on Windows
-    // at a UNC share root it is one that `current === root` does not recognise.
-    // Both guards stay: without this one the loop would re-probe the same
-    // directory forever now that a probe no longer ends it.
     if (parent === current) return { found: null, skipped, undetermined: null };
     current = parent;
   }

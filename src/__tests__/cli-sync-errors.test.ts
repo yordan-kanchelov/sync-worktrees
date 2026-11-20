@@ -54,18 +54,11 @@ class ProcessExit extends Error {
   }
 }
 
-/**
- * `runSync` used to wrap the whole run in one catch labelled "Error loading
- * config file", so anything that escaped `runMultipleRepositories` — a service
- * constructor rejecting a repository name, a render that will not mount — sent
- * the person to edit a file that had already loaded without complaint.
- */
 describe("sync-worktrees run error reporting", () => {
   let errors: string[];
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Some tests make the constructor throw; clearAllMocks keeps that.
     mocks.constructService.mockReset();
     mocks.hasInteractiveTerminal.mockReturnValue(true);
     process.argv = ["node", "sync-worktrees", "--config", "/test/sync-worktrees.config.js"];
@@ -116,13 +109,9 @@ describe("sync-worktrees run error reporting", () => {
     expect(stderr).toContain("reserved name on Windows");
     expect(stderr).toContain("Error running sync");
     expect(stderr).not.toContain("Error loading config file");
-    // A typed failure is something the person can act on, and its message says
-    // all of it; dumping frames of this tool's internals over it says nothing.
     expect(stderr).not.toMatch(/\n\s+at /);
   });
 
-  // The counterpart: relabelling everything would be just as wrong as the
-  // single label was. A config that will not load still says so.
   it("still blames the config file when the config is what failed", async () => {
     mocks.buildRepositories.mockRejectedValue(new Error("Failed to load config file: Unexpected token ']'"));
 
@@ -130,13 +119,10 @@ describe("sync-worktrees run error reporting", () => {
 
     const stderr = errors.join("\n");
     expect(stderr).toContain("Error loading config file: Unexpected token ']'");
-    // The loader's own prefix is not repeated after this line's label.
     expect(stderr).not.toContain("Failed to load config file");
     expect(stderr).not.toContain("Error running sync");
   });
 
-  // systemd, docker, CI, `< /dev/null`: Ink printed "Raw mode is not
-  // supported" with a stack and the process exited 0 having synced nothing.
   it("refuses to start the dashboard without a terminal and points at --run-once", async () => {
     mocks.hasInteractiveTerminal.mockReturnValue(false);
 
@@ -163,13 +149,9 @@ describe("sync-worktrees run error reporting", () => {
 
     expect(await runAndCaptureExit()).toBeUndefined();
 
-    // The loader applies it (config-loader.service.test covers that), so every
-    // load of the config gets it, not only the first.
     expect(mocks.buildRepositories).toHaveBeenCalledWith("/test/sync-worktrees.config.js", { debug: true });
   });
 
-  // The dashboard loads the config again when `r` is pressed; a --debug that
-  // only reached the startup load quietly switched itself off on reload.
   it("--debug is handed to the dashboard so its reload applies it too", async () => {
     process.argv = ["node", "sync-worktrees", "--config", "/test/sync-worktrees.config.js", "--debug"];
 
@@ -188,8 +170,6 @@ describe("sync-worktrees run error reporting", () => {
     expect(vi.mocked(InteractiveUIService).mock.calls[0][5]).toEqual({ debug: false });
   });
 
-  // A bug in this tool has nothing useful to say in one line, so it keeps its
-  // stack — scrubbed, because a git failure quotes the remote it was given.
   it("keeps the stack of an unexpected run failure", async () => {
     mocks.constructService.mockImplementation(() => {
       throw new TypeError("Cannot read properties of undefined (reading 'worktreeDir')");
@@ -202,10 +182,6 @@ describe("sync-worktrees run error reporting", () => {
     expect(stderr).toMatch(/\n\s+at /);
   });
 
-  // git quotes the remote it was handed, so a repository cloned from a URL with
-  // an access token in it puts that token in the failure text — and the stack
-  // begins with that same text. Both lines this phase prints are new output, so
-  // both are pinned: dropping either scrub is otherwise invisible.
   it("scrubs a credential-bearing URL from the run-phase line and its stack", async () => {
     mocks.constructService.mockImplementation(() => {
       throw new TypeError("unable to access 'https://ci-bot:s3cr3t-token@example.com/org/repo.git/'");
@@ -216,15 +192,10 @@ describe("sync-worktrees run error reporting", () => {
     const stderr = errors.join("\n");
     expect(stderr).not.toContain("s3cr3t-token");
     expect(stderr).not.toContain("ci-bot");
-    // Redacted, not swallowed: the host and the path still identify the remote,
-    // and the stack is still there.
     expect(stderr).toContain("https://***@example.com/org/repo.git");
     expect(stderr).toMatch(/\n\s+at /);
   });
 
-  // The load-phase line printed `(error as Error).message` with no scrubbing at
-  // all until this change, so a config whose failure quoted a credential-bearing
-  // remote printed the token verbatim. Same for `list`, below.
   it("scrubs a credential-bearing URL from a load failure", async () => {
     mocks.buildRepositories.mockRejectedValue(
       new Error("Failed to load config file: cannot reach https://ci-bot:s3cr3t-token@example.com/org/repo.git"),
@@ -251,8 +222,6 @@ describe("sync-worktrees run error reporting", () => {
     expect(stderr).not.toContain("s3cr3t-token");
     expect(stderr).toContain("https://***@example.com/org/repo.git");
   });
-  // `--filter` narrows a sync the way it narrows `list`, and a filter that
-  // selects nothing is answered the same way: a typo, not a clean no-op run.
   it("passes --filter to the loader and fails when it matches nothing", async () => {
     process.argv.push("--filter", "nope");
     mocks.buildRepositories.mockResolvedValue({ configFile: { repositories: [] }, repositories: [] });
@@ -296,9 +265,6 @@ describe("sync-worktrees run error reporting", () => {
   });
 });
 
-// bin/sync-worktrees.js is what runs in normal use, and its handler printed the
-// raw value: util.inspect of a simple-git failure includes `task.commands`,
-// remote URL and any token in it.
 describe("reportUnhandledError (the bin shim's last-resort handler)", () => {
   it("scrubs a credential-bearing URL from the message, stack and inspected properties", () => {
     const lines: string[] = [];

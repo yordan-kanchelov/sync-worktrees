@@ -10,10 +10,6 @@ import { formatErrorResponse } from "../utils";
 
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
-// These tests drive the real RepositoryContext against a temporary worktree
-// fixture. Only git and WorktreeSyncService are mocked, so the capability gate
-// is exercised end to end without touching a real repository.
-
 const mockRemoteUrl = vi.fn<any>();
 const mockWorktreeList = vi.fn<any>();
 const mockServiceFactory = vi.fn<any>();
@@ -110,9 +106,6 @@ function makeService(): { service: Record<string, any>; git: Record<string, any>
         durationMs: 0,
       },
     }),
-    // WorktreeSyncService.getWorktrees is what the handlers call to list a
-    // repository's worktrees; it delegates to the git service in worktree mode,
-    // so this double does the same and each test keeps overriding one listing.
     getWorktrees: vi.fn<any>().mockImplementation((options?: unknown) => (git.getWorktrees as any)(options)),
     getGitService: () => git,
     getDefaultBranch: vi.fn<any>().mockResolvedValue("main"),
@@ -123,7 +116,6 @@ function makeService(): { service: Record<string, any>; git: Record<string, any>
   return { service, git };
 }
 
-/** Makes the next `new WorktreeSyncService(config)` return this mock. */
 function installService(): ReturnType<typeof makeService> {
   const mocks = makeService();
   mockServiceFactory.mockImplementation((config: unknown) => {
@@ -168,8 +160,6 @@ describe("capability gate with a real RepositoryContext", () => {
     "keeps sync and initialize unavailable after %s clears the discovery cache",
     async (_tool, mutate) => {
       const { service, git } = installService();
-      // `update_worktree` resolves the worktree's branch from a live listing
-      // rather than the discovery snapshot, so git has to report the fixture.
       git.getWorktrees.mockResolvedValue([{ path: fixture.currentWorktree, branch: "feature-x" }]);
       const ctx = new RepositoryContext({ launchCwd: fixture.currentWorktree });
 
@@ -181,7 +171,6 @@ describe("capability gate with a real RepositoryContext", () => {
       const mutation = parseResponse(await mutate(ctx));
       expect(mutation.success).toBe(true);
       expect(service.runExclusiveRepoOperation).toHaveBeenCalledTimes(1);
-      // The mutating tool cleared the discovery cache; the gate must not depend on it.
       expect(ctx.getDiscoveredContext()).toBeNull();
 
       const sync = parseResponse(await invoke(handleSync, ctx, {}));
@@ -212,7 +201,6 @@ describe("capability gate with a real RepositoryContext", () => {
     const init = parseResponse(await invoke(handleInitialize, ctx, {}));
     expect(init.code).toBe("CAPABILITY_UNAVAILABLE");
 
-    // The gate runs before a service is even built for the entry.
     expect(mockServiceFactory).not.toHaveBeenCalled();
     expect(service.sync).not.toHaveBeenCalled();
     expect(service.initializeUnlocked).not.toHaveBeenCalled();

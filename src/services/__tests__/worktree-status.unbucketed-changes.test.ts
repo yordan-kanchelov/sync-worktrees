@@ -8,9 +8,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createMockLogger } from "../../__tests__/test-utils";
 import { WorktreeStatusService } from "../worktree-status.service";
 
-// Real git. simple-git has no bucket for a type change (` T`, `T `) or for
-// mixed states such as `MD`/`AD`: they appear only in `status.files`, with
-// every array (modified, deleted, ...) empty. The dirty check must still see them.
 describe("WorktreeStatusService with changes simple-git does not bucket (real git)", () => {
   let tempDir: string;
   let worktreePath: string;

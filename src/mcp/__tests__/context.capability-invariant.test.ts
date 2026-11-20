@@ -21,10 +21,6 @@ import type { CallToolResult } from "@modelcontextprotocol/server";
 
 type CapabilityKey = keyof Capabilities;
 
-// Real git, no mocks. detect_context's capabilities block promises the agent
-// what will work from where it stands; a capability reported available must
-// never be answered with "No repository specified" by the tool it names.
-
 async function initRepo(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   const git = simpleGit(dir);

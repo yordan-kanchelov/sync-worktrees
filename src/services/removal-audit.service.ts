@@ -26,16 +26,12 @@ export interface RemovalAuditEntry {
   error?: string;
 }
 
-// Append-only JSONL log of destructive worktree operations (not the stale-dir
-// rmdir/quarantine at worktree creation). It outlives the terminal's logs.
 export class RemovalAuditService {
   constructor(private readonly logFilePath: string) {}
 
   async record(entry: RemovalAuditEntry): Promise<void> {
     await fs.mkdir(path.dirname(this.logFilePath), { recursive: true });
     const line = JSON.stringify({ timestamp: new Date().toISOString(), ...entry });
-    // The audit line gates destructive operations ("attempt" must survive a
-    // crash that happens mid-delete), so flush it to disk before returning.
     const handle = await fs.open(this.logFilePath, "a");
     try {
       await handle.appendFile(`${line}\n`, "utf-8");

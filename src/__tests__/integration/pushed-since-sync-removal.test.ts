@@ -10,12 +10,6 @@ import { createMockLogger } from "../test-utils";
 
 import type { SimpleGit } from "simple-git";
 
-// Real git, no mocks. lastSyncCommit only moves when this tool creates or
-// fast-forwards a worktree, so committing in the worktree and pushing from it
-// leaves `lastSyncCommit..HEAD` non-zero forever. Those commits are on the
-// branch's own upstream: the worktree must not read as having unpushed work,
-// or it can never be pruned. Commits that only reached some other remote ref
-// are still held back by the since-last-sync check.
 describe("Commits made since the last sync and pushed (E2E)", () => {
   let tempDir: string;
   let remote: string;
@@ -26,8 +20,6 @@ describe("Commits made since the last sync and pushed (E2E)", () => {
     await git.commit(`${file}: ${content.trim()}`);
   }
 
-  // A checkout of `feature` tracking origin/feature, plus the HEAD the sync
-  // metadata records as lastSyncCommit when it creates the worktree.
   async function cloneFeature(name: string): Promise<{ git: SimpleGit; dir: string; lastSyncCommit: string }> {
     const dir = path.join(tempDir, name);
     await simpleGit().clone(remote, dir, ["--branch", "feature"]);
@@ -68,8 +60,6 @@ describe("Commits made since the last sync and pushed (E2E)", () => {
     await commitFile(git, dir, "b.txt", "work\n");
     await git.push("origin", "feature");
 
-    // Preconditions: nothing is missing from the remote, yet HEAD moved past
-    // what the metadata recorded.
     expect(await countRevs(git, ["HEAD", "--not", "--remotes"])).toBe(0);
     expect(await countRevs(git, [`${lastSyncCommit}..HEAD`])).toBe(1);
 
@@ -87,8 +77,6 @@ describe("Commits made since the last sync and pushed (E2E)", () => {
     await commitFile(git, dir, "c.txt", "work\n");
     await git.push("origin", "HEAD:refs/heads/elsewhere");
 
-    // On a remote (origin/elsewhere), so the any-remote check alone passes;
-    // origin/feature does not have it.
     expect(await countRevs(git, ["HEAD", "--not", "--remotes"])).toBe(0);
     expect((await git.status()).ahead).toBe(1);
 
@@ -101,8 +89,6 @@ describe("Commits made since the last sync and pushed (E2E)", () => {
     expect(status.canRemove).toBe(false);
   }, 60_000);
 
-  // With no upstream, `git status -b` prints no counts and simple-git reads
-  // ahead as 0: only a present upstream may waive the since-last-sync check.
   it("still blocks removal when the branch has no upstream to be on", async () => {
     const { git, dir, lastSyncCommit } = await cloneFeature("no-upstream");
     await commitFile(git, dir, "d.txt", "work\n");

@@ -12,11 +12,6 @@ import { createMockLogger } from "../test-utils";
 
 import type { RepositoryConfig, SparseCheckoutConfig, SyncOutcome } from "../../types";
 
-// The update phase's counterpart of lfs-smudge-worktree-create: the checkout
-// inside `merge --ff-only` (and inside a widening `sparse-checkout set`) runs
-// the smudge filter too. Without a fallback there the branch failed with
-// update_failed on every tick, and the files git wrote before the failing
-// path left the worktree dirty, so later ticks skipped it as dirty_worktree.
 describe("LFS smudge failures while updating existing worktrees (E2E)", () => {
   const pathResolution = new PathResolutionService();
   const POINTER = "version https://git-lfs.github.com/spec/v1\noid sha256:d0d0\nsize 12\n";
@@ -88,9 +83,6 @@ describe("LFS smudge failures while updating existing worktrees (E2E)", () => {
     return result.outcome;
   }
 
-  // `honorsSkipEnv: true` stands in for git-lfs, which writes the pointer
-  // instead of failing when GIT_LFS_SKIP_SMUDGE=1. Written into the bare
-  // repo's config, which every worktree shares.
   async function installFakeLfsFilter(honorsSkipEnv: boolean): Promise<void> {
     const body = honorsSkipEnv
       ? '#!/bin/sh\nif [ "$GIT_LFS_SKIP_SMUDGE" = "1" ]; then exec cat; fi\nexit 1\n'
@@ -108,8 +100,6 @@ describe("LFS smudge failures while updating existing worktrees (E2E)", () => {
     await fs.writeFile(smudgeScript, "#!/bin/sh\nexec cat\n", { mode: 0o755 });
   }
 
-  // Everything but the LFS file sorts before it, so a failing smudge leaves a
-  // half-applied checkout: an added file, a modified one and a deleted one.
   async function pushLfsCommit(lfsPath = "assets/big.bin"): Promise<string> {
     const seed = simpleGit(seedDir);
     await fs.writeFile(path.join(seedDir, "0-plain.txt"), "plain\n");
@@ -179,7 +169,6 @@ describe("LFS smudge failures while updating existing worktrees (E2E)", () => {
   it("re-applies a widened sparse-checkout with LFS downloads disabled when its checkout fails on LFS", async () => {
     await syncOnce(new WorktreeSyncService(makeConfig({ include: ["apps"] })));
     await installFakeLfsFilter(true);
-    // Outside the cone, so the fast-forward never smudges it; the widening does.
     await pushLfsCommit("libs/big.bin");
 
     const outcome = await syncOnce(new WorktreeSyncService(makeConfig({ include: ["apps", "libs"] })));

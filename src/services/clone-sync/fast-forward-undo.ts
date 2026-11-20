@@ -10,22 +10,12 @@ import type { MutatingGitClients } from "./git-clients";
 import type { CloneSyncContext } from "./types";
 import type { SimpleGit } from "simple-git";
 
-// What the undo needs from its caller; worktree mode's update path passes one
-// of its own (see GitService.updateWorktree).
 export type FastForwardUndoHost = Pick<CloneSyncContext, "logger" | "repoName" | "emitProgress">;
 
-// Paths handed to one `ls-tree` / `hash-object` / `restore` while a rejected
-// fast-forward is being undone. The set is usually a handful of files — the
-// ones that sort before the path git could not write — but an upstream commit
-// whose failing path sorts last leaves every changed file behind, and one
-// command line still has to fit the platform's argument limit.
 const MERGE_CLEANUP_PATH_BATCH = 200;
 
-// How many of those paths the summary line names before it starts counting.
 const MERGE_CLEANUP_LOG_PATH_LIMIT = 5;
 
-// `ls-tree`'s mode for a symlink, whose blob holds the target path rather than
-// any file's contents.
 const SYMLINK_TREE_MODE = "120000";
 
 interface RemoteTreeEntry {
@@ -34,37 +24,6 @@ interface RemoteTreeEntry {
   readonly id: string;
 }
 
-// A `merge --ff-only` git rejects is not a no-op. Its checkout half walks the
-// index in path order and stops at the first entry it cannot write — a
-// missing LFS object is the usual reason — with everything that sorts before
-// that path already updated on disk and the index and HEAD still describing
-// the old commit. `git status` then reports those paths, so the next tick
-// soft-skips with dirty_tree at info level and exits 0, and so does every
-// tick after it: git refuses to overwrite the untracked files the first
-// attempt left, which makes even a fixed LFS server unable to end the loop.
-// Undoing the half-applied checkout is what keeps the next attempt — and the
-// next tick — able to run at all.
-//
-// What makes that safe is not that the tree was clean a moment earlier: the
-// merge itself sits between that check and this point on a sync tick, and a
-// branch switch adds the unshallow, the branch fetch, the relationship
-// classification with up to three deepening fetches and the switch on top —
-// together they can run for minutes. Each path is proved on its own instead,
-// against what origin/<branch> holds for it:
-//
-//   present on disk — removed or restored only when its contents are what
-//     that ref holds for that path. Whoever put them there, they are the
-//     incoming version, and the next successful fast-forward writes that
-//     same object back — so undoing it loses nothing origin does not hold.
-//   missing from disk — restored only when that ref does NOT hold the path,
-//     the one case where the merge is what deleted it. A path origin still
-//     carries went missing some other way, and stays missing.
-//   anything else — left exactly as it is, dirty_tree and all.
-//
-// Deliberately not gated on the failure being a checkout failure: a merge
-// can also fail on `index.lock` while somebody's own git command dirties the
-// tree, and the per-path proof above is what decides there too — their work
-// does not match the incoming version, so none of it is touched.
 export async function undoRejectedFastForward(
   ctx: CloneSyncContext,
   clients: MutatingGitClients,
@@ -75,8 +34,6 @@ export async function undoRejectedFastForward(
   await undoRejectedFastForwardIn(ctx, clients.git, worktreeDir, branch, headBeforeMerge);
 }
 
-// The same undo for a checkout that is not clone mode's primary one (a linked
-// worktree), so there is no MutatingGitClients brand to require.
 export async function undoRejectedFastForwardIn(
   ctx: FastForwardUndoHost,
   git: SimpleGit,
@@ -84,9 +41,6 @@ export async function undoRejectedFastForwardIn(
   branch: string,
   headBeforeMerge: string | null,
 ): Promise<void> {
-  // Both halves fail closed. Without a before-and-after commit there is no
-  // proof the merge left HEAD alone, and a merge that did move HEAD wrote
-  // those files on purpose — undoing them would delete the update.
   if (headBeforeMerge === null) return;
   const headAfterMerge = await readHeadCommit(git);
   if (headAfterMerge === null || headAfterMerge !== headBeforeMerge) return;
@@ -96,8 +50,6 @@ export async function undoRejectedFastForwardIn(
   const dirtyPaths = new Set([...deviations.untracked, ...deviations.modified, ...deviations.missing]);
   if (dirtyPaths.size === 0) return;
 
-  // Only paths this merge would have written are candidates; a dirty path
-  // outside that set is somebody's own work and is never touched.
   let mergePaths: string[];
   try {
     const output = await git.raw([
@@ -120,17 +72,9 @@ export async function undoRejectedFastForwardIn(
   const candidates = mergePaths.filter((mergePath) => dirtyPaths.has(mergePath));
   if (candidates.length === 0) return;
 
-  // Read for every candidate, not just the ones still on disk: a path's
-  // ABSENCE from this map is the proof that lets a missing file be restored,
-  // so a lookup that failed must abort the whole cleanup rather than read as
-  // "origin does not have it".
   const entries = await readRemoteTreeEntries(ctx, git, branch, candidates);
   if (entries === null) return;
 
-  // git writes a regular file or a symlink and nothing else, and the two are
-  // proved differently — `hash-object` follows a symlink and hashes whatever
-  // is at the other end, which never equals the blob git stores for it (the
-  // target path) and would read a file outside the repository besides.
   const regularFiles: string[] = [];
   const symlinks: string[] = [];
   const toRemove: string[] = [];
@@ -156,9 +100,6 @@ export async function undoRejectedFastForwardIn(
   const hashes = await hashWorktreeFiles(ctx, git, regularFiles);
   for (const candidate of regularFiles) {
     const entry = entries.get(candidate);
-    // A symlink is a blob as well, so the mode has to be excluded here: a
-    // regular file whose content happens to be the link target string would
-    // otherwise prove equal to a symlink origin holds at that path.
     if (entry?.type !== "blob" || entry.mode === SYMLINK_TREE_MODE) continue;
     if (hashes.get(candidate) !== entry.id) continue;
     recordProven(candidate);
@@ -176,9 +117,6 @@ export async function undoRejectedFastForwardIn(
   reportUndoneFastForward(ctx, branch, removed, restored);
 }
 
-// What is at `target` right now, without following it: a symlink git wrote
-// must be recognized as one, and a path that turned into a directory or
-// vanished under us is left alone.
 async function classifyWorktreeEntry(worktreeDir: string, target: string): Promise<"file" | "symlink" | "other"> {
   const stats = await lstatOrNull(path.join(worktreeDir, target));
   if (stats === null) return "other";
@@ -186,9 +124,6 @@ async function classifyWorktreeEntry(worktreeDir: string, target: string): Promi
   return stats.isFile() ? "file" : "other";
 }
 
-// git stores a symlink as a blob holding the target path, so that string is
-// what has to match — `cat-file` gives it verbatim, with no trailing newline
-// for `readlink` to differ by.
 async function symlinkTargetMatchesBlob(
   git: SimpleGit,
   worktreeDir: string,
@@ -209,10 +144,6 @@ async function symlinkTargetMatchesBlob(
   }
 }
 
-// Every working-tree deviation git reports, split the way the cleanup has to
-// treat them. Paths a sparse checkout leaves out never appear here — git
-// does not report a skip-worktree entry as deleted — so the cleanup cannot
-// try to materialize a path outside the cone.
 async function readWorktreeDeviations(
   ctx: FastForwardUndoHost,
   git: SimpleGit,
@@ -221,8 +152,6 @@ async function readWorktreeDeviations(
     const status = await git.status();
     return {
       untracked: new Set(status.not_added),
-      // A type change (` T`, a file the merge turned into a symlink) is in no
-      // bucket; still proved against origin before anything is restored.
       modified: new Set([...status.modified, ...unbucketedTrackedPaths(status)]),
       missing: new Set(status.deleted),
     };
@@ -235,9 +164,6 @@ async function readWorktreeDeviations(
   }
 }
 
-// What origin/<branch> holds for each path — mode, type and object id.
-// `ls-tree` reports only the paths that exist in that tree and skips the
-// rest, which is exactly the answer the deletion half needs.
 async function readRemoteTreeEntries(
   ctx: FastForwardUndoHost,
   git: SimpleGit,
@@ -267,10 +193,6 @@ async function readRemoteTreeEntries(
   return entries;
 }
 
-// What each regular file currently holds, hashed by git itself so the
-// repository's filters (LFS's clean filter, CRLF conversion) are applied the
-// way they were when the blob was made. A path missing from the result is
-// one nothing may be concluded about, so it is simply never acted on.
 async function hashWorktreeFiles(
   ctx: FastForwardUndoHost,
   git: SimpleGit,
@@ -283,10 +205,6 @@ async function hashWorktreeFiles(
       batch.forEach((batchPath, index) => hashes.set(batchPath, batched[index]));
       continue;
     }
-    // One unreadable path fails the whole invocation, and failing the run
-    // over it would leave the wedge this cleanup exists to remove. Ask again
-    // per path so a file that cannot be hashed disqualifies itself and
-    // nothing else.
     for (const single of batch) {
       const one = await hashFileBatch(ctx, git, [single]);
       if (one !== null) hashes.set(single, one[0]);
@@ -295,10 +213,6 @@ async function hashWorktreeFiles(
   return hashes;
 }
 
-// `hash-object` prints one line per input, in order; anything else means the
-// mapping cannot be trusted and the caller falls back to asking one at a
-// time. Only the summary line of a failure is logged: simple-git puts the
-// command's stdout in the error, which here is the hashes it did print.
 async function hashFileBatch(ctx: FastForwardUndoHost, git: SimpleGit, batch: string[]): Promise<string[] | null> {
   let output: string;
   try {
@@ -324,8 +238,6 @@ async function hashFileBatch(ctx: FastForwardUndoHost, git: SimpleGit, batch: st
   return lines;
 }
 
-// Deletes files from the working tree: clone mode reaches it only through
-// undoRejectedFastForward, which requires the primary-checkout brand.
 async function removeWrittenFiles(ctx: FastForwardUndoHost, worktreeDir: string, paths: string[]): Promise<string[]> {
   const removed: string[] = [];
   for (const target of paths) {
@@ -339,11 +251,6 @@ async function removeWrittenFiles(ctx: FastForwardUndoHost, worktreeDir: string,
   return removed;
 }
 
-// `restore --worktree` rather than `checkout HEAD --`: the rejected merge
-// left the index alone, so putting these files back is a working-tree edit
-// and nothing else. It also keeps the pathspec clear of simple-git's
-// progress plugin, which appends `--progress` to every `checkout` — after a
-// `--` git reads that as one more path to restore.
 async function restoreFilesFromHead(ctx: FastForwardUndoHost, git: SimpleGit, paths: string[]): Promise<string[]> {
   const restored: string[] = [];
   for (const batch of inBatches(paths, MERGE_CLEANUP_PATH_BATCH)) {
@@ -351,9 +258,6 @@ async function restoreFilesFromHead(ctx: FastForwardUndoHost, git: SimpleGit, pa
       await git.raw(["restore", "--source=HEAD", "--worktree", "--", ...batch.map(asLiteralPathspec)]);
       restored.push(...batch);
     } catch (error) {
-      // A restore can fail for the same reason the merge did — HEAD's own
-      // version of the path may need the smudge filter that is down. The
-      // tree is then no worse than it was, and the next tick reports it.
       ctx.logger.warn(
         `Could not restore ${batch.length} file(s) in '${ctx.repoName}' from HEAD: ${getErrorMessage(error)}`,
       );

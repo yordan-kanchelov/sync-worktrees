@@ -13,12 +13,6 @@ import { createMockLogger } from "../test-utils";
 import type { Logger } from "../../services/logger.service";
 import type { RepositoryConfig, SyncOutcome } from "../../types";
 
-// Real git and a real filesystem. A directory already sitting where a managed
-// branch's worktree belongs, and not registered with git, is content sync did
-// not create and cannot inspect — files someone left there by hand. With trash
-// disabled it used to be deleted outright (`rm -rf`) when it held no `.git`.
-// It must be quarantined under `.removed/` instead; only an empty directory,
-// which holds nothing to lose, is removed.
 describe("Stale directory at a managed path with trash disabled (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -33,9 +27,6 @@ describe("Stale directory at a managed path with trash disabled (E2E)", () => {
     const seedDir = path.join(tempDir, "seed");
     worktreeDir = path.join(tempDir, "worktrees");
     bareRepoDir = path.join(tempDir, ".bare", "app");
-    // feature/a and feature-a flatten to the same plain name, so both get
-    // hashed directories: a stray directory can only sit at a hashed name if
-    // someone put it exactly there.
     featPath = path.join(worktreeDir, pathResolution.sanitizeBranchName("feature/a"));
 
     await fs.mkdir(path.dirname(remote), { recursive: true });
@@ -116,9 +107,6 @@ describe("Stale directory at a managed path with trash disabled (E2E)", () => {
     await expect(fs.access(path.join(path.dirname(featPath), GIT_CONSTANTS.REMOVED_DIR_NAME))).rejects.toThrow();
   }, 60_000);
 
-  // A plain name is only used when nothing is there yet: a directory someone
-  // made by hand at a branch's plain name is not moved aside, the branch gets
-  // its hashed name instead.
   it("leaves a directory at a branch's plain name alone and uses the hashed name", async () => {
     await simpleGit(path.join(tempDir, "seed")).push("origin", "main:refs/heads/docs");
     const strayPath = path.join(worktreeDir, "docs");

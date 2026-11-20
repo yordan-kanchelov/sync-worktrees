@@ -106,7 +106,6 @@ describe("worktree sync planner", () => {
         { pathResolution },
       );
 
-      // `<worktreeDir>/release/2024` is the anchor, and `2024` is its metadata key.
       expect(actions.map((action) => action.path)).toEqual([
         `${worktreeDir}/${pathResolution.sanitizeBranchName("2024")}`,
         `${worktreeDir}/${pathResolution.sanitizeBranchName("Release")}`,
@@ -146,8 +145,6 @@ describe("worktree sync planner", () => {
     });
 
     it("skips create actions when a resolved path collides with another branch", () => {
-      // A naming context that does not know about the registration (the
-      // runner's always does): the planner's own path check is the backstop.
       const collidingPath = wtPath("feature/new");
       const actions = planCreateActions(
         makeInventory({
@@ -184,9 +181,6 @@ describe("worktree sync planner", () => {
       expect(actions).toEqual([{ kind: "check-prune", branch: "feature/stale", path: wtPath("feature/stale") }]);
     });
 
-    // `git worktree remove` refuses a locked worktree, so planning it as a
-    // prune candidate would spend a status probe, a size scan and two renames
-    // on it every tick only to be refused.
     it("plans a locked worktree as a deliberate skip instead of a prune check", () => {
       const actions = planPruneActions(
         makeInventory({
@@ -223,11 +217,6 @@ describe("worktree sync planner", () => {
       ]);
     });
 
-    // The prune plan is only ever as good as the inventory it reads: names the
-    // remote listing loses (a branch ending in "/HEAD", one carrying "|", one
-    // literally named "origin") used to arrive here as unknown branches and be
-    // trashed. Whatever their shape, a branch that is on the remote is never a
-    // prune candidate.
     it("never plans a worktree whose branch is still on the remote, whatever its name", () => {
       const branches = ["feature/HEAD", "feature|wip", "origin", "release/2.0"];
 

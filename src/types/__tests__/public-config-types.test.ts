@@ -10,14 +10,6 @@ import type { Config, MaintenanceConfig, SyncWorktreesWorktreeRepository } from 
 type Expect<T extends true> = T;
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 
-/**
- * Drift guard: every key of the internal resolved `Config` must be consciously
- * sorted into exactly one bucket below. A newly added `Config` field that nobody
- * classifies makes `UnclassifiedConfigKeys` non-`never`, breaking
- * `_AllConfigKeysClassified` at compile time (`pnpm typecheck`). This forces a
- * deliberate decision about whether each new field belongs on the public config
- * surface instead of letting the hand-written public types silently fall behind.
- */
 type CommonConfigKeys =
   | "cronSchedule"
   | "retry"
@@ -36,7 +28,6 @@ type CloneOnlyConfigKeys = "branch" | "depth";
 type DefaultsOnlyConfigKeys = "runOnce" | "syncOnStart";
 type DiscriminantConfigKeys = "mode";
 type BaseIdentityConfigKeys = "repoUrl" | "worktreeDir";
-// Set internally or read only at runtime — intentionally absent from the public input surface.
 type InternalOnlyConfigKeys = "logger" | "__configFileDir" | "__configuredRepoDirs";
 
 type ClassifiedConfigKeys =
@@ -51,22 +42,10 @@ type ClassifiedConfigKeys =
 type UnclassifiedConfigKeys = Exclude<keyof Config, ClassifiedConfigKeys>;
 type _AllConfigKeysClassified = Expect<Equal<UnclassifiedConfigKeys, never>>;
 
-/**
- * Each common field must exist on the public repository type with a value type
- * matching internal `Config` (optionality stripped — public input is optional even
- * where the resolved `Config` is required). Both sides are normalized to concrete
- * object shapes before comparison: a per-key `Equal` stays deferred (`boolean`)
- * while `K` is generic, but comparing the assembled shapes resolves to a literal.
- * A common key missing from the public repository type makes `[K]` an index error,
- * so a forgotten public field also fails closed.
- */
 type PublicCommonShape = { [K in CommonConfigKeys]-?: Exclude<SyncWorktreesWorktreeRepository[K], undefined> };
 type InternalCommonShape = { [K in CommonConfigKeys]-?: Exclude<Config[K], undefined> };
 type _CommonFieldTypesMatch = Expect<Equal<PublicCommonShape, InternalCommonShape>>;
 
-// Same guard for worktree-only fields: dropping `trash` (or any of these) from
-// the public worktree repository type, or letting its type diverge from the
-// internal `Config`, must fail typecheck rather than slip through.
 type PublicWorktreeOnlyShape = {
   [K in WorktreeOnlyConfigKeys]-?: Exclude<SyncWorktreesWorktreeRepository[K], undefined>;
 };
@@ -76,8 +55,6 @@ type _MaintenanceAliasMatches = Expect<Equal<SyncWorktreesMaintenanceConfig, Mai
 
 const srcDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-// Every source module the public entry imports, transitively. tsc emits a .d.ts
-// for each one, so this is what `dist` ships as declarations.
 function publicTypeModules(): string[] {
   const seen = new Set<string>();
   const queue = [path.join(srcDir, "public-types.ts")];
@@ -130,9 +107,6 @@ const _worktreeModeConfig = {
     hooks: {
       onBranchCreated: ["echo {WORKTREE_PATH}"],
     },
-    // Inactivity timeouts are common fields: accepted under `defaults` and on a
-    // repository entry, in either mode. 0 is a real value ("no inactivity
-    // kill"), not an omission.
     fetchTimeoutMs: 0,
     cloneTimeoutMs: 1_800_000,
   },

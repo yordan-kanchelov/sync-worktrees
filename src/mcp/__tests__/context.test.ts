@@ -186,8 +186,6 @@ describe("RepositoryContext.detectFromPath", () => {
     expect(result.notes.some((n: string) => n.startsWith("Could not determine worktreeDir"))).toBe(true);
     expect(result.capabilities.listWorktrees.available).toBe(true);
     expect(result.capabilities.getStatus.available).toBe(true);
-    // load_config / set_current_repository list it the way detect_context does,
-    // not with the internal placeholder directory.
     expect(ctx.getRepositoryList()).toEqual([
       expect.objectContaining({ name: result.repoName, worktreeDir: null, source: "detected" }),
     ]);
@@ -245,10 +243,6 @@ describe("RepositoryContext.detectFromPath", () => {
     expect(result.capabilities.updateWorktree.available).toBe(true);
   });
 
-  // The detected entry is created once per bare repo and then reused, so a
-  // later detection that can derive what an earlier one could not has to write
-  // the answer back; otherwise the reported worktreeDir and the one the tools
-  // resolve drift apart, which is the whole defect in a second guise.
   it("refreshes an existing detected entry's worktreeDir once the derivation succeeds", async () => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-nested-")));
     const bareRepo = path.join(root, ".bare", "repo");
@@ -723,7 +717,6 @@ describe("RepositoryContext.getConfiguredRepositorySummaries", () => {
       await fs.mkdir(path.join(cloneDir, ".git"), { recursive: true });
       await fs.mkdir(bareDir, { recursive: true });
       await fs.writeFile(path.join(bareDir, "HEAD"), "ref: refs/heads/main\n", "utf-8");
-      // The repo lock creates the bare dir before any clone: empty is not ready.
       await fs.mkdir(path.join(workspace, ".bare", "empty"), { recursive: true });
 
       const configPath = path.join(workspace, "sync-worktrees.config.js");
@@ -934,18 +927,12 @@ describe("RepositoryContext.detectFromPath caching", () => {
     const future = new Date(Date.now() + 10_000);
     await fs.utimes(headPath, future, future);
     const afterMtimeMs = (await fs.stat(headPath)).mtimeMs;
-    // Guard against coarse-resolution filesystems: the test premise requires
-    // the utimes call to actually change mtime observed by fs.stat.
     expect(afterMtimeMs).toBeGreaterThan(beforeMtimeMs);
 
     await ctx.detectFromPath(fixture.currentWorktree);
     expect(mockWorktreeList.mock.calls.length).toBe(firstCallCount + 1);
   });
 
-  // Every probed path used to get its own permanent entry, and each entry holds
-  // a whole DiscoveredRepoContext -- including that repository's full
-  // allWorktrees array. A session that walked a project's subdirectories
-  // therefore retained one such array per directory it ever looked at.
   it("keeps the discovery cache bounded as distinct paths are probed", async () => {
     mockRemoteUrl.mockResolvedValue("https://github.com/test/repo.git\n");
     mockWorktreeList.mockResolvedValue(
@@ -961,20 +948,15 @@ describe("RepositoryContext.detectFromPath caching", () => {
       await ctx.detectFromPath(dir);
     }
 
-    // Every probe landed on a real worktree, so without a bound the cache would
-    // now hold one entry per path. Guard the guard: a cache that never cached
-    // anything would also satisfy the ceiling.
     expect(ctx.__discoveryCacheSizeForTest()).toBeGreaterThan(1);
     expect(ctx.__discoveryCacheSizeForTest()).toBeLessThan(probed.length);
 
-    // Eviction is not a correctness change: the oldest path simply re-detects.
     const callsBeforeReprobe = mockWorktreeList.mock.calls.length;
     const evicted = await ctx.detectFromPath(probed[0]);
     expect(mockWorktreeList.mock.calls.length).toBe(callsBeforeReprobe + 1);
     expect(evicted.isWorktree).toBe(true);
     expect(evicted.currentWorktreePath).toBe(fixture.currentWorktree);
 
-    // ...while the newest path is still a hit.
     const callsBeforeHit = mockWorktreeList.mock.calls.length;
     await ctx.detectFromPath(probed[probed.length - 1]);
     expect(mockWorktreeList.mock.calls.length).toBe(callsBeforeHit);
@@ -1395,10 +1377,7 @@ describe("RepositoryContext repoUrl credential redaction", () => {
 
     expect(result.repoUrl).toBe(REDACTED_URL);
     expect(JSON.stringify(result)).not.toContain("s3cr3t-token");
-    // Detection still recognises a usable remote.
     expect(result.capabilities.createWorktree.available).toBe(true);
-    // The auto-detected entry that backs git operations keeps the working URL;
-    // only the presentation list is redacted.
     expect(result.repoName).not.toBeNull();
     expect(ctx.getEntry(result.repoName as string)?.config.repoUrl).toBe(TOKEN_URL);
     expect(ctx.getRepositoryList()).toEqual([
@@ -1487,11 +1466,9 @@ describe("RepositoryContext.loadConfig path collisions", () => {
       const ctx = new RepositoryContext();
       await expect(ctx.loadConfig(configPath)).rejects.toThrow(ConfigValidationError);
       await expect(ctx.loadConfig(configPath)).rejects.toThrow(/'first' and 'second'.*same worktreeDir/);
-      // A rejected config registers nothing: neither entry may be synced.
       expect(ctx.getConfiguredRepositoryNames()).toEqual([]);
       expect(ctx.getConfigPath()).toBeNull();
 
-      // The load_config tool reports the validation error, not a generic failure.
       const result = await handleLoadConfig(ctx, { configPath }).catch((err: unknown) => formatErrorResponse(err));
       const body = JSON.parse((result.content[0] as { text: string }).text) as Record<string, unknown>;
       expect(body.error).toBe(true);
@@ -1505,12 +1482,6 @@ describe("RepositoryContext.loadConfig path collisions", () => {
 });
 
 describe("RepositoryContext.loadConfig unknown-key warnings", () => {
-  /**
-   * The stdio server's stdout is the JSON-RPC stream: a diagnostic written
-   * there is a protocol error, not a log line. `RepositoryContext` therefore
-   * hands its ConfigLoaderService a stderr-bound logger, and this pins both
-   * halves — the warning arrives, and nothing reaches stdout.
-   */
   it("routes the warning to stderr and writes nothing to stdout", async () => {
     const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mcp-unknown-key-")));
     try {
@@ -1535,7 +1506,6 @@ describe("RepositoryContext.loadConfig unknown-key warnings", () => {
         );
         expect(stdout).not.toHaveBeenCalled();
         expect(consoleLog).not.toHaveBeenCalled();
-        // The injected logger takes it, so console is not the path here.
         expect(consoleWarn).not.toHaveBeenCalled();
       } finally {
         stderr.mockRestore();

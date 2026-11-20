@@ -20,14 +20,6 @@ export class WorktreeMetadataService {
     this.logger = logger;
   }
 
-  /**
-   * Metadata is keyed by worktree path basename, in a store this tool owns
-   * (not git's own admin directories). Basenames are unique because a new
-   * worktree's directory name is checked against every registered worktree's
-   * basename and every leftover record before it is used (see
-   * PathResolutionService.branchDirectoryName), and saveMetadata refuses to
-   * overwrite a record written for another upstream.
-   */
   private getWorktreeDirectoryName(worktreePath: string): string {
     return path.basename(worktreePath);
   }
@@ -47,7 +39,6 @@ export class WorktreeMetadataService {
   }
 
   async getMetadataPathFromWorktreePath(bareRepoPath: string, worktreePath: string): Promise<string> {
-    // Extract the worktree directory name (basename) that Git actually uses
     const worktreeDirName = this.getWorktreeDirectoryName(worktreePath);
     return this.getMetadataPath(bareRepoPath, worktreeDirName);
   }
@@ -73,18 +64,10 @@ export class WorktreeMetadataService {
       const content = await fs.readFile(metadataPath, "utf-8");
       return JSON.parse(content) as SyncMetadata;
     } catch {
-      // Return null if file doesn't exist or can't be parsed
       return null;
     }
   }
 
-  /**
-   * The branch a metadata record under `worktreeName` was written for (its
-   * upstream without the `origin/` prefix), or null when there is no valid
-   * record. saveMetadata refuses to overwrite a record for another upstream,
-   * so a name whose record belongs to another branch cannot be given to a new
-   * worktree.
-   */
   async readMetadataOwner(bareRepoPath: string, worktreeName: string): Promise<string | null> {
     const existing = await this.loadMetadata(bareRepoPath, worktreeName);
     if (!existing || !(await this.validateMetadata(existing))) return null;
@@ -118,7 +101,6 @@ export class WorktreeMetadataService {
     try {
       await fs.unlink(metadataPath);
     } catch (error) {
-      // Ignore errors if file doesn't exist
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
@@ -137,7 +119,6 @@ export class WorktreeMetadataService {
         const worktreeGit = createGitClient(worktreePath);
         const currentCommit = await worktreeGit.revparse(["HEAD"]);
 
-        // Not `branch()`: that runs `git branch -v -a`, a walk of every branch.
         const headRef = (await worktreeGit.raw(["symbolic-ref", "-q", "HEAD"])).trim();
         const actualBranchName = headRef.startsWith(GIT_CONSTANTS.REFS.HEADS)
           ? headRef.slice(GIT_CONSTANTS.REFS.HEADS.length)
@@ -157,9 +138,7 @@ export class WorktreeMetadataService {
           if (configuredUpstream.trim()) {
             upstreamBranch = configuredUpstream.trim();
           }
-        } catch {
-          // No configured upstream, use constructed value
-        }
+        } catch {}
 
         const created = await this.createInitialMetadataFromPath(
           bareRepoPath,
@@ -179,27 +158,17 @@ export class WorktreeMetadataService {
       }
     }
 
-    // Update metadata
     existing.lastSyncCommit = commit;
     existing.lastSyncDate = new Date().toISOString();
 
-    // Save using the directory name
     await this.saveMetadata(bareRepoPath, worktreeDirName, existing);
   }
 
-  /**
-   * Records the upstream tip observed during this sync. This is what later
-   * proves "HEAD was fully pushed" after the remote branch is deleted, so it
-   * must only ever be overwritten with a live observation — callers must not
-   * invoke this once the upstream ref is gone.
-   */
   async recordRemoteTip(bareRepoPath: string, worktreePath: string, ref: string, oid: string): Promise<void> {
     const worktreeDirName = this.getWorktreeDirectoryName(worktreePath);
     const existing = await this.loadMetadataFromPath(bareRepoPath, worktreePath);
 
     if (!existing) {
-      // debug, not warn: this runs every sync tick for every worktree, and a
-      // legacy worktree without metadata would otherwise spam the log forever.
       this.logger.debug(`No metadata found for worktree ${worktreeDirName}; skipping remote tip recording`);
       return;
     }

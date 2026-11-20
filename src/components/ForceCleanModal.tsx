@@ -16,12 +16,9 @@ export interface ForceCleanModalProps {
   getPreview: () => Promise<ForceCleanRepositoryPreview[]>;
   forceClean: (selections: ForceCleanRepositorySelection[]) => Promise<ForceCleanRepositoryResult[]>;
   onClose: () => void;
-  /** Rows the modal may use; defaults to the terminal height. */
   availableRows?: number;
 }
 
-// What has to be typed before the purge runs. A single `y` sat right next to
-// `n` and fired on a key repeat; a word is a decision.
 export const FORCE_CLEAN_CONFIRM_WORD = "clean";
 
 const EXPLANATION = [
@@ -30,11 +27,9 @@ const EXPLANATION = [
     "command running in a worktree first. If any worktree is caught mid-operation the gc is skipped for that whole " +
     "repository; the purge still runs. A lock left behind by a crashed command keeps reporting busy until it is removed.",
 ];
-// What a short terminal gets instead: the part that asks something of the reader.
 const SHORT_EXPLANATION = [
   "Permanently purges verified trash and recovery refs, then runs git gc on the shared object store; finish any git command running in a worktree first.",
 ];
-/** The per-repository list keeps at least this many rows before the explanation is shortened. */
 const MIN_LIST_ROWS_BEFORE_SHORTENING = 3;
 
 type Color = "red" | "yellow" | "green";
@@ -46,7 +41,6 @@ interface Line {
   bold?: boolean;
 }
 
-/** Rows a message takes: every line of it, each word-wrapped to `width`. */
 const textRows = (text: string, width: number): number =>
   text.split("\n").reduce((sum, line) => sum + wrappedRows(line, width), 0);
 
@@ -128,9 +122,7 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
   const nothingToClean = totals.trashEntries === 0 && totals.keepRefs === 0;
   const awaitingConfirmation = results === null && !cleaning && !loading && !error && !nothingToClean;
 
-  // The per-repository rows: the preview, then what the purge did.
   const items: Line[] = results !== null ? results.map(resultLine) : loading ? [] : previews.map(previewLine);
-  // Everything else under them, which is never scrolled away.
   const statusLines: Line[] = [
     ...(loading ? [{ key: "loading", text: "Loading cleanup preview...", color: "yellow" as const }] : []),
     ...(!loading && results === null && !error && nothingToClean
@@ -169,10 +161,6 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
       )
     : wrappedRows(footerText, layout.innerWidth);
 
-  // Rows the per-repository list has once everything else is drawn. The
-  // explanation gives way to its short form before the list is squeezed below
-  // a few rows, and a list that still does not fit scrolls one line per
-  // repository, so the frame never pushes the status bar off the screen.
   const itemRows = items.reduce((sum, line) => sum + textRows(line.text, layout.innerWidth), 0);
   const fixedRows =
     layout.chromeRows +
@@ -184,19 +172,14 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
     roomWith(EXPLANATION) >= Math.min(itemRows, MIN_LIST_ROWS_BEFORE_SHORTENING) ? EXPLANATION : SHORT_EXPLANATION;
   const listRoom = roomWith(explanation);
   const listScrolls = itemRows > Math.max(0, listRoom);
-  // One row for the `repositories 3–5 of 12` line, reserved while it scrolls.
   const visibleCount = listScrolls ? Math.max(1, listRoom - 1) : items.length;
   const maxOffset = Math.max(0, items.length - visibleCount);
   const offset = Math.min(scrollOffset, maxOffset);
   const visibleItems = items.slice(offset, offset + visibleCount);
 
   useInput((input, key) => {
-    // Mouse reports arrive as a single `input` string; ignore them here so a
-    // scroll never registers as a keystroke.
     if (isMouseSequence(input)) return;
 
-    // Arrows and Ctrl-P/N only: j and k are letters the confirmation word
-    // could be typed with.
     if (listScrolls && isListUp(input, key)) {
       setScrollOffset((prev) => Math.max(0, Math.min(prev, maxOffset) - 1));
       return;
@@ -221,11 +204,6 @@ const ForceCleanModal: React.FC<ForceCleanModalProps> = ({ getPreview, forceClea
     } else if (key.return) {
       if (typed.trim().toLowerCase() !== FORCE_CLEAN_CONFIRM_WORD) return;
       setCleaning(true);
-      // Only the repos whose counts are on screen — a repo whose preview failed
-      // was never shown a number, so it must not be purged on this
-      // confirmation — and inside each of those, only the entries and refs
-      // those counts were computed from. A sync can trash more while this modal
-      // waits for a keypress; the extra entries are not part of what was shown.
       forceClean(
         previews
           .filter(

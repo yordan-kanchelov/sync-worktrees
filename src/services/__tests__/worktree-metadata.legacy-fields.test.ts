@@ -7,9 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createMockLogger } from "../../__tests__/test-utils";
 import { WorktreeMetadataService } from "../worktree-metadata.service";
 
-// Real filesystem. Older versions wrote `createdFrom` and `syncHistory` into
-// every record; nothing reads them. New records must not carry them, and an
-// old record must load, validate and be rewritten exactly as before.
 describe("WorktreeMetadataService and the retired createdFrom/syncHistory fields", () => {
   let bareRepoPath: string;
   const worktreePath = "/somewhere/worktrees/feature-a";
@@ -66,7 +63,6 @@ describe("WorktreeMetadataService and the retired createdFrom/syncHistory fields
 
     const loaded = await service.loadMetadataFromPath(bareRepoPath, worktreePath);
 
-    // lastSyncCommit and lastKnownRemoteTip are what the removal checks read.
     expect(loaded?.lastSyncCommit).toBe("0123abcd");
     expect(loaded?.lastKnownRemoteTip).toEqual(legacyRecord.lastKnownRemoteTip);
     expect(await service.readMetadataOwner(bareRepoPath, "feature-a")).toBe("feature-a");

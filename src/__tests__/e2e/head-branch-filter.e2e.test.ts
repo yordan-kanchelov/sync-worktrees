@@ -21,11 +21,9 @@ describe("HEAD branch filtering (E2E)", () => {
     bareRepo = path.join(tempDir, "test-repo.git");
     worktreeDir = path.join(tempDir, "worktrees");
 
-    // Create a bare repository
     const git = simpleGit();
     await git.init(["--bare", bareRepo]);
 
-    // Create a temporary directory for initial commit
     const initDir = path.join(tempDir, "init");
     await fs.mkdir(initDir);
     const initGit = simpleGit(initDir);
@@ -35,11 +33,10 @@ describe("HEAD branch filtering (E2E)", () => {
     await fs.writeFile(path.join(initDir, "README.md"), "# Test Repository");
     await initGit.add(".");
     await initGit.commit("Initial commit");
-    await initGit.branch(["-M", "main"]); // Ensure branch is named 'main'
+    await initGit.branch(["-M", "main"]);
     await initGit.addRemote("origin", bareRepo);
     await initGit.push("origin", "main");
 
-    // Create additional branches
     await initGit.checkoutLocalBranch("feature-1");
     await fs.writeFile(path.join(initDir, "feature1.txt"), "Feature 1");
     await initGit.add(".");
@@ -53,11 +50,9 @@ describe("HEAD branch filtering (E2E)", () => {
     await initGit.commit("Add feature 2");
     await initGit.push("origin", "feature-2");
 
-    // Ensure origin/HEAD exists
     const bareGit = simpleGit(bareRepo);
     await bareGit.raw(["symbolic-ref", "HEAD", "refs/heads/main"]);
 
-    // Clean up init directory
     await fs.rm(initDir, { recursive: true });
   });
 
@@ -66,8 +61,6 @@ describe("HEAD branch filtering (E2E)", () => {
   });
 
   it("should successfully sync repository without creating HEAD worktree", async () => {
-    // Run sync-worktrees
-    // Note: Using a config file to disable parallelism for this test to avoid Git worktree race conditions
     const bareRepoDir = path.join(tempDir, ".bare");
     const configPath = path.join(tempDir, "config.js");
     await fs.writeFile(
@@ -92,7 +85,6 @@ describe("HEAD branch filtering (E2E)", () => {
     expect(output).toContain("Synchronization finished");
     expect(output).not.toContain("Creating new worktrees for: HEAD");
 
-    // Verify worktrees were created
     const worktrees = await fs.readdir(worktreeDir);
     const feature1Dir = "feature-1";
     expect(worktrees).toContain(feature1Dir);
@@ -100,18 +92,10 @@ describe("HEAD branch filtering (E2E)", () => {
     expect(worktrees).not.toContain("HEAD");
     expect(worktrees).not.toContain(pathRes.sanitizeBranchName("HEAD"));
 
-    // Note: The main branch worktree should be created during initialization,
-    // but there's a platform-specific issue that causes different behavior
-    // between local development (macOS) and CI (Ubuntu). On CI, the main
-    // worktree is correctly created. This should be investigated further.
-    // For now, we accept both behaviors to keep tests passing.
-    // See: path comparison issue in GitService.initialize() line 71
     if (!worktrees.includes("main")) {
       console.warn("Main worktree not found - this may indicate a platform-specific path comparison issue");
     }
 
-    // Verify git worktree list doesn't include HEAD
-    // Check from any worktree (they all share the same worktree list)
     const feature1Path = path.join(worktreeDir, feature1Dir);
     const git = simpleGit(feature1Path);
     const worktreeList = await git.raw(["worktree", "list"]);

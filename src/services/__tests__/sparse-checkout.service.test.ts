@@ -132,7 +132,6 @@ describe("SparseCheckoutService", () => {
     });
 
     it("sorts cone includes by UTF-8 bytes, as git does, not by UTF-16 code units", () => {
-      // U+E000 is a lower byte sequence than U+1D400 but a higher code unit.
       expect(service.buildPatterns({ include: ["x\u{1D400}", "x\u{E000}"] })).toEqual(["x\u{E000}", "x\u{1D400}"]);
     });
 
@@ -172,10 +171,6 @@ describe("SparseCheckoutService", () => {
       expect(mockGit.raw).toHaveBeenNthCalledWith(2, ["sparse-checkout", "set", "--no-cone", "--", "apps/", "!docs/"]);
     });
 
-    // Without the `--`, git reads a dash-leading directory as an option:
-    // 2.43 tolerated `-apps` (PARSE_OPT_KEEP_UNKNOWN_OPT), 2.55 dies on it with
-    // "unknown switch `a'", and both versions read a directory named
-    // `--skip-checks` as the flag and quietly set no patterns at all.
     it("separates the patterns from the options so a dash-leading directory stays a path", async () => {
       mockGit.raw.mockResolvedValue("");
       await service.applyToWorktree("/wt", { include: ["-apps", "--skip-checks"] });
@@ -399,7 +394,6 @@ describe("SparseCheckoutService", () => {
     });
 
     it("matches files directly inside ancestors of a nested include (cone keeps parent files)", () => {
-      // For include "tools/build", git's cone mode also checks out files directly in "tools/"
       expect(service.pathsTouchSparse(["tools/file.txt"], { include: ["tools/build"] })).toBe(true);
     });
 
@@ -426,13 +420,9 @@ describe("SparseCheckoutService", () => {
     });
 
     it("matches inside the directory a '..' segment actually resolves to", () => {
-      // git materializes `docs/` for this config, so an update touching it
-      // must not be skipped as "outside the sparse paths".
       expect(service.pathsTouchSparse(["docs/x.md"], { include: ["apps", "apps/../docs"] })).toBe(true);
     });
 
-    // Same class as the '..' case above: git normalizes these away, so the
-    // files really are in the worktree and an update touching them must run.
     it.each([
       ["apps//", "apps/x.md"],
       ["./apps", "apps/x.md"],
@@ -457,9 +447,6 @@ describe("SparseCheckoutService", () => {
     });
   });
 
-  // Every expectation below was checked against real `git sparse-checkout set
-  // --cone` on git 2.43.0 and 2.55.0, which answer identically: the accepted
-  // entries are accepted, the refused ones are refused.
   describe("findConeRuleViolations", () => {
     const only = (cfg: SparseCheckoutConfig): string => {
       const found = findConeRuleViolations(cfg);
@@ -501,8 +488,6 @@ describe("SparseCheckoutService", () => {
       expect(only({ include: ["apps/web]"] })).toContain("'apps/web]'");
     });
 
-    // git takes `.` but `sparse-checkout list` then prints nothing, so it could
-    // never compare equal and was re-applied on every sync.
     it("rejects a lone dot, which selects only root files", () => {
       expect(only({ include: ["."] })).toContain("'.'");
       expect(only({ include: ["./"] })).toContain("(applied as '.')");

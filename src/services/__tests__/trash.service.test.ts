@@ -17,11 +17,6 @@ import type { Logger } from "../logger.service";
 import type { RemovalAuditService } from "../removal-audit.service";
 import type { TrashEntry, TrashManifest } from "../trash.service";
 
-// Real filesystem everywhere except the one path a test declares undeletable:
-// an ESM namespace export cannot be spied on, so `rm` is replaceable only by
-// way of a partial module mock. `rename` and `cp` go through the same mock as
-// pass-through spies — restore moves the payload rather than copying it, which
-// is a claim about which of the two ran.
 vi.mock("fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof FsPromises>();
   return {
@@ -39,26 +34,11 @@ const PREFIX = GIT_CONSTANTS.TRASH_REF_PREFIX;
 const HASH = "0123456789abcdef";
 const FRESH_GIT_LINK = "gitdir: /fresh/admin\n";
 
-/**
- * What `git worktree add --no-checkout` leaves behind: the directory and
- * exactly one entry in it, the `.git` link (measured on git 2.43). Restore
- * reads that link back to re-point the payload it moves into the directory, so
- * a stub that creates the directory alone is not the operation it stands in
- * for. {@link makeGitStub} installs this by default.
- */
 async function createFreshWorktreeDir(destination: string): Promise<void> {
   await fs.mkdir(destination, { recursive: true });
   await fs.writeFile(path.join(destination, PATH_CONSTANTS.GIT_DIR), FRESH_GIT_LINK);
 }
 
-/**
- * Makes exactly the renames a test names fail, with everything else still
- * going to the real one: the manifest writes and the trash move itself run
- * through `fs.rename` too, and a blanket failure would break the fixture
- * instead of the operation under test. Used for the EXDEV a bind mount or a
- * symlinked worktreeDir puts between the trash root and the worktree, and for
- * the rollback rename that puts a moved payload back.
- */
 async function failRenameWhen(
   shouldFail: (from: string, to: string) => boolean,
   code: "EXDEV" | "EPERM",
@@ -72,12 +52,10 @@ async function failRenameWhen(
   }) as unknown as typeof fs.rename);
 }
 
-/** Hands `fs.rename` back to the real one. */
 function allowRename(): void {
   vi.mocked(fs.rename).mockReset();
 }
 
-/** {@link failRenameWhen} for `fs.writeFile`, which restore uses for one thing. */
 async function failWriteFileWhen(shouldFail: (target: string) => boolean, code: "EIO"): Promise<void> {
   const realWriteFile = (await vi.importActual<typeof FsPromises>("fs/promises")).writeFile;
   vi.mocked(fs.writeFile).mockImplementation((async (target: string, data: string) => {
@@ -88,7 +66,6 @@ async function failWriteFileWhen(shouldFail: (target: string) => boolean, code: 
   }) as unknown as typeof fs.writeFile);
 }
 
-/** Hands `fs.writeFile` back to the real one. */
 function allowWriteFile(): void {
   vi.mocked(fs.writeFile).mockReset();
 }
@@ -140,8 +117,6 @@ describe("TrashService", () => {
   });
 
   afterEach(async () => {
-    // Before the cleanup below: it deletes the temp trees with the very fs.rm
-    // and fs.rename some of these tests replace.
     allowDeletion();
     allowRename();
     allowWriteFile();
@@ -247,9 +222,6 @@ describe("TrashService", () => {
       );
     });
 
-    // The rollback of a half-made entry is a delete like any other: when it is
-    // refused, what stays behind has to be something the pipeline can still
-    // see and finish — a payload-less entry that lists and ages out.
     it("leaves a listable entry behind, and says so, when the rollback delete is refused", async () => {
       const missingSource = path.join(worktreeDir, "does-not-exist");
       await mockUndeletableFile(TRASH_CONSTANTS.MANIFEST_FILENAME);
@@ -265,8 +237,6 @@ describe("TrashService", () => {
     });
 
     it("aborts and rolls back when HEAD moves between resolution and the payload move (commit made mid-trash)", async () => {
-      // First resolution pins abc123; the pre-rename re-check sees a new
-      // commit the user made during the (slow) size scan / bundle window.
       gitStub.getCurrentCommit.mockResolvedValueOnce("abc123").mockResolvedValueOnce("def456");
       const source = await makeSourceDir("racing-commit");
 
@@ -274,7 +244,6 @@ describe("TrashService", () => {
         service.trashDirectory({ dirPath: source, branch: "racing-commit", reason: "prune" }),
       ).rejects.toBeInstanceOf(TrashOperationError);
 
-      // Source untouched, no trash container left behind, pin rolled back.
       await expect(fs.access(source)).resolves.toBeUndefined();
       const trashContents = await fs.readdir(service.getTrashRoot()).catch(() => []);
       expect(trashContents).toEqual([]);
@@ -292,8 +261,6 @@ describe("TrashService", () => {
       await expect(fs.access(source)).resolves.toBeUndefined();
     });
 
-    // A kill while the bundle is written leaves only the first manifest on
-    // disk: that one must still list (and age out), not land in `invalid`.
     it("keeps a keep-on-reap entry listable while its bundle is still being created", async () => {
       let releaseBundle!: () => void;
       let bundleStarted!: () => void;
@@ -349,8 +316,6 @@ describe("TrashService", () => {
       expect(branchRefError).toBeUndefined();
       await expect(fs.access(entry.payloadPath)).resolves.toBeUndefined();
       expect(gitStub.removeWorktree).toHaveBeenCalledWith(source, { force: true });
-      // Conditional delete: the ref goes only while it still points at the
-      // verified HEAD, so a commit racing the removal keeps its branch.
       expect(gitStub.deleteLocalBranchIfAt).toHaveBeenCalledWith("feature-seq", "abc123");
       expect(gitStub.deleteLocalBranch).not.toHaveBeenCalled();
       expect(gitStub.removeWorktree.mock.invocationCallOrder[0]).toBeLessThan(
@@ -359,8 +324,6 @@ describe("TrashService", () => {
     });
 
     it("keeps the branch ref (leftover warning) when it moved between HEAD verification and deletion", async () => {
-      // The CAS delete refuses because the ref no longer points at the
-      // verified oid — the racing commit must keep its branch.
       gitStub.deleteLocalBranchIfAt.mockRejectedValue(new Error("ref value mismatch"));
       const source = await makeSourceDir("racing-ref");
 
@@ -439,7 +402,6 @@ describe("TrashService", () => {
       ).rejects.toThrow("restored the directory to its original path");
 
       await expect(fs.readFile(path.join(source, "file.txt"), "utf-8")).resolves.toBe("data");
-      // The detached .git link is put back with the directory.
       await expect(fs.readFile(path.join(source, ".git"), "utf-8")).resolves.toBe("gitdir: /x\n");
       await expect(fs.access(path.join(source, ".git.detached"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(fs.readdir(service.getTrashRoot())).resolves.toEqual([]);
@@ -482,14 +444,9 @@ describe("TrashService", () => {
       expect(summary.totalSizeBytes).toBeGreaterThanOrEqual(0);
     });
 
-    // A pin ref is what the reaper and restore hand to `git update-ref -d`, so
-    // every shape that does not end at this entry's own id has to be refused —
-    // otherwise a hand-edited or corrupted manifest picks the delete target.
     it.each([
       { scenario: "a branch ref", pinRef: () => "refs/heads/main" },
       {
-        // Padded so the root-hash slice lands on real hex even without the
-        // prefix check: the whole string is still a branch ref.
         scenario: "a branch ref padded to the trash prefix's length",
         pinRef: (id: string) => `refs/heads/${"x".repeat(PREFIX.length - "refs/heads/".length)}${HASH}/${id}`,
       },
@@ -515,15 +472,6 @@ describe("TrashService", () => {
       expect(listed.invalid).toEqual([entry.containerPath]);
     });
 
-    // `branch` and `headOid` are handed to git positionally by restore —
-    // `git branch <branch> <headOid>`, then `git worktree add ... <branch>` —
-    // and git's option parser permutes, so an option-shaped value in either
-    // slot is read as an option. Measured on git 2.43: in a bare repo whose
-    // HEAD is refs/heads/main, `git branch -m <sha>` and `git branch <name> -m`
-    // both rename main and take HEAD with it, and every later sync then fails
-    // to find the default branch. No real branch name or object id can look
-    // like that, so the manifest is the only way in — and it is refused here,
-    // before any of it reaches a git wrapper.
     it.each([
       { scenario: "an option", branch: "-m" },
       { scenario: "a long option", branch: "--delete" },
@@ -531,10 +479,6 @@ describe("TrashService", () => {
       { scenario: "a reflog selector", branch: "feature@{1}" },
       { scenario: "a .lock ref", branch: "feature/x.lock" },
       { scenario: "empty", branch: "" },
-      // A JSON number, not a string: `isGitCreatableBranchName` throws on it
-      // and readManifest's catch would swallow that into the same `null`, so
-      // this only pins the typeof guard because the value below is one the
-      // predicate itself would otherwise be asked about.
       { scenario: "a non-string", branch: 17 },
       { scenario: "a number that would read as a valid name", branch: 123456 },
     ])("rejects a manifest whose branch is $scenario, and never restores it", async ({ branch }) => {
@@ -554,10 +498,6 @@ describe("TrashService", () => {
       expect(gitStub.addWorktreeNoCheckout).not.toHaveBeenCalled();
     });
 
-    // The control for the rejections above: the identical fixture with a
-    // real branch name still lists AND still reaches createBranchAt, so those
-    // assertions are about the branch value and not about a restore that never
-    // runs in this suite.
     it("still restores the same fixture when the branch is a real name", async () => {
       const source = await makeSourceDir("bad-branch", { "work.txt": "uncommitted work" });
       const entry = await service.trashDirectory({ dirPath: source, branch: "bad-branch", reason: "prune" });
@@ -570,12 +510,6 @@ describe("TrashService", () => {
       expect(gitStub.createBranchAt).toHaveBeenCalledWith("bad-branch", "abc123");
     });
 
-    // The other direction, and the one that costs an entry if it is wrong:
-    // these all name branches git itself will happily create, so a check even
-    // slightly stricter than git's would quietly make each of them
-    // unlistable, unrestorable and unreapable. `@` in particular is accepted
-    // by `git branch` and by `git check-ref-format --branch` (measured on git
-    // 2.43) even though this tool refuses to create one.
     it.each([
       { scenario: "a slashed name with a dot", branch: "feature/x.y" },
       { scenario: "a dotted release name", branch: "release-1.0" },
@@ -599,23 +533,13 @@ describe("TrashService", () => {
       expect(listed.entries.map((candidate) => candidate.manifest.branch)).toEqual([branch]);
     });
 
-    // `headOid` is the start-point of `git branch <branch> <headOid>` and the
-    // new value of the reaper's `git update-ref <keepRef> <headOid>`. Measured
-    // on git 2.43: `git update-ref <ref> -d` permutes into `update-ref -d
-    // <ref>` and DELETES the ref the reaper meant to create, so a keep-on-reap
-    // entry would report its commits preserved at a ref that does not exist.
     it.each([
       { scenario: "an option", headOid: "-m" },
       { scenario: "the delete switch", headOid: "-d" },
       { scenario: "a ref name rather than an oid", headOid: "refs/heads/main" },
       { scenario: "not hexadecimal", headOid: "zzzzzz" },
       { scenario: "empty", headOid: "" },
-      // 123456 passes the hex regex once stringified, so ONLY the typeof guard
-      // rejects it — without that case the guard is untested and a mutant that
-      // drops it survives the whole suite.
       { scenario: "a JSON number that is valid hex", headOid: 123456 },
-      // The lower bound: git's shortest usable abbreviation is 4, so a
-      // three-character oid is not one this tool ever wrote.
       { scenario: "shorter than the minimum abbreviation", headOid: "abc" },
       { scenario: "a non-string", headOid: 17 },
     ])("rejects a manifest whose headOid is $scenario", async ({ headOid }) => {
@@ -647,11 +571,6 @@ describe("TrashService", () => {
       expect(listed.entries.map((candidate) => candidate.manifest.headOid)).toEqual([fullOid]);
     });
 
-    // JSON.stringify drops an undefined value, so a key that is simply absent
-    // is how a hand-edited manifest loses a field. `null` is a meaningful
-    // answer for both of these — "no branch", "no known commit" — and absence
-    // must not be read as it: `isWorktreeRestorable` tests `!== null`, so an
-    // undefined branch would be carried into `git branch undefined <oid>`.
     it.each(["branch", "headOid"])("rejects a manifest with no %s key at all — absence is not null", async (field) => {
       const source = await makeSourceDir("absent-field");
       const entry = await service.trashDirectory({ dirPath: source, branch: "absent-field", reason: "prune" });
@@ -677,10 +596,6 @@ describe("TrashService", () => {
       await expect(service.listEntries()).resolves.toEqual({ entries: [], invalid: [entry.containerPath] });
     });
 
-    // Trash shipped writing flat pin refs (`<prefix><id>`) before they were
-    // namespaced per trash root. Refusing that layout stranded every entry made
-    // before the upgrade: hidden from the listing, unrestorable, never reaped,
-    // and its pin held through every gc forever.
     it("accepts the legacy flat pin ref layout so entries written before the namespacing still list", async () => {
       const source = await makeSourceDir("legacy-flat");
       const entry = await service.trashDirectory({ dirPath: source, branch: "legacy-flat", reason: "prune" });
@@ -694,25 +609,12 @@ describe("TrashService", () => {
       expect(listed.entries.map((candidate) => candidate.manifest.pinRef)).toEqual([legacyPinRef]);
     });
 
-    // Every optional field arrived after the manifest did, and `JSON.stringify`
-    // writes no key at all for `undefined` — so an entry an older release left
-    // in `.trash/` has none of these four names anywhere in its file. Absence
-    // has to keep reading as "not set": refusing any one of them turns every
-    // entry an upgrade inherits into unrecognized content, which is never
-    // listed, never restored and never reaped, while its pin ref holds the
-    // objects through every gc for good. The keys are dropped one at a time so
-    // each tolerance is pinned on its own rather than as a group.
-    // `replacedAt` is deliberately not in this list: `trashDirectory` never
-    // writes it, so deleting it from a fresh manifest produces byte-identical
-    // JSON and the case would assert nothing. Its tolerance is already covered
-    // broadly — removing it from the validator fails 42 tests in this file.
     it.each(["bundleFile", "legacyQuarantinedAt", "keepPinOnReap"])(
       "keeps listing an entry whose manifest predates the %s field",
       async (field) => {
         const source = await makeSourceDir("pre-upgrade");
         const entry = await service.trashDirectory({ dirPath: source, branch: "pre-upgrade", reason: "prune" });
         const older: Record<string, unknown> = { ...entry.manifest };
-        // The key has to be there to start with, or dropping it proves nothing.
         expect(field in older).toBe(true);
         delete older[field];
         await fs.writeFile(path.join(entry.containerPath, TRASH_CONSTANTS.MANIFEST_FILENAME), JSON.stringify(older));
@@ -724,11 +626,6 @@ describe("TrashService", () => {
       },
     );
 
-    // The whole shape at once, as a pre-namespacing release actually wrote it:
-    // a flat `<prefix><id>` pin and not one of the four later keys. Listing it
-    // is half the requirement — such an entry must still be restorable, since
-    // the payload is the user's only copy of the files and the flat pin is the
-    // only thing holding the commit.
     it("restores a manifest written before the pin namespacing and the optional fields existed", async () => {
       const source = await makeSourceDir("pre-upgrade-restore", { "work.txt": "uncommitted work" });
       const entry = await service.trashDirectory({
@@ -774,9 +671,6 @@ describe("TrashService", () => {
       await expect(service.listEntries()).resolves.toEqual({ entries: [], invalid: [entry.containerPath] });
     });
 
-    // Restore is the only writer of originalPath, so that is where an escaping
-    // destination has to be refused. The entry itself stays listable and
-    // reapable — marking it invalid would leak its payload and pin forever.
     it("rejects restore destinations that escape worktreeDir through a symlinked parent", async () => {
       const source = await makeSourceDir("escaped-restore");
       const entry = await service.trashDirectory({ dirPath: source, reason: "manual" });
@@ -795,18 +689,12 @@ describe("TrashService", () => {
       expect(listed.entries.map((e) => e.manifest.id)).toEqual([entry.manifest.id]);
     });
 
-    // Relocating worktreeDir moves .trash with it. The entries inside are still
-    // ours and must keep ageing out — an entry that reads as "invalid" is never
-    // reaped and its pin ref is never released, so the disk and the object store
-    // both leak permanently.
     it("keeps recognizing its own entries after worktreeDir is relocated", async () => {
       const source = await makeSourceDir("relocated");
       const entry = await service.trashDirectory({ dirPath: source, branch: "relocated", reason: "prune" });
 
       const movedDir = `${worktreeDir}-moved`;
       await fs.rename(worktreeDir, movedDir);
-      // Restore in `finally`: a failed assertion here would otherwise leave the
-      // fixture relocated and take the rest of the suite down with it.
       try {
         const movedService = new TrashService(
           { ...config, worktreeDir: movedDir },
@@ -890,11 +778,6 @@ describe("TrashService", () => {
       await expect(service.listEntries()).resolves.toMatchObject({ entries: [] });
     });
 
-    // Trashing a worktree is one rename; putting it back is one rename too.
-    // The alternative is O(payload) under the repository lock: measured on
-    // this repository's own node_modules (282 MB, 23k entries) the copy the
-    // fresh worktree used to be filled with, plus the delete of the payload it
-    // was copied from, took 13s where the rename takes ~2ms.
     it("moves the payload into the recreated worktree instead of copying it", async () => {
       const source = await makeSourceDir("feature-move", {
         "work.txt": "uncommitted work",
@@ -911,19 +794,13 @@ describe("TrashService", () => {
 
       expect(fs.rename).toHaveBeenCalledWith(payloadPath, source);
       expect(fs.cp).not.toHaveBeenCalled();
-      // The same directory, not a faithful copy of it.
       expect((await fs.stat(source)).ino).toBe(payloadInode);
       await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
-      // The link `worktree add --no-checkout` wrote, not the stale one the
-      // payload carries from when it was a worktree.
       await expect(fs.readFile(path.join(source, PATH_CONSTANTS.GIT_DIR), "utf-8")).resolves.toBe(FRESH_GIT_LINK);
       await expect(fs.access(payloadPath)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(fs.access(containerPath)).rejects.toMatchObject({ code: "ENOENT" });
     });
 
-    // A payload whose own `.git` is a directory rather than a link: the fresh
-    // link still has to win, as it did when the copy filtered the payload's
-    // `.git` out, and a plain overwrite cannot replace a directory.
     it("replaces a payload's .git directory with the link the fresh registration wrote", async () => {
       const source = await makeSourceDir("feature-gitdir", { "work.txt": "uncommitted work" });
       await fs.mkdir(path.join(source, PATH_CONSTANTS.GIT_DIR));
@@ -941,10 +818,6 @@ describe("TrashService", () => {
       await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
     });
 
-    // The trash root lives under worktreeDir, so the payload and its
-    // destination are normally one filesystem — but a bind mount or a
-    // symlinked worktreeDir can still split them, and then the copy is the
-    // only way back.
     it("falls back to copying the payload when the rename crosses a device boundary", async () => {
       const source = await makeSourceDir("feature-exdev", {
         "work.txt": "uncommitted work",
@@ -967,10 +840,6 @@ describe("TrashService", () => {
       await expect(fs.access(containerPath)).rejects.toMatchObject({ code: "ENOENT" });
     });
 
-    // Once the payload has moved, the recreated worktree holds the only copy
-    // of it — and the rollback for a failed restore deletes that directory.
-    // The move has to be undone first, or a restore that fails halfway
-    // destroys the files it exists to preserve.
     it("returns a moved payload to the container when a later step fails, leaving the entry restorable", async () => {
       const source = await makeSourceDir("feature-late-fail", { "work.txt": "uncommitted work" });
       const { manifest, payloadPath } = await service.trashDirectory({
@@ -987,18 +856,11 @@ describe("TrashService", () => {
       expect(gitStub.removeWorktree).toHaveBeenCalledWith(source, { force: true });
       expect(gitStub.deleteLocalBranch).toHaveBeenCalledWith("feature-late-fail");
 
-      // "Left intact" means restorable, not merely present: the retry works.
       const restored = await service.restore(manifest.id);
       expect(restored.branch).toBe("feature-late-fail");
       await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
     });
 
-    // The link is corrected on the payload BEFORE it moves, so this failure
-    // lands while the container still holds everything — the move never
-    // starts. That ordering is the point: written afterwards, a crash between
-    // the rename and the write stranded a worktree describing itself with a
-    // link to a pruned admin dir, and a payload-less trash entry whose retry
-    // reported the payload missing.
     it("never starts the move when the payload's .git link cannot be corrected", async () => {
       const source = await makeSourceDir("feature-link-fail", { "work.txt": "uncommitted work" });
       const { manifest, payloadPath } = await service.trashDirectory({
@@ -1010,26 +872,15 @@ describe("TrashService", () => {
 
       await expect(service.restore(manifest.id)).rejects.toThrow(/trash entry left intact/);
 
-      // Nothing moved: the payload is whole and still in the container, which
-      // is the entire point of failing here rather than after the rename.
       await expect(fs.readFile(path.join(payloadPath, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
       expect(gitStub.removeWorktree).toHaveBeenCalledWith(source, { force: true });
       allowWriteFile();
-      // Real `git worktree remove --force` deletes the registered directory;
-      // the stub only records the call, so clear it the way git would before
-      // the retry, which refuses a destination that already exists.
       await fs.rm(source, { recursive: true, force: true });
       const restored = await service.restore(manifest.id);
       expect(restored.branch).toBe("feature-link-fail");
       await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
     });
 
-    // `movePayloadInto` recursively deletes the destination before renaming
-    // the payload over it, and the only thing making that safe is that
-    // `worktree add --no-checkout` just created it holding one entry. Today
-    // restore() refuses a destination that already exists, so nothing else can
-    // put files there — but that invariant lives in another file, and if it
-    // ever slips this line becomes a silent recursive delete of live data.
     it("refuses to replace a destination holding anything but the link git just wrote", async () => {
       const source = await makeSourceDir("feature-occupied", { "work.txt": "uncommitted work" });
       const { manifest, payloadPath } = await service.trashDirectory({
@@ -1049,10 +900,6 @@ describe("TrashService", () => {
       await expect(fs.readFile(path.join(source, "someone-elses-work.txt"), "utf-8")).resolves.toBe("do not delete me");
     });
 
-    // The fallback is for EXDEV and nothing else. Any other rename failure
-    // quietly becoming a copy would trade the O(1) move this whole change
-    // exists for back into an O(payload) copy under the repository lock, with
-    // no error and nothing in the output to say it happened.
     it("propagates a non-EXDEV rename failure instead of copying the payload instead", async () => {
       const source = await makeSourceDir("feature-eperm", { "work.txt": "uncommitted work" });
       const { manifest, payloadPath } = await service.trashDirectory({
@@ -1071,11 +918,6 @@ describe("TrashService", () => {
       await expect(service.restore(manifest.id)).resolves.toMatchObject({ branch: "feature-eperm" });
     });
 
-    // The cross-device path never reports the payload as moved, because the
-    // container still holds it. A later failure must therefore roll back the
-    // ordinary way — remove the half-built worktree — rather than try to
-    // rename the payload back over itself, which fails ENOTEMPTY and would
-    // leave a registered worktree and a stray branch behind for no reason.
     it("rolls back normally when a cross-device restore fails after the copy", async () => {
       const source = await makeSourceDir("feature-xdev-late", { "work.txt": "uncommitted work" });
       const { manifest, payloadPath } = await service.trashDirectory({
@@ -1088,10 +930,6 @@ describe("TrashService", () => {
 
       await expect(service.restore(manifest.id)).rejects.toThrow(/trash entry left intact/);
 
-      // Rolled back the ordinary way, and crucially NOT by renaming the
-      // payload back over a container that still holds it — that fails
-      // ENOTEMPTY and would leave the worktree registered and the branch
-      // behind for nothing.
       expect(gitStub.removeWorktree).toHaveBeenCalledWith(source, { force: true });
       expect(gitStub.deleteLocalBranch).toHaveBeenCalledWith("feature-xdev-late");
       await expect(fs.readFile(path.join(payloadPath, "work.txt"), "utf-8")).resolves.toBe("uncommitted work");
@@ -1102,10 +940,6 @@ describe("TrashService", () => {
       expect(restored.branch).toBe("feature-xdev-late");
     });
 
-    // The one failure that must roll nothing back: with the payload moved and
-    // unable to go back, `git worktree remove --force` would delete the user's
-    // only copy of it. A half-finished worktree the error explains is the
-    // cheaper outcome by far.
     it("never removes the directory when a moved payload cannot be put back", async () => {
       const source = await makeSourceDir("feature-stuck", { "work.txt": "uncommitted work" });
       const { manifest } = await service.trashDirectory({
@@ -1124,11 +958,6 @@ describe("TrashService", () => {
       await expect(fs.readFile(path.join(source, PATH_CONSTANTS.GIT_DIR), "utf-8")).resolves.toBe(FRESH_GIT_LINK);
     });
 
-    // Both ways the payload can come back. The cross-device case is the one
-    // that still copies, which is what copyTreePreservingSymlinks exists for;
-    // nothing may be asserted until the container is gone, since a link
-    // rewritten to a path under `.trash/` still resolves while it is there and
-    // would prove nothing.
     for (const { device, crossDevice } of [
       { device: "the same", crossDevice: false },
       { device: "another", crossDevice: true },
@@ -1180,9 +1009,6 @@ describe("TrashService", () => {
       await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("preserved");
     });
 
-    // `git branch <name> <sha>` leaves the recreated branch without an
-    // upstream. Sync fast-forwards it regardless, but pull/status in the
-    // worktree only work once branch.<name>.merge points at origin/<name>.
     it("points the recreated branch at origin/<branch> once the worktree is registered", async () => {
       const source = await makeSourceDir("feature-track", { "work.txt": "data" });
       const { manifest } = await service.trashDirectory({ dirPath: source, branch: "feature-track", reason: "prune" });
@@ -1248,10 +1074,6 @@ describe("TrashService", () => {
       expect(gitStub.addWorktreeNoCheckout).not.toHaveBeenCalled();
       await expect(fs.readFile(path.join(source, "work.txt"), "utf-8")).resolves.toBe("data");
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("restoring files only"));
-      // An unregistered directory where a synced branch's worktree belongs is
-      // what the stale-directory path trashes, so this restore is undone by the
-      // next sync unless the person acts. Warning about the shape without
-      // warning about the consequence is what made this surprising.
       expect(logger.warn).toHaveBeenCalledWith(
         expect.stringContaining("moves it back to trash as a new 'orphan' entry"),
       );
@@ -1283,16 +1105,9 @@ describe("TrashService", () => {
 
       expect(gitStub.deleteLocalBranch).toHaveBeenCalledWith("feature-fail");
       await expect(fs.access(payloadPath)).resolves.toBeUndefined();
-      // "Intact" has to mean restorable, and a worktree restore needs the pin.
-      // The entry's manifest still names pinRef and headOid, so releasing the
-      // ref on the way through would leave a listable entry whose commit `git
-      // gc` is free to collect — the unrestorable state the restore-after-gc
-      // e2e has to build by hand. Moving the release to before
-      // restoreAsWorktree rather than after it passes every other test here.
       expect(gitStub.deleteRef).not.toHaveBeenCalledWith(manifest.pinRef);
     });
 
-    // e.g. `cannot lock ref` when refs/heads/topic/sub exists and the entry is `topic`.
     it("wraps a refused branch creation in TrashOperationError and keeps the payload", async () => {
       const source = await makeSourceDir("topic", { "work.txt": "uncommitted work" });
       const { manifest, payloadPath } = await service.trashDirectory({
@@ -1313,9 +1128,6 @@ describe("TrashService", () => {
       expect(entries).toHaveLength(1);
     });
 
-    // A reap that already set the payload aside has committed the entry to
-    // deletion. "Payload missing" reads like corruption for a user who can
-    // still see the files sitting under the container.
     it("tells a user that a mid-delete entry is finishing, not that its payload went missing", async () => {
       const source = await makeSourceDir("mid-delete");
       const { manifest, containerPath } = await service.trashDirectory({ dirPath: source, reason: "orphan" });
@@ -1335,12 +1147,6 @@ describe("TrashService", () => {
       await expect(service.restore(manifest.id)).rejects.toThrow(/payload missing or unverifiable/);
     });
 
-    // A worktree restore moves the payload out, so the container it deletes
-    // afterwards normally holds nothing but its manifest. The cross-device
-    // fallback is the case where that cleanup is still a recursive delete over
-    // the user's files, and it takes the reaper's ordering: what it cannot
-    // delete must stay a listed entry the reaper will finish, never
-    // unrecognized content nothing comes back for.
     it("leaves a restored entry listable when a copied-out payload cannot be deleted", async () => {
       const source = await makeSourceDir("feature-cleanup", {
         "work.txt": "uncommitted work",
@@ -1370,10 +1176,6 @@ describe("TrashService", () => {
     });
   });
 
-  // Releasing the permanent keep ref a `.diverged/` backup was held by is the
-  // one destructive ref operation driven by a field of an unvalidated
-  // JSON.parse, so the guards are checked here directly rather than only
-  // through the adoption path, which can never present a wrong-shaped entry.
   describe("releaseAdoptedKeepRef", () => {
     const LEGACY_NAME = "2026-06-02-feat-abc12";
     const LEGACY_KEEP_REF = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${LEGACY_NAME}`;
@@ -1415,8 +1217,6 @@ describe("TrashService", () => {
     });
 
     it("releases a fully-pushed adoption that had nothing to bundle", async () => {
-      // createBundleFromRef reports nothing to bundle exactly when the commits
-      // are already on a remote — the case where the legacy ref protects least.
       await expect(service.releaseAdoptedKeepRef(adoptedEntry({ bundleFile: null }), LEGACY_KEEP_REF)).resolves.toBe(
         "released",
       );
@@ -1433,8 +1233,6 @@ describe("TrashService", () => {
     });
 
     it("never derives a ref from a missing legacy name", async () => {
-      // legacyOriginalName is `string | null`, so an unguarded template would
-      // build 'refs/sync-worktrees/keep/null' and happily match it.
       await expect(
         service.releaseAdoptedKeepRef(
           adoptedEntry({ legacyOriginalName: null }),

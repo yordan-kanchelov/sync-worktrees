@@ -12,12 +12,6 @@ import { createMockLogger } from "../test-utils";
 import type { Logger } from "../../services/logger.service";
 import type { RepositoryConfig, SyncOutcome } from "../../types";
 
-// Real git, no mocks. `git checkout <sha>` inside a managed worktree — the way
-// anyone inspects history — leaves it registered but detached, and
-// `git worktree list` says so. The sync inventory drops detached entries, so
-// the branch looks new again and the create phase runs at a path that is
-// already a worktree. Nothing is created there; the outcome and the log used to
-// claim a fresh "✅ Created worktree" for it on every single tick.
 describe("A detached managed worktree is skipped, not re-created (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -51,8 +45,6 @@ describe("A detached managed worktree is skipped, not re-created (E2E)", () => {
     await seed.branch(["-M", "main"]);
     await seed.addRemote("origin", remote);
     await seed.push("origin", "main");
-    // Two commits on feature-x, so the worktree can be detached onto the older
-    // one and any move away from it is visible.
     await seed.checkoutLocalBranch("feature-x");
     await fs.writeFile(path.join(seedDir, "feature.txt"), "first");
     await seed.add(".");
@@ -102,7 +94,6 @@ describe("A detached managed worktree is skipped, not re-created (E2E)", () => {
     const first = await syncOnce(service);
     expect(first.actions).toContainEqual({ kind: "created", branch: "feature-x", path: featurePath });
 
-    // The user checks an older commit out to look at history.
     const featureGit = simpleGit(featurePath);
     const previousCommit = (await featureGit.revparse(["HEAD~1"])).trim();
     await featureGit.raw(["checkout", previousCommit]);
@@ -125,8 +116,6 @@ describe("A detached managed worktree is skipped, not re-created (E2E)", () => {
     );
     expect(loggedLines().some((line) => line.includes("Created worktree"))).toBe(false);
 
-    // The worktree is untouched: same detached HEAD, still registered once, and
-    // no second directory was made for the same branch.
     expect((await featureGit.revparse(["HEAD"])).trim()).toBe(previousCommit);
     await expect(fs.readFile(path.join(featurePath, "feature.txt"), "utf8")).resolves.toBe("first");
     const registrations = (await simpleGit(bareRepoDir).raw(["worktree", "list", "--porcelain"]))

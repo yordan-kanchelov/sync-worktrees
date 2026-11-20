@@ -209,7 +209,6 @@ describe("countOnDisk before the first sync", () => {
       bareRepoDir: path.join(tempDir, ".bare", "app"),
     });
     expect(counts).toEqual({ worktrees: 0, trashEntries: 0, error: null });
-    // A listing creates nothing: no worktree directory, no bare repo, no trash.
     expect(await fs.readdir(tempDir)).toEqual([]);
   });
 

@@ -21,12 +21,6 @@ import type { Mock } from "vitest";
 vi.mock("fs/promises");
 vi.mock("simple-git");
 
-// Clone mode splits the same way worktree mode does: `git fetch` and
-// `ls-remote` keep simple-git's inactivity kill (a stalled connection must not
-// hang the sync), while the local commands that follow — the ff-merge, the
-// branch switch, the config rewrites — run without it. A merge that
-// materializes a large tree is silent for minutes and would otherwise be
-// SIGINT'd at fetchTimeoutMs.
 describe("CloneSyncService git client timeouts", () => {
   interface BuiltClient {
     baseDir: string | undefined;
@@ -58,8 +52,6 @@ describe("CloneSyncService git client timeouts", () => {
       getSparseCheckoutService: vi.fn().mockReturnValue({ applyToWorktree: vi.fn(), needsUpdate: vi.fn() }),
       checkWorktreeStatus: vi.fn<any>().mockResolvedValue(true),
       classifyRemoteRelationship: vi.fn<any>().mockResolvedValue("fast_forward"),
-      // Read whenever this service builds a client: clone mode layers the
-      // per-sync LFS override onto its own environment.
       isLfsSkipEnabled: vi.fn<any>().mockReturnValue(false),
     }) as unknown as GitService;
 
@@ -88,8 +80,6 @@ describe("CloneSyncService git client timeouts", () => {
     built = [];
     logger = Logger.createDefault();
     (fs.lstat as unknown as Mock).mockResolvedValue(buildFsStats("directory"));
-    // The suite-wide shortcut zeroes both timeouts; these tests need the real
-    // ones to tell the two client kinds apart.
     delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
 
     (simpleGit as unknown as Mock).mockImplementation((first?: unknown, second?: unknown) => {
@@ -148,13 +138,6 @@ describe("CloneSyncService git client timeouts", () => {
     expect(onlyClientThatRan("config", "--replace-all", "remote.origin.fetch").options.timeout).toBeUndefined();
   });
 
-  // 0 is the documented way to turn an inactivity kill off, and it is falsy.
-  // Both windows are read through `config.<x> ?? DEFAULT_CONFIG.<X>`; a `||`
-  // there would hand a repository that asked for no kill the 5- and 15-minute
-  // built-ins instead, and nothing would say the setting had been ignored. The
-  // client must end up with no `timeout` option at all, which is what makes 0
-  // a disable rather than an instant abort — simple-git only installs its
-  // timeout plugin for a positive block.
   it("fetches with no timeout at all when fetchTimeoutMs is 0", async () => {
     (fs.readdir as unknown as Mock).mockResolvedValue([".git"]);
     (fs.access as unknown as Mock).mockResolvedValue(undefined);

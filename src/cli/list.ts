@@ -13,26 +13,18 @@ import { REPOSITORY_MODES, resolveMode } from "../utils/repo-mode";
 import type { RepositoryConfig, RepositoryMode, SparseCheckoutMode } from "../types";
 import type { ResolvedConfigPath } from "../utils/config-discovery";
 
-/** What is on disk for one repository right now. `null` is "could not be read", or no trash (clone mode). */
 export interface RepositoryDiskCounts {
-  /** Registered worktrees whose directory exists; in clone mode, 1 once the clone exists. */
   worktrees: number | null;
-  /** Readable entries under `<worktreeDir>/.trash`; always `null` in clone mode, which has no trash. */
   trashEntries: number | null;
-  /** Why a count is `null` when it should have been a number, redacted. */
   error: string | null;
 }
 
-/** One element of `sync-worktrees list --json`. Every key is always present. */
 export interface ListedRepository {
   name: string;
   mode: RepositoryMode;
-  /** With any embedded credentials removed. */
   repoUrl: string;
   worktreeDir: string;
-  /** Worktree mode only. */
   bareRepoDir: string | null;
-  /** Clone mode only, and only when pinned; `null` tracks the remote default branch. */
   branch: string | null;
   schedule: string;
   runOnce: boolean;
@@ -63,11 +55,6 @@ export interface ListDependencies {
 
 const COUNT_CONCURRENCY = 4;
 
-/**
- * Local reads only: `git worktree list` against the bare repository and a
- * directory listing of the trash. No fetch, no lock — `list` must stay safe to
- * run next to a sync that holds the repository.
- */
 export async function countOnDisk(repo: RepositoryConfig): Promise<RepositoryDiskCounts> {
   const logger = Logger.createDefault(repo.name, false, { quiet: true });
   const cloneMode = resolveMode(repo) === REPOSITORY_MODES.CLONE;
@@ -76,8 +63,6 @@ export async function countOnDisk(repo: RepositoryConfig): Promise<RepositoryDis
     if (cloneMode) {
       return { worktrees: (await service.getWorktrees()).length, trashEntries: null, error: null };
     }
-    // Before the first sync there is no bare repository to ask, and nothing
-    // could have been checked out or trashed without one.
     const bareRepoDir = repo.bareRepoDir;
     const worktrees =
       bareRepoDir && (await fileExists(bareRepoDir))
@@ -176,11 +161,6 @@ const defaultDependencies: ListDependencies = {
   countOnDisk,
 };
 
-/**
- * `sync-worktrees list`. Resolves to the exit code: 1 when the config does not
- * load or `--filter` matches nothing, both reported on stderr so that `--json`
- * leaves stdout empty rather than half a document.
- */
 export async function runList(
   config: ResolvedConfigPath,
   options: ListOptions = {},

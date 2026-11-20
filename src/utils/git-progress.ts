@@ -13,24 +13,6 @@ export interface GitProgressEvent {
 
 export type GitProgressEmitter = (event: GitProgressEvent) => void;
 
-/**
- * Build a progress callback for simple-git's `progress` option that:
- *   - filters to clone/fetch/pull events only,
- *   - emits at most one progress event per (method,stage) bucket of PROGRESS_BUCKET_PERCENT,
- *   - always emits the 100% completion event,
- *   - detects stage restarts (bucket regression on the same cached SimpleGit
- *     instance, e.g. a second fetch) and resets the bucket so the new run
- *     emits from scratch.
- *
- * State (the bucket map) is closure-local — pass one handler per SimpleGit
- * client. Keep progress logs at debug level so normal logs can stay readable
- * while interactive surfaces and MCP notifications consume structured events.
- *
- * The logger is read per event through `getLogger`, never captured: clients are
- * cached for the life of the service and the TUI swaps its owner's logger in
- * afterwards (updateLogger), so a captured one would keep writing to the
- * console under Ink's alternate screen instead of the log panel.
- */
 export function makeGitProgressHandler(
   getLogger: () => Logger,
   emitProgress?: GitProgressEmitter,

@@ -46,12 +46,11 @@ describe("BareRepoService (through GitService)", () => {
   describe("getRemoteDefaultBranch (#6)", () => {
     it("names the remote with credentials redacted when no default branch can be detected", async () => {
       const tokenUrl = "https://ci-bot:s3cr3t-token@github.com/test/repo.git";
-      (mockGit.raw as Mock).mockImplementation(async () => ""); // no symref, no common branch
+      (mockGit.raw as Mock).mockImplementation(async () => "");
 
       await expect(gitService.getRemoteDefaultBranch(tokenUrl)).rejects.toThrow(
         "Unable to detect default branch for 'https://***@github.com/test/repo.git'.",
       );
-      // git itself is still handed the working URL.
       expect(mockGit.raw).toHaveBeenCalledWith(["ls-remote", "--symref", tokenUrl, "HEAD"]);
     });
 
@@ -68,9 +67,9 @@ describe("BareRepoService (through GitService)", () => {
     it("falls back to the sole existing common branch when symref is unavailable", async () => {
       (mockGit.raw as Mock).mockImplementation(async (args: unknown) => {
         const a = args as string[];
-        if (a[0] === "ls-remote" && a[1] === "--symref") return ""; // no symref line -> probe
+        if (a[0] === "ls-remote" && a[1] === "--symref") return "";
         if (a[0] === "ls-remote" && a.includes("refs/heads/master")) return "sha\trefs/heads/master\n";
-        return ""; // main/develop/trunk absent
+        return "";
       });
 
       await expect(gitService.getRemoteDefaultBranch(TEST_URLS.github)).resolves.toBe("master");
@@ -92,14 +91,7 @@ describe("BareRepoService (through GitService)", () => {
     });
   });
 
-  // `git clone --bare` copies every remote branch into refs/heads/*, and the
-  // fetch refspec only updates refs/remotes/origin/*, so those copies stay
-  // frozen at clone time and a worktree added later would check out the
-  // frozen tip. They are dropped right after the clone — all but the branch
-  // HEAD points at, which the default-branch worktree is created from — in
-  // batches, since each `branch -D` call rewrites packed-refs once.
   describe("clone-time refs/heads copies", () => {
-    // Args-keyed stand-in for a fresh clone whose refs/heads hold `branches`.
     const mockFreshClone = (branches: string[], opts: { headRefError?: Error } = {}): void => {
       (fs.access as Mock<any>).mockRejectedValue(new Error("ENOENT"));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
@@ -137,7 +129,6 @@ describe("BareRepoService (through GitService)", () => {
       expect(mockLogger.info).toHaveBeenCalledWith(
         "Removed 2 clone-time local branch copies; worktrees are created from origin/* instead.",
       );
-      // The cleanup runs before the fetch refspec is configured and the remote refs fetched.
       const deleteOrder =
         mockGit.raw.mock.invocationCallOrder[
           mockGit.raw.mock.calls.findIndex((call) => (call[0] as unknown as string[])[0] === "branch")
@@ -168,8 +159,6 @@ describe("BareRepoService (through GitService)", () => {
     });
 
     it("never deletes refs/heads of an existing bare repository", async () => {
-      // Everything in the default fixture exists; the raw stand-in answers an
-      // existing repository's origin check and lists a full refs/heads.
       (fs.access as Mock<any>).mockResolvedValue(undefined);
       (mockGit.raw as Mock).mockImplementation((args: unknown) => {
         if (!Array.isArray(args)) return Promise.resolve("");
@@ -193,10 +182,6 @@ describe("BareRepoService (through GitService)", () => {
     });
   });
 
-  // An existing bare repo is found by path alone, and the default bareRepoDir
-  // (`.bare/<repo-name>`) is the same directory for old-org/repo and
-  // new-org/repo, so its origin must be the configured repoUrl before anything
-  // is fetched from it.
   describe("existing bare repository origin", () => {
     const bareRepoPath = path.resolve(".bare/repo");
     const mainWorktreeList = createWorktreeListOutput([
@@ -210,7 +195,7 @@ describe("BareRepoService (through GitService)", () => {
 
     it("rejects with both URLs and the set-url remedy when origin differs from repoUrl, before any fetch", async () => {
       gitService = new GitService(createMockConfig({ repoUrl: "https://gitlab.com/new-org/repo.git" }), mockLogger);
-      mockGit.raw.mockResolvedValueOnce("https://github.com/old-org/repo.git\n" as any); // config remote.origin.url
+      mockGit.raw.mockResolvedValueOnce("https://github.com/old-org/repo.git\n" as any);
 
       await expect(gitService.initialize()).rejects.toMatchObject({
         constructor: ConfigError,
@@ -242,9 +227,6 @@ describe("BareRepoService (through GitService)", () => {
       expect((error as ConfigError).message).toContain(
         "has origin 'https://***@github.com/old-org/repo.git', expected 'https://***@github.com/new-org/repo.git'. ",
       );
-      // The remedy must not hand back a redacted URL to paste: '***' stands
-      // in for the credentials, so running that command would set origin to
-      // a URL that cannot fetch.
       expect((error as ConfigError).message).not.toContain('set-url origin "https://***@');
 
       expect(mockGit.fetch).not.toHaveBeenCalled();
@@ -256,11 +238,11 @@ describe("BareRepoService (through GitService)", () => {
       ["with a different host case", "HTTPS://GitHub.COM/test/repo.git"],
     ])("proceeds to fetch when origin is repoUrl %s", async (_variant, originUrl) => {
       mockGit.raw
-        .mockResolvedValueOnce(`${originUrl}\n` as any) // config remote.origin.url
-        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
-        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/ (none yet)
-        .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
-        .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
+        .mockResolvedValueOnce(`${originUrl}\n` as any)
+        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any)
+        .mockResolvedValueOnce("" as any)
+        .mockResolvedValueOnce("refs/remotes/origin/main\n" as any)
+        .mockResolvedValueOnce(mainWorktreeList as any);
 
       await expect(gitService.initialize()).resolves.toBe(mockGit);
 
@@ -268,14 +250,13 @@ describe("BareRepoService (through GitService)", () => {
       expect(mockLogger.warn).not.toHaveBeenCalled();
     });
 
-    // `git config --get` of an unset key exits 1 with empty stderr, which simple-git resolves as "".
     it("warns and proceeds when the bare repository has no origin URL configured", async () => {
       mockGit.raw
-        .mockResolvedValueOnce("" as any) // config remote.origin.url (unset)
-        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
-        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/ (none yet)
-        .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
-        .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
+        .mockResolvedValueOnce("" as any)
+        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any)
+        .mockResolvedValueOnce("" as any)
+        .mockResolvedValueOnce("refs/remotes/origin/main\n" as any)
+        .mockResolvedValueOnce(mainWorktreeList as any);
 
       await expect(gitService.initialize()).resolves.toBe(mockGit);
 
@@ -287,11 +268,11 @@ describe("BareRepoService (through GitService)", () => {
 
     it("warns and proceeds when the bare repository has no readable origin", async () => {
       mockGit.raw
-        .mockRejectedValueOnce(new Error("error: No such remote 'origin'")) // config remote.origin.url
-        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
-        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/ (none yet)
-        .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
-        .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
+        .mockRejectedValueOnce(new Error("error: No such remote 'origin'"))
+        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any)
+        .mockResolvedValueOnce("" as any)
+        .mockResolvedValueOnce("refs/remotes/origin/main\n" as any)
+        .mockResolvedValueOnce(mainWorktreeList as any);
 
       await expect(gitService.initialize()).resolves.toBe(mockGit);
 
@@ -302,15 +283,6 @@ describe("BareRepoService (through GitService)", () => {
     });
   });
 
-  // `git clone --bare` runs init_db before any transfer, so HEAD exists
-  // within milliseconds and a HEAD-less bareRepoDir is a leftover of a
-  // half-finished cleanup or external damage rather than of a killed clone.
-  // However it arose, "bare repo exists" is decided by `<bare>/HEAD`, so
-  // every later initialize() re-ran `git clone --bare` into that directory
-  // and git refused it ("destination path already exists and is not an empty
-  // directory") until someone deleted it by hand. The pending marker records
-  // that such a leftover is one this tool made — and it is written only for a
-  // destination verified as absent or empty, so nothing else is ever deleted.
   describe("interrupted bare clone recovery", () => {
     const bareRepoPath = path.resolve(".bare/repo");
     const markerPath = path.join(path.dirname(bareRepoPath), `repo${PATH_CONSTANTS.BARE_CLONE_PENDING_MARKER_SUFFIX}`);
@@ -322,11 +294,6 @@ describe("BareRepoService (through GitService)", () => {
       Object.assign(new Error(message), { code });
     const enoent = (): NodeJS.ErrnoException => fsError("ENOENT", "ENOENT: no such file or directory");
 
-    // fs stand-in keyed by path: only `<bare>/HEAD`, the bare directory and
-    // the marker answer differently, every other probe reports "exists". The
-    // marker is tracked for real — written by fs.writeFile, cleared by
-    // fs.unlink — so the order the code writes and clears it in is observable,
-    // and `setDir` lets a failing clone leave a partial directory behind.
     const mockBareRepoState = (opts: {
       head: boolean;
       marker: boolean;
@@ -385,8 +352,6 @@ describe("BareRepoService (through GitService)", () => {
       expect(fs.rm).toHaveBeenCalledWith(".bare/repo", { recursive: true, force: true });
       expect(mockGit.clone).toHaveBeenCalledWith(TEST_URLS.github, ".bare/repo", ["--bare", "--progress"]);
       expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining(bareRepoPath));
-      // The retry re-arms the marker before cloning and settles it after, so
-      // a kill during the retry is recoverable too and a later init adopts.
       const cloneOrder = (mockGit.clone as Mock).mock.invocationCallOrder[0];
       expect(invocationOrderOf(fs.rm as Mock, ".bare/repo")).toBeLessThan(cloneOrder);
       expect(invocationOrderOf(fs.writeFile as Mock, markerPath)).toBeLessThan(cloneOrder);
@@ -412,11 +377,11 @@ describe("BareRepoService (through GitService)", () => {
     it("clears a stale marker next to a bare repo that has a HEAD, and clones nothing", async () => {
       const marker = mockBareRepoState({ head: true, marker: true, dir: true });
       mockGit.raw
-        .mockResolvedValueOnce(TEST_URLS.github as any) // config remote.origin.url
-        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any) // fetch refspec present
-        .mockResolvedValueOnce("" as any) // for-each-ref refs/remotes/origin/ (none yet)
-        .mockResolvedValueOnce("refs/remotes/origin/main\n" as any) // symbolic-ref origin/HEAD
-        .mockResolvedValueOnce(mainWorktreeList as any); // worktree list
+        .mockResolvedValueOnce(TEST_URLS.github as any)
+        .mockResolvedValueOnce("+refs/heads/*:refs/remotes/origin/*" as any)
+        .mockResolvedValueOnce("" as any)
+        .mockResolvedValueOnce("refs/remotes/origin/main\n" as any)
+        .mockResolvedValueOnce(mainWorktreeList as any);
 
       await expect(gitService.initialize()).resolves.toBe(mockGit);
 
@@ -456,11 +421,6 @@ describe("BareRepoService (through GitService)", () => {
       expect(marker.markerExists()).toBe(false);
     });
 
-    // The marker authorizes a deletion, so it may only ever be written for a
-    // destination that was positively verified. A destination that exists but
-    // cannot be listed — a transient EMFILE, or a path that is a file and not
-    // a directory — is neither claimed nor cloned into: claiming it would
-    // license deleting whatever is really there on the next run.
     it.each([
       ["the listing fails transiently", fsError("EMFILE", "EMFILE: too many open files, scandir")],
       ["the destination is a file, not a directory", fsError("ENOTDIR", "ENOTDIR: not a directory, scandir")],
@@ -477,16 +437,11 @@ describe("BareRepoService (through GitService)", () => {
       expect(fs.writeFile).not.toHaveBeenCalledWith(markerPath, expect.anything());
       expect(mockGit.clone).not.toHaveBeenCalled();
 
-      // The next run finds the same directory, still unclaimed: it must not
-      // delete it either.
       const second = new GitService(createMockConfig(), mockLogger);
       await expect(second.initialize()).rejects.toBeInstanceOf(ConfigError);
       expect(fs.rm).not.toHaveBeenCalled();
     });
 
-    // The same sequence end to end: one transient listing failure over a
-    // pre-existing user directory must not leave anything behind that lets
-    // the next run — whose listing works again — delete it.
     it("does not let a transient listing failure authorize deleting a user directory later", async () => {
       mockInitializeGit({ local: false, remote: true });
       const state = mockBareRepoState({
@@ -509,9 +464,6 @@ describe("BareRepoService (through GitService)", () => {
       expect(state.markerExists()).toBe(false);
     });
 
-    // Same rule one step later: the clone itself can fail (auth, network) on
-    // a destination we did claim. git removes the directory it created, so
-    // the authorization must go with it.
     it("drops the marker when a failed clone left no directory behind", async () => {
       mockInitializeGit({ local: false, remote: true });
       const marker = mockBareRepoState({ head: false, marker: false, dir: false });
@@ -536,25 +488,15 @@ describe("BareRepoService (through GitService)", () => {
 
       await expect(gitService.initialize()).rejects.toThrow("the remote end hung up");
 
-      // Still claimed, so the next run recovers it instead of erroring out.
       expect(fs.unlink).not.toHaveBeenCalledWith(markerPath);
       expect(marker.markerExists()).toBe(true);
     });
   });
 
-  // refs/remotes/origin/HEAD is only ever written by `remote set-head`, so
-  // after the remote renamed or deleted its default branch, `fetch --prune`
-  // leaves the symref naming a branch that no longer exists. Detection trusts
-  // it only while its target is still one of the remote branches.
   describe("detectDefaultBranch after the remote renamed its default", () => {
-    // The BareRepoService this GitService delegates to, so detection runs on
-    // the same context (logger, cached network client) initialize() uses.
     const detect = (): Promise<string> =>
       (gitService as unknown as { bareRepo: BareRepoService }).bareRepo.detectDefaultBranch(mockGit);
 
-    // Args-keyed stand-in: origin/HEAD reads `symrefTargets` in order (the
-    // last one repeats), `remote set-head origin -a` resolves unless
-    // `setHeadError`, and the remote-ref listing holds `remoteBranches`.
     const mockOriginHead = (opts: {
       symrefTargets: string[];
       remoteBranches: string[];

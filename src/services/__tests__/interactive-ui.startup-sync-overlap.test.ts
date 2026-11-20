@@ -42,15 +42,6 @@ const config = {
   runOnce: false,
 } as unknown as Config;
 
-/**
- * A stand-in for WorktreeSyncService carrying the guard the real one has:
- * `runExclusiveRepoOperation` refuses a fail-fast caller outright while the
- * per-repo `repoMutex` is busy (worktree-sync.repo-mutex.test.ts pins that, and
- * so does the concurrent-initialize case there), so the second of two
- * overlapping cycles resolves `{ started: false, reason: "in_progress" }`
- * without touching the repository. What it does not protect is the bookkeeping
- * the UI keeps outside the lock, which is what this file is about.
- */
 function makeService(gate: Promise<void>): {
   service: WorktreeSyncService;
   syncCalls: () => number;
@@ -63,7 +54,6 @@ function makeService(gate: Promise<void>): {
     config,
     isInitialized: () => true,
     isSyncInProgress: () => active,
-    // Called by runSyncServices before it knows whether this service can run.
     clearRecordedSkips: vi.fn(() => {
       skips = [];
     }),
@@ -75,7 +65,6 @@ function makeService(gate: Promise<void>): {
       if (active) return { started: false, reason: "in_progress" };
       active = true;
       try {
-        // A clone-mode skip the running cycle is meant to report at the end.
         skips.push("dirty_worktree");
         await gate;
         return {
@@ -115,21 +104,14 @@ describe("a cron tick that fires while the startup sync is still running", () =>
     expect(mocks.cronHandlers).toHaveLength(1);
 
     const startup = ui.triggerInitialSync();
-    // Let the startup cycle reach the gated sync(). No wall clock: draining the
-    // queues is enough, because everything before sync() is synchronous or
-    // already-resolved.
     await new Promise((resolve) => setImmediate(resolve));
 
     const clearsBeforeTick = vi.mocked(service.clearRecordedSkips).mock.calls.length;
     await mocks.cronHandlers[0]();
 
-    // The tick never reached the services: no second sync() attempt, and — the
-    // reason this matters — no clearRecordedSkips() wiping the skip the cycle
-    // in flight has already recorded and still has to report.
     expect(syncCalls()).toBe(1);
     expect(vi.mocked(service.clearRecordedSkips).mock.calls.length).toBe(clearsBeforeTick);
     expect(recordedSkips()).toEqual(["dirty_worktree"]);
-    // And the status bar still says what is true.
     expect(statuses).toEqual(["syncing"]);
     expect(logs).toContain("info:A sync is already running; skipping this cycle.");
 
@@ -152,8 +134,6 @@ describe("a cron tick that fires while the startup sync is still running", () =>
     gate.resolve();
     await startup;
 
-    // The guard is a gate, not a latch: skipping one tick must not disarm the
-    // schedule for the rest of the run.
     await mocks.cronHandlers[0]();
     expect(syncCalls()).toBe(2);
   });

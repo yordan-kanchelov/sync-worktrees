@@ -55,11 +55,6 @@ function repo(overrides: Partial<RepositoryConfig> = {}): RepositoryConfig {
 const isDir = { isDirectory: () => true };
 const isFile = { isDirectory: () => false };
 
-/**
- * A fake machine: every path under one of `existing` exists (as a directory
- * unless listed in `files`), everything is writable unless listed in
- * `readOnly`, and git answers from `git`.
- */
 function deps(overrides: Partial<DoctorDeps> & { existing?: string[]; readOnly?: string[]; files?: string[] } = {}) {
   const existing = overrides.existing ?? ["/"];
   const readOnly = new Set(overrides.readOnly ?? []);
@@ -512,7 +507,6 @@ describe("runGitNonInteractive", () => {
   });
 
   it("kills a remote that never answers once the timeout passes", async () => {
-    // Accepts the connection and never responds, like a black-holed proxy.
     server = http.createServer(() => undefined);
     await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as AddressInfo).port;

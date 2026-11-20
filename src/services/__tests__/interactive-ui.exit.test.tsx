@@ -14,20 +14,12 @@ import { InteractiveUIService } from "../InteractiveUIService";
 import type { HookExecutionService } from "../hook-execution.service";
 import type { WorktreeSyncService } from "../worktree-sync.service";
 
-// Ink decides interactivity (and therefore whether it uses the alternate screen
-// at all) from `is-in-ci`, which reads CI once at import time. Pinned before the
-// import graph is evaluated so the ordering assertions below mean the same thing
-// on a laptop and on a runner; restored in afterEach for the rest of the worker.
 const { originalCi } = vi.hoisted(() => {
   const previous = process.env.CI;
   process.env.CI = "0";
   return { originalCi: previous };
 });
 
-// src/__tests__/setup.ts replaces `global.console` with a plain object, which
-// has no `Console` constructor for Ink's patchConsole to build on. Production
-// renders with patchConsole on, so put the constructor back rather than turning
-// the option off and testing a configuration the CLI never uses.
 (globalThis.console as unknown as { Console: typeof Console }).Console = Console;
 
 const ESC = String.fromCharCode(27);
@@ -40,10 +32,6 @@ class FakeStdout extends EventEmitter {
   columns = 100;
   rows = 24;
   readonly chunks: string[] = [];
-  // A stream that refuses a write. Not EPIPE - that arrives as an "error"
-  // event, which no synchronous catch could ever see - but the case the guard
-  // in writeLines is actually for: stdout is injected, so it is not always a
-  // live tty, and one that says no must not abandon the rest of teardown.
   failWritesMatching: string | null = null;
   write = (data: string, callback?: () => void): boolean => {
     const text = String(data);
@@ -134,8 +122,6 @@ describe("InteractiveUIService exit path", () => {
     } as unknown as WorktreeSyncService;
 
     const stdout = new FakeStdout();
-    // Not `?? true`: the interesting value is `false`, so the default has to be
-    // chosen on absence rather than on falsiness.
     if (options.stdoutIsTTY !== undefined) stdout.isTTY = options.stdoutIsTTY;
     if (options.failWritesMatching !== undefined) stdout.failWritesMatching = options.failWritesMatching;
     const stdin = new FakeStdin();
@@ -211,8 +197,6 @@ describe("InteractiveUIService exit path", () => {
       await waitFor(() => harness.exit.mock.calls.length > 0, "the process to be asked to exit");
 
       expect(harness.exit.mock.calls).toEqual([[0]]);
-      // The daemon half: the cron jobs that kept the event loop alive are gone,
-      // not merely stopped, so nothing is left syncing without an interface.
       expect(taskIds.map((id) => cron.getTask(id))).toEqual([undefined]);
     });
 
@@ -264,17 +248,12 @@ describe("InteractiveUIService exit path", () => {
       const enable = text.indexOf(MOUSE_TRACKING_ENABLE);
       const disable = text.lastIndexOf(MOUSE_TRACKING_DISABLE);
 
-      // Preconditions, so this cannot pass vacuously on a stream that never got
-      // the alternate screen in the first place.
       expect(enterAlternate).toBeGreaterThanOrEqual(0);
       expect(exitAlternate).toBeGreaterThan(enterAlternate);
 
       expect(occurrences(text, MOUSE_TRACKING_ENABLE)).toBe(1);
       expect(occurrences(text, MOUSE_TRACKING_DISABLE)).toBe(1);
       expect(enable).toBeGreaterThan(enterAlternate);
-      // The point of the whole item: Ink drops writes made after it latches
-      // `isUnmounted`, and treats alternate-screen content as disposable, so the
-      // disable has to land on the primary buffer the shell gets back.
       expect(disable).toBeGreaterThan(exitAlternate);
     };
 
@@ -302,7 +281,6 @@ describe("InteractiveUIService exit path", () => {
       const harness = mount();
       await sleep(60);
 
-      // Exactly what src/index.ts hands setupSignalHandlers().
       await harness.service.destroy(true);
 
       assertTerminalRestored(harness.stdout.text);
@@ -319,12 +297,6 @@ describe("InteractiveUIService exit path", () => {
       expect(process.listenerCount("exit")).toBe(before);
     });
 
-    // DECSET 1000/1006 down a pipe is not a mode change, it is four bytes of
-    // garbage in whatever is reading it — and the restore that would follow is
-    // four more. The enable is gated on the same isTTY the alternate screen is,
-    // and the disable can only ever be armed by an enable that happened, so a
-    // redirected run has to be silent in both directions and must not leave a
-    // process "exit" listener behind either.
     it("writes no tracking sequence, and arms no exit listener, when stdout is not a terminal", async () => {
       const before = process.listenerCount("exit");
       const harness = mount({ stdoutIsTTY: false });
@@ -372,16 +344,9 @@ describe("InteractiveUIService exit path", () => {
 
       await waitFor(() => harness.exit.mock.calls.length > 0, "the forced exit", 5000);
       expect(harness.logs).toContain("Force quit: leaving in-progress sync(s) unfinished.");
-      // The sync never finished; only the shortcut can have ended the wait,
-      // which otherwise runs for WAIT_SYNC_DEFAULT_TIMEOUT_MS. Both quit
-      // presses reach handleQuit and both exit; in production the first one
-      // never returns, so all that matters is that every one of them exits 0.
       expect([...new Set(harness.exit.mock.calls.map(([code]) => code))]).toEqual([0]);
     });
 
-    // Ctrl+C on top of a wait that `q` started: Ink answers it by unmounting,
-    // so without this the interface would vanish and the wait would run on in
-    // silence for the rest of the 30s.
     it("Ctrl+C on top of the wait q started ends it too", async () => {
       const harness = mount({ syncInProgress: true });
       await sleep(60);
@@ -398,7 +363,6 @@ describe("InteractiveUIService exit path", () => {
 
       await waitFor(() => harness.exit.mock.calls.length > 0, "the forced exit", 5000);
       expect(harness.logs).toContain("Force quit: leaving in-progress sync(s) unfinished.");
-      // Ink is down by now, so the same line has to reach the bare terminal.
       expect(harness.stdout.text).toContain("Force quit: leaving in-progress sync(s) unfinished.\n");
     });
   });
@@ -433,8 +397,6 @@ describe("InteractiveUIService exit path", () => {
       expect(harness.logs).toContain("Failed to release cron task: Destroy operation timed out");
     });
 
-    // The loop has to survive one bad task, or a single throw strands every task
-    // after it in node-cron's registry - which is the leak this item is about.
     it("reports a task whose destroy throws and still releases the ones behind it", async () => {
       const harness = mount();
       await sleep(60);
@@ -455,11 +417,6 @@ describe("InteractiveUIService exit path", () => {
       expect(cron.getTask(taskId)).toBeUndefined();
     });
 
-    // The log line above only arrives because an already-rejected promise settles
-    // in the microtask before isDestroyed is set. A real background task rejects
-    // from its own 5s timeout, long after that — and by then addLog is silenced,
-    // so the message is not the invariant. What has to hold either way is that
-    // the rejection never reaches the process unattended.
     it("does not turn a late destroy rejection into an unhandled rejection", async () => {
       const unhandled: unknown[] = [];
       const record = (reason: unknown): void => void unhandled.push(reason);
@@ -468,10 +425,6 @@ describe("InteractiveUIService exit path", () => {
         const harness = mount();
         await sleep(60);
 
-        // Deliberately not vi.fn(): a mock attaches its own handler to whatever
-        // promise it returns so it can record the settled result, which makes
-        // every rejection it hands out a handled one. A spy here would pass
-        // against no catch at all.
         injectCronJob(harness.service, {
           stop: vi.fn(),
           destroy: (): Promise<void> =>
@@ -500,9 +453,6 @@ describe("InteractiveUIService exit path", () => {
       }
     });
 
-    // A killed orphan is reparented to pid 1 and lingers as a zombie wherever
-    // nothing reaps it, so ESRCH alone would never arrive here. Where /proc can
-    // answer, read the state instead.
     const isAlive = (pid: number): boolean => {
       try {
         process.kill(pid, 0);
@@ -551,7 +501,6 @@ describe("InteractiveUIService exit path", () => {
       const { command, pid } = await startRealHook(harness.service);
       expect(isAlive(pid)).toBe(true);
 
-      // A running hook is work a quit would end, so the first `q` only asks.
       harness.stdin.write("q");
       await waitFor(
         () => harness.stdout.text.includes("1 hook still running — press q again to quit"),
@@ -563,12 +512,8 @@ describe("InteractiveUIService exit path", () => {
       harness.stdin.write("q");
       await waitFor(() => harness.exit.mock.calls.length > 0, "the process to be asked to exit");
 
-      // The outcome: the hook the quit ended is really gone, not merely signalled.
       await waitFor(() => !isAlive(pid), "the hook process to go away");
 
-      // And the user was told. On the stream, after Ink hands the primary
-      // buffer back — the log panel is torn down mid-teardown and never read,
-      // so a line that only reached addLog would be a silent kill again.
       const text = harness.stdout.text;
       const exitAlternate = text.lastIndexOf(EXIT_ALTERNATE_SCREEN);
       expect(exitAlternate).toBeGreaterThanOrEqual(0);
@@ -578,16 +523,9 @@ describe("InteractiveUIService exit path", () => {
       expect(text.lastIndexOf(summary)).toBeGreaterThan(exitAlternate);
       expect(text.lastIndexOf(named)).toBeGreaterThan(exitAlternate);
 
-      // And the log panel got them too, which only holds while they are emitted
-      // *before* `isDestroyed` silences addLog. Moving the two statements past
-      // it leaves the stream write above still passing and the panel — the sink
-      // a logger or a lingering render would read — silently empty.
       expect(harness.logs).toEqual(expect.arrayContaining([summary, named]));
     });
 
-    // F6. The guard around the teardown writes was covered by nothing, and the
-    // async EPIPE its comment named could never have reached it. This is the
-    // failure it does catch, and what it buys: the quit still finishes.
     it("finishes the quit when the stream refuses one of the lines", async () => {
       const harness = mount({ failWritesMatching: "terminated on exit" });
       await sleep(60);
@@ -598,12 +536,8 @@ describe("InteractiveUIService exit path", () => {
       harness.stdin.write("q");
       await waitFor(() => harness.exit.mock.calls.length > 0, "the process to be asked to exit");
 
-      // Exit 0 through the ordinary path, not 1 through "Shutdown failed": a
-      // throw here used to abandon the statements that restore the terminal.
       expect(harness.exit).toHaveBeenCalledWith(0);
       expect(harness.logs.filter((line) => line.startsWith("Shutdown failed"))).toEqual([]);
-      // The line before the one that threw still made it out, so the loop wrote
-      // what it could rather than being skipped wholesale.
       expect(harness.stdout.text).toContain("hook(s) still running");
       await waitFor(() => !isAlive(pid), "the hook process to go away");
     });

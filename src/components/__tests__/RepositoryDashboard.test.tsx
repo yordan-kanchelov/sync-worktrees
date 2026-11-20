@@ -85,7 +85,6 @@ describe("RepositoryDashboard", () => {
     expect(frontend).toContain("12");
     expect(frontend).toContain("M2 ↑1");
     expect(frontend).toMatch(/\b\d+m\s/);
-    // Clean and pushed everywhere; never checked; never synced; no schedule.
     expect(rowOf(lastFrame(), "backend")).toContain("✓");
     expect(rowOf(lastFrame(), "backend")).toContain("3h ago");
     expect(rowOf(lastFrame(), "infra")).toContain("just now");
@@ -155,7 +154,6 @@ describe("RepositoryDashboard", () => {
       for (const line of lines) {
         expect([...line].length).toBeLessThanOrEqual(columns);
       }
-      // The state and the name are the last to go.
       expect(rowOf(lastFrame(), "front")).toContain("idle");
     });
 

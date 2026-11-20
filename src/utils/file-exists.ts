@@ -11,8 +11,6 @@ export async function fileExists(path: string): Promise<boolean> {
 
 export type PathProbeResult = "exists" | "missing" | "unknown";
 
-// Removal decisions must distinguish "path is gone" from "probe failed"
-// (EMFILE/EINTR under load): an unverifiable path must never read as deleted.
 export async function probePathExists(path: string): Promise<PathProbeResult> {
   try {
     await fs.access(path);

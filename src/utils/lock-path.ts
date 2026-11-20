@@ -10,20 +10,10 @@ import { sanitizeNameForPath } from "./sanitize-name";
 import type { Config, RepositoryConfig } from "../types";
 
 export interface RepoLockTarget {
-  /** Absolute path to the directory that should contain the lock file. */
   dir: string;
-  /** Lock filename (created lazily by proper-lockfile). */
   file: string;
 }
 
-// Best-effort symlink canonicalization for lock keys: two spellings of the
-// same directory (a symlinked $HOME, macOS /tmp -> /private/tmp) must hash to
-// the same lock file or both processes proceed. Missing trailing components
-// are walked up to the nearest EXISTING ancestor — several components may not
-// exist yet on a first run, and canonicalizing only the immediate parent
-// would leave /link/a/b and /real/a/b on different lock keys — so the key
-// stays stable between the first run (which creates the directory) and every
-// later one.
 function canonicalizeForLockKey(dir: string): string {
   const resolved = path.resolve(dir);
   let candidate = resolved;
@@ -40,27 +30,6 @@ function canonicalizeForLockKey(dir: string): string {
   }
 }
 
-// The lock is keyed ONLY by the canonical worktreeDir: two different config
-// files (or a config-mode daemon and a programmatic run) pointing at the same
-// checkout must contend for the same lock file, so it cannot live under a
-// per-config state dir the way the audit log does. Clone mode holds this as
-// its only lock; worktree mode holds it in addition to the bare-repo lock,
-// because the default bare path is derived per config file and two configs
-// can point different bare repos at the same worktreeDir.
-//
-// Where the file lives is part of that key, so it must not depend on the
-// environment either: the processes this lock serializes — a systemd,
-// launchd or cron-started daemon with a minimal environment, a --runOnce from
-// an interactive shell whose dotfiles export XDG_STATE_HOME, `sudo -E`
-// versus plain sudo — routinely disagree on XDG_STATE_HOME and HOME, and two
-// processes that derive different lock paths for the same checkout never
-// contend. The lock therefore sits next to the canonical worktreeDir, in
-// `<parent>/.sync-worktrees-locks/`: never inside worktreeDir, which is the
-// checkout itself in clone mode and is created and pruned by sync in worktree
-// mode, and never under ~/.cache, which cache cleaners may delete under a
-// live holder. SYNC_WORKTREES_LOCK_DIR is the one deliberate escape hatch
-// (a read-only parent directory) and must be set identically for every
-// process that shares a worktreeDir.
 export function getWorktreeDirLockTarget(config: Config): RepoLockTarget {
   const canonical = canonicalizeForLockKey(config.worktreeDir);
   const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 16);

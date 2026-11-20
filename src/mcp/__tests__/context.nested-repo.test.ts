@@ -9,18 +9,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { RepositoryContext } from "../context";
 
-// Real git, no mocks. detectFromPath used to answer with the first `.git` it
-// met while walking up, so a vendored `git init` or a submodule between the
-// probed path and the enclosing worktree hid that worktree completely: the
-// agent got isWorktree:false, kind:'unsupported', every capability unavailable
-// and no currentRepo, although its parent was a managed worktree. The walk now
-// steps over anything it cannot act on and only stops at a shape it can.
-//
-// Each fixture below is built with real git precisely because the pointer files
-// are what the walk reads: a submodule inside a linked worktree does NOT write
-// `gitdir: ../.git/modules/<name>` as folklore has it, it writes
-// `gitdir: <bare>/worktrees/<wt>/modules/<name>`.
-
 async function initRepo(dir: string, branch: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   const git = simpleGit(dir);
@@ -40,7 +28,6 @@ interface Managed {
   worktree: string;
 }
 
-/** `<root>/.bare/app.git` plus a real linked worktree at `<root>/worktrees/<branch>`. */
 async function makeManaged(root: string, branch = "feature-x"): Promise<Managed> {
   const origin = path.join(root, "origin");
   await initRepo(origin, "main");
@@ -63,9 +50,6 @@ async function makeManaged(root: string, branch = "feature-x"): Promise<Managed>
 const execFileAsync = promisify(execFile);
 
 async function addSubmodule(repo: string, source: string, dest: string): Promise<string> {
-  // Run through child_process rather than simple-git: its unsafe-operations
-  // plugin rejects both the protocol.allow override a file:// submodule needs
-  // and the GIT_EDITOR this environment exports.
   await execFileAsync("git", ["-c", "protocol.file.allow=always", "submodule", "add", source, dest], {
     cwd: repo,
     env: { ...process.env, GIT_EDITOR: "true", GIT_TERMINAL_PROMPT: "0" },
@@ -102,8 +86,6 @@ describe("detect_context walks past a nested repository to the enclosing worktre
     expect(result.kind).toBe("unmanaged");
     expect(result.bareRepoPath).toBe(managed.bareRepoDir);
     expect(result.capabilities.listWorktrees.available).toBe(true);
-    // The nested repository's own identity must not leak into the answer: it is
-    // on `vendored-branch`, the enclosing worktree is on `feature-x`.
     expect(result.currentWorktreePath).toBe(managed.worktree);
     expect(result.currentBranch).toBe("feature-x");
     expect(result.allWorktrees).toEqual([{ path: managed.worktree, branch: "feature-x", isCurrent: true }]);
@@ -119,8 +101,6 @@ describe("detect_context walks past a nested repository to the enclosing worktre
 
     const submodule = await addSubmodule(managed.worktree, submoduleSource, "packages/sub");
 
-    // Pin the pointer this test depends on rather than assuming it. Anchored to
-    // the whole line so the fixture's own temp directory name cannot satisfy it.
     const pointer = (await fs.readFile(path.join(submodule, ".git"), "utf-8")).trim();
     const resolvedPointer = path.resolve(submodule, pointer.replace(/^gitdir:\s*/, ""));
     expect(resolvedPointer).toBe(
@@ -202,13 +182,6 @@ describe("detect_context walks past a nested repository to the enclosing worktre
   });
 });
 
-// An unreadable `.git` is the one thing the walk may not step over. A `.git`
-// folder and a gitdir pointing elsewhere are positive identifications -- git
-// itself would not call either a linked worktree -- but an errno is an absence
-// of information. Stepping over it answers with whatever encloses it, and what
-// encloses a worktree is very often a DIFFERENT repository. A wrong answer is
-// worse than a refusal here: every capability in it is one a mutating tool acts
-// on.
 describe("detect_context never answers an unreadable .git with the repository that encloses it", () => {
   let tempDir: string;
 
@@ -226,8 +199,6 @@ describe("detect_context never answers an unreadable .git with the repository th
     await fs.mkdir(guestRoot, { recursive: true });
     const guest = await makeManaged(guestRoot, "feature-y");
 
-    // A real linked worktree of the GUEST repository, living inside a worktree
-    // of the HOST repository, whose own .git has gone unreadable.
     const embedded = path.join(host.worktree, "embedded");
     await fs.rename(guest.worktree, embedded);
     await simpleGit(guest.bareRepoDir).raw(["worktree", "repair", embedded]);
@@ -298,8 +269,6 @@ describe("detect_context never answers an unreadable .git with the repository th
     const result = await ctx.detectFromPath(nested);
 
     expect(result.kind).toBe("unsupported");
-    // The readable nested repository is still the reported location, because it
-    // is the deepest thing the walk could name.
     expect(result.currentWorktreePath).toBe(nested);
     expect(result.capabilities.listWorktrees.reason).toBe(
       `Cannot determine whether ${looping} is a sync-worktrees worktree: an unreadable .git (ELOOP). ` +
@@ -338,8 +307,6 @@ describe("detect_context does not walk past a shape it can already act on", () =
     await ctx.loadConfig(configPath);
     const result = await ctx.detectFromPath(nested);
 
-    // The clone root is a legitimate terminal answer; resuming past it would
-    // hand back the enclosing worktree of a different repository entirely.
     expect(result.kind).toBe("managed");
     expect(result.repoName).toBe("embedded-clone");
     expect(result.currentWorktreePath).toBe(cloneRoot);
@@ -352,14 +319,6 @@ describe("detect_context does not walk past a shape it can already act on", () =
     );
   });
 
-  // Relaxing a filter means enumerating what it used to exclude by accident.
-  // Stopping at the first `.git` meant a clone-mode root was only ever looked
-  // up for a `.git` FOLDER, because nothing else got that far. `git clone
-  // --separate-git-dir` leaves a `.git` FILE holding a gitdir that points
-  // nowhere near `<bare>/worktrees/<name>`, so resuming the walk would step
-  // straight over a checkout the config names. Measured before the change: this
-  // fixture answered `unsupported` with "gitdir does not follow worktree
-  // structure" at the checkout itself.
   it("stops at a configured clone-mode root whose .git is a file, not a folder", async () => {
     const origin = path.join(tempDir, "origin");
     await initRepo(origin, "main");
@@ -398,12 +357,6 @@ describe("detect_context does not walk past a shape it can already act on", () =
     );
   });
 
-  // The shape that makes the previous one more than a nicety: with the clone
-  // lookup confined to the `.git`-folder branch, resuming the walk answers a
-  // `--separate-git-dir` checkout with whatever encloses it. Measured against
-  // the walk without this lookup, this fixture came back as the enclosing
-  // worktree of a different repository -- `app`, on `feature-x` -- rather than
-  // the configured `sep`.
   it("stops at a --separate-git-dir clone root nested inside another repository's worktree", async () => {
     const managed = await makeManaged(tempDir);
     const sepOrigin = path.join(tempDir, "sep-origin");
@@ -432,11 +385,6 @@ describe("detect_context does not walk past a shape it can already act on", () =
     expect(result.notes.filter((note) => note.startsWith("Walked past "))).toEqual([]);
   });
 
-  // The clone lookup must run only after the worktree shape has been ruled
-  // out. A `.git` file has never been matched against clone entries, so a
-  // directory that is both a real linked worktree and a configured clone-mode
-  // root answers as the worktree — measured against the pre-change code, which
-  // gives exactly this answer.
   it("answers as a worktree when one directory is both a worktree and a configured clone root", async () => {
     const managed = await makeManaged(tempDir, "feature-x");
     const configPath = await writeConfig(
@@ -472,7 +420,6 @@ describe("detect_context does not walk past a shape it can already act on", () =
     await ctx.loadConfig(configPath);
     const result = await ctx.detectFromPath(cloneRoot);
 
-    // The configured repository is still the answer; only its branch is unknown.
     expect(result.kind).toBe("managed");
     expect(result.repoName).toBe("unreadable-clone");
     expect(result.currentWorktreePath).toBe(cloneRoot);
@@ -547,10 +494,6 @@ describe("detect_context reports what it walked past when nothing encloses the p
     expect(result.notes).not.toContain("No .git file found in path or any parent directory");
   });
 
-  // The walk reaching the filesystem root must not move the reported location
-  // from the repository the agent is standing in out to the path it happened to
-  // probe; that is the answer this gave before the walk resumed, and losing it
-  // would be a silent regression in every unmanaged nested checkout.
   it("reports the deepest repository it passed, not the probed subdirectory", async () => {
     const nested = path.join(tempDir, "projects", "thing");
     await initRepo(nested, "thing-main");
@@ -584,9 +527,6 @@ describe("detect_context reports what it walked past when nothing encloses the p
     );
   });
 
-  // One clause per skipped level, each carrying a whole absolute path, in a
-  // reason that is repeated once per capability and once in the notes: a deep
-  // stack of nested repositories turned a ~900-byte answer into a 116 KB one.
   it("counts the rest instead of enumerating every level of a deep nest", async () => {
     let cur = tempDir;
     const repos: string[] = [];

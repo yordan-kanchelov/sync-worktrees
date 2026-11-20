@@ -7,20 +7,6 @@ import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__
 import { ConfigLoaderService } from "../config-loader.service";
 import { Logger } from "../logger.service";
 
-/**
- * Unknown keys are the one config mistake that used to cost nothing to make.
- * `validateConfigFile` inspects only the keys it knows, and
- * `resolveRepositoryConfig` copies only the keys it knows, so a repository
- * carrying `updateExistingWorktree` — the plural dropped — loaded clean and the
- * checkout it was meant to freeze went on being fast-forwarded. Measured before
- * this guard existed: the key is absent from the resolved object and the loader
- * writes nothing to any stream.
- *
- * Each loader here is constructed fresh, the way `runList`, `runFromConfigFile`
- * and `executeTrash` each construct one, and each config gets its own temporary
- * directory so that a load is a first load and not the worker-backed reload the
- * module-level path registry turns a repeat into.
- */
 describe("ConfigLoaderService unknown-key warnings", () => {
   let tempDir: string;
   let warnings: string[];
@@ -72,7 +58,6 @@ describe("ConfigLoaderService unknown-key warnings", () => {
       "[sync-worktrees] Unknown config key 'updateExistingWorktree' in repository 'reference' is ignored " +
         "(did you mean 'updateExistingWorktrees'?)",
     ]);
-    // The drop itself is unchanged: this is a diagnostic, not a new behaviour.
     expect("updateExistingWorktree" in repositories[0]).toBe(false);
     expect(repositories[0].updateExistingWorktrees).toBeUndefined();
   });
@@ -180,13 +165,6 @@ describe("ConfigLoaderService unknown-key warnings", () => {
     expect(warnings).toEqual(["[sync-worktrees] Unknown config key 'bareRepoDir' in defaults is ignored"]);
   });
 
-  /**
-   * A clean config that exercises the whole inventory rather than a minimal
-   * one: a fixture that sets three keys would pass this even if the inventory
-   * had lost half its entries. Every user-facing key of `Config` appears here
-   * except `runOnce` (rejected on a repository entry), the clone-only pair and
-   * the clone-mode conflicting fields, which the clone-mode case below covers.
-   */
   it("says nothing at all about a config built only from known keys", async () => {
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const configPath = await writeConfig(`
@@ -272,8 +250,6 @@ describe("ConfigLoaderService unknown-key warnings", () => {
 
   it("keeps quiet about a known key that is present with the value undefined", async () => {
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    // The shape `{ maxStatusChecks: Number(process.env.X) || undefined }`
-    // produces: a present key, an undefined value, and a known name.
     const configPath = await writeConfig(
       repoBody("updateExistingWorktrees: undefined, parallelism: { maxStatusChecks: undefined },"),
     );
@@ -306,9 +282,6 @@ describe("ConfigLoaderService unknown-key warnings", () => {
     await new ConfigLoaderService({ logger }).buildRepositories(configPath);
     expect(warnings).toHaveLength(1);
 
-    // A second load of the same path is a reload: a fresh loader, and the
-    // module-level registry sends it through the worker. It warns again on
-    // purpose — the file was just edited — so nothing is cached between loads.
     await new ConfigLoaderService({ logger }).buildRepositories(configPath);
     expect(warnings).toHaveLength(2);
     expect(warnings[1]).toBe(warnings[0]);

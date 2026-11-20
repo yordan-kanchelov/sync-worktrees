@@ -17,12 +17,6 @@ import type { RemovalAuditService } from "../removal-audit.service";
 import type { TrashService } from "../trash.service";
 import type { Config, SyncOutcome } from "../../types";
 
-// `git worktree list` reports a worktree whose HEAD was checked out by hand as
-// detached, and the sync inventory drops those entirely — so the branch looks
-// new on every tick and the create phase runs against a path that is already a
-// registered worktree. addWorktree creates nothing there; what the outcome (and
-// the log the user reads) must say is that the worktree was left alone, not
-// that it was created again.
 describe("WorktreeModeSyncRunner create phase, detached worktree at the target path", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -38,10 +32,6 @@ describe("WorktreeModeSyncRunner create phase, detached worktree at the target p
     mainPath = pathResolution.getBranchWorktreePath(worktreeDir, "main");
     featurePath = pathResolution.getBranchWorktreePath(worktreeDir, "feature-x");
     await fs.mkdir(mainPath, { recursive: true });
-    // The directory is still there — only its registration is detached, which
-    // is what keeps it out of the inventory below. Its `.git` link into the
-    // bare repository is what tells worktree naming it is this repository's
-    // checkout rather than a stranger's directory.
     await fs.mkdir(featurePath, { recursive: true });
     await fs.writeFile(
       path.join(featurePath, ".git"),
@@ -55,8 +45,6 @@ describe("WorktreeModeSyncRunner create phase, detached worktree at the target p
       fetchAll: vi.fn().mockResolvedValue(undefined),
       getRemoteBranches: vi.fn().mockResolvedValue(["main", "feature-x"]),
       getDefaultBranch: vi.fn().mockReturnValue("main"),
-      // getWorktrees() filters detached registrations out, so the planner sees
-      // feature-x as a branch with no worktree and plans a create for it.
       getWorktrees: vi.fn().mockResolvedValue([{ path: mainPath, branch: "main" }]),
       addWorktree: vi.fn().mockResolvedValue({ status: "already_registered", detached: true }),
       getRemoteCommit: vi.fn().mockResolvedValue("abc1234"),
@@ -129,9 +117,6 @@ describe("WorktreeModeSyncRunner create phase, detached worktree at the target p
     expect(second.actions).toContainEqual(expect.objectContaining({ reason: "detached_worktree" }));
   });
 
-  // The other way a create finds the path registered: a concurrent creator got
-  // there first, on the branch this sync asked for. That worktree is the one
-  // the sync wanted, so it still counts as created.
   it("still counts a worktree a concurrent creator registered on the branch", async () => {
     gitService.addWorktree.mockResolvedValue({ status: "already_registered", detached: false });
 
@@ -139,7 +124,6 @@ describe("WorktreeModeSyncRunner create phase, detached worktree at the target p
 
     expect(outcome.counts).toMatchObject({ created: 1, failed: 0 });
     expect(outcome.actions).toContainEqual({ kind: "created", branch: "feature-x", path: featurePath });
-    // Nothing to compare against origin: this call did not check anything out.
     expect(gitService.getRemoteCommit).not.toHaveBeenCalled();
   });
 });

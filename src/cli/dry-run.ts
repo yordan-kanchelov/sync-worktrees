@@ -15,20 +15,11 @@ export interface DryRunOptions {
   debug: boolean;
 }
 
-/** One repository's line in `sync --dry-run --json`. */
 export type DryRunReport =
   | { name: string; status: "planned"; plan: SyncDryRunPlan }
   | { name: string; status: "not_started"; reason: "in_progress" | "locked" | "lock_unavailable"; message: string }
   | { name: string; status: "failed"; error: string };
 
-/**
- * `sync --dry-run`: plans every selected repository — the same decisions a
- * sync would take, computed by the sync's own assessments — prints the plans
- * and changes nothing. Returns the exit code: 1 when any repository could not
- * be planned (an error, or a lock that could not be taken at all), else 0.
- * A repository whose lock another process holds is reported, not failed,
- * the same way `--run-once` treats it.
- */
 export async function runDryRun(
   configFile: ConfigFile,
   repositories: RepositoryConfig[],
@@ -40,9 +31,6 @@ export async function runDryRun(
   const reports = await Promise.all(
     repositories.map((repoConfig) =>
       limit(async (): Promise<DryRunReport> => {
-        // Logs are for --debug; the plan is the output. Under --json stdout
-        // carries nothing but the JSON, so the loggers stay quiet there even
-        // with --debug (warnings and errors still reach stderr).
         const quiet = options.json || !options.debug;
         const logger = repoConfig.logger ?? Logger.createDefault(repoConfig.name, repoConfig.debug, { quiet });
         try {
@@ -89,9 +77,6 @@ const STEP_SYMBOLS: Record<SyncDryRunStep["kind"], string> = {
   noop: "✓",
 };
 
-// What a reason code means, for the codes whose outcome records carry no
-// message of their own. Anything not listed is shown with its underscores
-// turned into spaces.
 const REASON_LABELS: Readonly<Record<string, string>> = {
   new_branch: "new branch on origin",
   missing_directory: "directory is missing; rebuilt",
@@ -138,7 +123,6 @@ function stepSubject(step: SyncDryRunStep): string {
   return step.branch ?? "";
 }
 
-/** The human-readable report: one block per repository, then a summary line. */
 export function formatDryRunReports(reports: readonly DryRunReport[]): string[] {
   const lines: string[] = ["📋 Dry run: nothing below has been done."];
   const totals = { clone: 0, create: 0, update: 0, replace: 0, remove: 0, skip: 0, noop: 0 };

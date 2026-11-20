@@ -5,9 +5,6 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-// What the built bin does with no terminal attached — systemd, docker, CI, or
-// `sync-worktrees < /dev/null`. A spawned child's stdio here is pipes, never a
-// TTY, which is exactly that situation.
 describe("CLI without a terminal", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   let tempDir: string;
@@ -31,8 +28,6 @@ describe("CLI without a terminal", () => {
     return { status: result.status, stdout: result.stdout, stderr: result.stderr };
   }
 
-  // Ink used to print "Raw mode is not supported" with a stack trace, and the
-  // process exited 0 having synced nothing.
   it("refuses to start the dashboard, exits non-zero and points at --run-once", async () => {
     const configPath = path.join(tempDir, "sync-worktrees.config.mjs");
     await fs.writeFile(
@@ -48,8 +43,6 @@ describe("CLI without a terminal", () => {
     expect(result.stderr).not.toContain("Raw mode");
   });
 
-  // The prompts can never be answered: the process used to sit there and then
-  // die with Node's "unsettled top-level await" warning.
   it("refuses to run the init wizard and writes nothing", async () => {
     const configPath = path.join(tempDir, "sync-worktrees.config.js");
 

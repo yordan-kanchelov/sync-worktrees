@@ -21,30 +21,15 @@ import { colorsEnabled } from "../utils/terminal";
 import type { RepositoryConfig } from "../types";
 import type { ResolvedConfigPath } from "../utils/config-discovery";
 
-/**
- * The Node.js major that package.json `engines.node` names. bin/node-version.js
- * carries the same number for the start-up warning; src/cli/__tests__ keeps the
- * two in step.
- */
 export const DOCTOR_MIN_NODE_MAJOR = 24;
 
-/**
- * The oldest git this tool is written against. `git worktree list -z` arrived
- * in 2.36; on an older git the listing falls back to the newline form, which
- * cannot represent a worktree path containing a newline. Older releases are
- * untested rather than refused.
- */
 export const DOCTOR_MIN_GIT_VERSION: readonly [number, number] = [2, 36];
 
-/** How long `git ls-remote` gets to answer before the remote counts as unreachable. */
 export const DOCTOR_REMOTE_TIMEOUT_MS = 15_000;
 
-/** Local git commands (`--version`, `lfs version`, the LFS attribute grep). */
 const DOCTOR_LOCAL_GIT_TIMEOUT_MS = 10_000;
 
-/** Free space below which a repository's directory fails the disk check. */
 export const DOCTOR_DISK_FAIL_BYTES = 100 * 1024 * 1024;
-/** Free space below which a repository's directory gets a warning. */
 export const DOCTOR_DISK_WARN_BYTES = 1024 * 1024 * 1024;
 
 const REMOTE_CHECK_CONCURRENCY = 4;
@@ -53,23 +38,18 @@ const LFS_FILTER_ATTRIBUTE = "filter=lfs";
 export type DoctorStatus = "pass" | "warn" | "fail";
 
 export interface DoctorCheck {
-  /** Stable identifier: node, git, git-lfs, config, remote, worktree-dir, bare-repo-dir, disk-space, lock-dir, state-dir. */
   check: string;
-  /** The repository the check is about; null for the machine-wide checks. */
   repository: string | null;
   status: DoctorStatus;
   message: string;
-  /** What to do about a warning or a failure; null when there is nothing to do. */
   hint: string | null;
 }
 
 export interface GitRunResult {
-  /** Exit code; null when git never ran (not installed) or was killed. */
   code: number | null;
   stdout: string;
   stderr: string;
   timedOut: boolean;
-  /** Set when git could not be started at all (ENOENT when it is not installed). */
   spawnError?: Error;
 }
 
@@ -77,9 +57,7 @@ export interface DoctorDeps {
   nodeVersion: string;
   runGit(args: readonly string[], options: { cwd?: string; timeoutMs: number }): Promise<GitRunResult>;
   stat(target: string): Promise<{ isDirectory(): boolean }>;
-  /** Resolves when `target` is writable; rejects otherwise. */
   accessWritable(target: string): Promise<void>;
-  /** Free bytes available to this user on the filesystem holding `target`. */
   freeBytes(target: string): Promise<number>;
   findConfig(): Promise<ResolvedConfigPath | null>;
   loadRepositories(configPath: string, filter?: string): Promise<RepositoryConfig[]>;
@@ -95,15 +73,6 @@ export interface DoctorOutputOptions {
   quiet?: boolean;
 }
 
-/**
- * Runs git without a controlling terminal. The sync's own clients go through
- * simple-git, which cannot start a child in its own session; here `detached`
- * does exactly that, so ssh cannot open /dev/tty for a key passphrase or a
- * host-key confirmation and fails at once instead of waiting on a prompt
- * nobody is watching (GIT_TERMINAL_PROMPT=0 only covers git's own prompts).
- * The environment is the same sanitized one every sync client uses, with
- * prompts forced off even when the user exported GIT_TERMINAL_PROMPT.
- */
 export function runGitNonInteractive(
   args: readonly string[],
   options: { cwd?: string; timeoutMs: number },
@@ -129,8 +98,6 @@ export function runGitNonInteractive(
     });
     const timer = setTimeout(() => {
       timedOut = true;
-      // The whole process group: git's ssh or remote-https helper would
-      // otherwise outlive it and keep the pipes open.
       try {
         if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
       } catch {
@@ -179,7 +146,6 @@ function check(
   };
 }
 
-/** git's last meaningful stderr line: its `fatal:` line when there is one. */
 function gitFailureLine(result: GitRunResult): string {
   const lines = result.stderr
     .split("\n")
@@ -237,16 +203,10 @@ export async function checkGit(deps: Pick<DoctorDeps, "runGit">): Promise<Doctor
   return check("git", null, "pass", `git ${display} (${minimum} or newer recommended)`);
 }
 
-/** The repository's local git directory, when a sync has already created it. */
 function localGitDir(repo: RepositoryConfig): string | undefined {
   return resolveMode(repo) === REPOSITORY_MODES.CLONE ? repo.worktreeDir : repo.bareRepoDir;
 }
 
-/**
- * Whether HEAD of an already-synced repository declares LFS files. Unknown
- * (false) for a repository that has not been synced yet: its tree is not
- * here to look at, and fetching it just to find out is not a doctor's job.
- */
 async function repositoryUsesLfs(repo: RepositoryConfig, deps: DoctorDeps): Promise<boolean> {
   if (repo.skipLfs === true) return false;
   const gitDir = localGitDir(repo);
@@ -320,7 +280,6 @@ export async function checkRemote(repo: RepositoryConfig, deps: Pick<DoctorDeps,
   );
 }
 
-/** The directory itself when it exists, else its nearest existing ancestor. */
 async function nearestExisting(
   target: string,
   deps: Pick<DoctorDeps, "stat">,
@@ -430,7 +389,6 @@ async function checkRepository(repo: RepositoryConfig, deps: DoctorDeps): Promis
   return checks;
 }
 
-/** Every check, machine-wide ones first, then each repository's in config order. */
 export async function runDoctorChecks(options: DoctorOptions, deps: DoctorDeps): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [checkNode(deps.nodeVersion)];
   const git = await checkGit(deps);
@@ -493,8 +451,6 @@ export async function runDoctorChecks(options: DoctorOptions, deps: DoctorDeps):
     }
   }
 
-  // Everything below runs git; without it each check would only repeat the
-  // git failure above.
   if (git.status === "fail") {
     checks.push(configCheck);
     return checks;
@@ -523,11 +479,6 @@ const STATUS_LABELS: Record<DoctorStatus, { icon: string; word: string; color: s
   fail: { icon: "❌", word: "FAIL", color: "\u001b[31m" },
 };
 
-/**
- * The human report: one line per check, a hint under each warning and
- * failure, and a closing count. `quiet` keeps only warnings, failures and the
- * count, like `--run-once --quiet`; `color` follows NO_COLOR / FORCE_COLOR.
- */
 export function formatDoctorReport(
   checks: readonly DoctorCheck[],
   options: { quiet?: boolean; color?: boolean } = {},
@@ -549,12 +500,10 @@ export function formatDoctorReport(
   return lines;
 }
 
-/** 0 when nothing failed; warnings do not fail the run. */
 export function doctorExitCode(checks: readonly DoctorCheck[]): number {
   return checks.some((item) => item.status === "fail") ? 1 : 0;
 }
 
-/** `sync-worktrees doctor`: prints the report (or JSON) and returns the exit code. */
 export async function runDoctor(
   options: DoctorOptions & DoctorOutputOptions,
   deps: DoctorDeps = createDefaultDoctorDeps(),

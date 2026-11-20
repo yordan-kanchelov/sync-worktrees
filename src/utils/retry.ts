@@ -9,7 +9,6 @@ interface ErrorWithCode {
   plugin?: string;
 }
 
-// What git prints for DNS, refused and timed-out connections (https and ssh).
 const NETWORK_ERROR_MESSAGES = ["Could not resolve host", "Connection refused", "Connection timed out"];
 
 export interface LfsErrorContext {
@@ -22,19 +21,10 @@ export interface RetryOptions {
   initialDelayMs?: number;
   maxDelayMs?: number;
   backoffMultiplier?: number;
-  /**
-   * Add random jitter to retry delays to prevent thundering herd problem
-   * in concurrent operations. Jitter is a random value between 0 and jitterMs
-   * added to the calculated delay.
-   *
-   * Recommended for parallel operations to spread out retries.
-   * Default: 0 (no jitter)
-   */
   jitterMs?: number;
   shouldRetry?: (error: unknown, context?: LfsErrorContext) => boolean;
   onRetry?: (error: unknown, attempt: number, context?: LfsErrorContext) => void;
   lfsRetryHandler?: (context: LfsErrorContext) => void;
-  /** Stops retrying once aborted: no new attempt starts and a pending backoff ends early. */
   signal?: AbortSignal;
 }
 
@@ -50,7 +40,6 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts" | "signal">> & 
   shouldRetry: (error, context) => {
     const err = error as ErrorWithCode;
 
-    // Check for LFS errors
     if (isLfsErrorFromError(error)) {
       if (context) {
         context.isLfsError = true;
@@ -58,7 +47,6 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts" | "signal">> & 
       return true;
     }
 
-    // simple-git's inactivity kill (fetchTimeoutMs / cloneTimeoutMs).
     if (err.plugin === "timeout" || err.message?.includes("block timeout reached")) {
       return true;
     }
@@ -71,10 +59,6 @@ const DEFAULT_OPTIONS: Required<Omit<RetryOptions, "maxAttempts" | "signal">> & 
       return true;
     }
 
-    // Credentials git could not obtain, a key ssh could not use or a host key
-    // it could not confirm: checked before the generic remote-repository
-    // patterns below, which these messages also contain. Retrying cannot help
-    // and costs minutes of backoff.
     if (isGitAuthErrorFromError(error)) {
       return false;
     }
@@ -113,19 +97,15 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
     try {
       return await fn();
     } catch (error) {
-      // Reset LFS error flag for each attempt
       lfsContext.isLfsError = false;
 
-      // Check if we should retry
       if (signal?.aborted || !opts.shouldRetry(error, lfsContext)) {
         throw error;
       }
 
-      // Track LFS attempts separately
       if (lfsContext.isLfsError) {
         lfsAttempt++;
 
-        // Check if we've exceeded LFS retry limit
         if (lfsAttempt > opts.maxLfsRetries) {
           const err = error as Error;
           throw new Error(
@@ -141,15 +121,12 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
         throw error;
       }
 
-      // Handle LFS errors specifically
       if (lfsContext.isLfsError && opts.lfsRetryHandler) {
         opts.lfsRetryHandler(lfsContext);
       }
 
       const baseDelay = Math.min(opts.initialDelayMs * Math.pow(opts.backoffMultiplier, attempt - 1), opts.maxDelayMs);
 
-      // Add jitter to prevent thundering herd in concurrent operations
-      // Jitter is a random value between 0 and jitterMs
       const jitter = opts.jitterMs > 0 ? Math.random() * opts.jitterMs : 0;
       const delay = baseDelay + jitter;
 
@@ -163,7 +140,6 @@ export async function retry<T>(fn: () => Promise<T>, options: RetryOptions = {})
   }
 }
 
-/** Resolves true when the signal aborted before the delay elapsed. */
 function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
   return new Promise((resolve) => {
     if (signal?.aborted) {

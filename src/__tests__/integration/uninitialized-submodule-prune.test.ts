@@ -13,13 +13,6 @@ import { createMockLogger } from "../test-utils";
 import type { Logger } from "../../services/logger.service";
 import type { RepositoryConfig, SyncOutcome } from "../../types";
 
-// Real git, no mocks. `git worktree add` never initializes submodules, so every
-// worktree this tool builds for a repo with a `.gitmodules` entry reports
-// `-<oid> <path>` — git's "not initialized" marker — from `git submodule
-// status`. That marker used to be classified as "modified submodules", which
-// made `canRemove` false forever: a clean, fully pushed worktree whose branch
-// was deleted upstream was skipped as `unsafe_to_remove` on every single sync
-// and its directory was never trashed.
 describe("Uninitialized submodules do not block pruning (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -43,8 +36,6 @@ describe("Uninitialized submodules do not block pruning (E2E)", () => {
     await simpleGit().init(["--bare", remote]);
     await simpleGit().init(["--bare", submoduleRemote]);
 
-    // The submodule's own history, so the gitlink below points at a commit that
-    // really exists in a real repository.
     const subSeedDir = path.join(tempDir, "sub-seed");
     await fs.mkdir(subSeedDir);
     const subSeed = simpleGit(subSeedDir);
@@ -70,17 +61,11 @@ describe("Uninitialized submodules do not block pruning (E2E)", () => {
       '[submodule "libs/sub"]\n\tpath = libs/sub\n\turl = ../sub.git\n',
     );
     await seed.add([".gitmodules", "README.md"]);
-    // The gitlink itself: `git submodule add` would need a file-protocol
-    // allowance and a local checkout; the superproject only has to record the
-    // 160000 entry for git to report the submodule as uninitialized later.
     await seed.raw(["update-index", "--add", "--cacheinfo", `160000,${submoduleTip},libs/sub`]);
     await seed.commit("Initial commit with submodule");
     await seed.branch(["-M", "main"]);
     await seed.addRemote("origin", remote);
     await seed.push("origin", "main");
-    // feature/a carries no commits of its own, so it stays fully pushed once
-    // its remote branch is gone and nothing but the submodule marker is left to
-    // block its removal.
     await seed.checkoutLocalBranch("feature/a");
     await seed.push("origin", "feature/a");
     await simpleGit(remote).raw(["symbolic-ref", "HEAD", "refs/heads/main"]);
@@ -117,8 +102,6 @@ describe("Uninitialized submodules do not block pruning (E2E)", () => {
     const first = await syncOnce(service);
     expect(first.counts.failed).toBe(0);
 
-    // Precondition: this is exactly the state that used to read as "modified
-    // submodules" — git's "not initialized" marker on an otherwise clean tree.
     const submoduleStatus = await simpleGit(featPath).raw(["submodule", "status"]);
     expect(submoduleStatus).toMatch(/^-[0-9a-f]{40} libs\/sub/m);
     expect((await simpleGit(featPath).status(["--ignore-submodules=none"])).isClean()).toBe(true);

@@ -35,8 +35,6 @@ describe("git-lfs probe", () => {
     expect(runProbe).toHaveBeenCalledTimes(1);
   });
 
-  // A client that throws instead of returning a promise (a directory that
-  // vanished) must not leave the probe unanswered for the rest of the process.
   it("treats a probe that throws synchronously as 'not installed'", async () => {
     const runProbe = vi.fn(() => {
       throw new Error("spawn git ENOENT");
@@ -67,8 +65,6 @@ describe("git-lfs probe", () => {
       expect(isLfsSmudgeSkippedByEnv()).toBe(true);
     });
 
-    // git-lfs does not trim, so a padded value still smudges and must keep its
-    // verification.
     it.each([undefined, "", "0", "false", "off", " 1 "])("reads %j as 'smudge enabled'", (value) => {
       setEnvVar(ENV_CONSTANTS.GIT_LFS_SKIP_SMUDGE, value);
       expect(isLfsSmudgeSkippedByEnv()).toBe(false);

@@ -52,9 +52,7 @@ describe("Config Generator", () => {
       expect(content).toContain('worktreeDir: "/absolute/path/to/worktrees"');
       expect(content).toContain('cronSchedule: "0 * * * *"');
 
-      // runOnce is no longer part of the wizard/generated config.
       expect(content).not.toContain("runOnce");
-      // worktree is the default mode, so it should not be serialized.
       expect(content).not.toContain('mode: "worktree"');
     });
 
@@ -105,7 +103,6 @@ describe("Config Generator", () => {
       await generateConfigFile(input, configPath);
 
       const content = await fs.readFile(configPath, "utf-8");
-      // Inspect only the config object, not the commented cheatsheet that follows it.
       const configBody = content.split("export default config;")[0];
       expect(configBody).toContain('mode: "clone"');
       expect(configBody).not.toContain("branch:");
@@ -337,18 +334,10 @@ describe("Config Generator", () => {
     });
   });
 
-  // The whole point of these is that a generated config can *look* right and
-  // still not load: `export default` inside a `.cjs` file, or inside a `.js`
-  // file whose package declares `"type": "commonjs"`, is a hard
-  // `SyntaxError: Unexpected token 'export'` on Node 22 and 24 alike. So every
-  // case here loads the file through the real ConfigLoaderService rather than
-  // asserting on its text alone.
   describe("matches the module system Node will parse the target under", () => {
     let pkgDir: string;
 
     beforeEach(async () => {
-      // Must live outside the repo: the repo's own package.json says
-      // `"type": "module"`, which would mask every case below.
       pkgDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sync-worktrees-modsys-")));
     });
 
@@ -356,13 +345,6 @@ describe("Config Generator", () => {
       await fs.rm(pkgDir, { recursive: true, force: true });
     });
 
-    /**
-     * Loads the generated file in a real `node` child process, exactly the way
-     * ConfigLoaderService would (`require` for `.cjs`, `import()` otherwise),
-     * and returns the repository count. In-process this cannot be checked:
-     * Vitest resolves `import()` through its own pipeline, so a `.js` file in a
-     * `"type": "commonjs"` package loads there even though Node rejects it.
-     */
     async function repositoryCountUnderRealNode(configPath: string): Promise<number> {
       const script =
         `const p = ${JSON.stringify(configPath)};` +
@@ -432,12 +414,6 @@ describe("Config Generator", () => {
       await expect(repositoryCountUnderRealNode(configPath)).resolves.toBe(1);
     });
 
-    // The monorepo shape the bug was reported from: the config lives in a
-    // subdirectory that has no package.json of its own, and the root one says
-    // `"type": "commonjs"`. Node keeps walking up past directories without a
-    // package.json, so the generator has to as well -- an ESM file written here
-    // is a hard `SyntaxError: Unexpected token 'export'` under real Node, which
-    // is why this asserts against a child process and not just the text.
     it("walks past directories with no package.json to the nearest one above", async () => {
       await writePackageJson("commonjs");
       const nested = path.join(pkgDir, "tools", "config");
@@ -459,18 +435,11 @@ describe("Config Generator", () => {
 
       await generateConfigFile(inputFor(nested), configPath);
 
-      // Node refuses to resolve a module type through a package.json it cannot
-      // parse, so neither module system would load here -- which is precisely
-      // why `init` round-trips the file through the loader before reporting
-      // success. What the generator must not do is walk past the broken file
-      // and apply a grandparent's `type`.
       expect(await fs.readFile(configPath, "utf-8")).toContain("export default config;");
       await expect(repositoryCountUnderRealNode(configPath)).rejects.toThrow(/ERR_INVALID_PACKAGE_CONFIG/);
     });
 
     it("stops at a nearest package.json with no type, rather than inheriting the parent's", async () => {
-      // Node's lookup stops at the first package.json it finds, so a parent's
-      // `"type": "commonjs"` must not reach a nested package that omits `type`.
       await writePackageJson("commonjs");
       const nested = path.join(pkgDir, "nested");
       await fs.mkdir(nested, { recursive: true });
@@ -513,7 +482,6 @@ describe("Config Generator", () => {
     });
 
     it("keeps ESM for a .js target with no package.json in the chain", async () => {
-      // Node's module-syntax detection re-parses this one as ESM, so it loads.
       const configPath = path.join(pkgDir, "x.js");
 
       await generateConfigFile(inputFor(pkgDir), configPath);

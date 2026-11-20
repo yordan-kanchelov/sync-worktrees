@@ -18,16 +18,12 @@ export type CloneSkipReason =
 
 export type CloneSkipListener = (reason: CloneSkipReason) => void;
 
-// A skip the caller has not recorded yet: what it is, the log line, and the
-// shorter wording the progress stream shows after "Skipping '<repo>': ".
 export interface CloneSkipDescriptor {
   skip: CloneSkipReason;
   warnMessage: string;
   progressDetail: string;
 }
 
-// A skip decided but not recorded yet, with the exact log and progress lines
-// the tick records it with. Lets a dry run report the same decision.
 export interface PendingCloneSkip {
   skip: CloneSkipReason;
   logMessage: string;
@@ -35,21 +31,13 @@ export interface PendingCloneSkip {
   logLevel: "warn" | "info";
 }
 
-// What the clone-mode modules share with the CloneSyncService that owns them.
-// Every member reads through to the service at the moment it is used — the
-// logger can be swapped by updateLogger, the outcome accumulator by each
-// initialize/runSyncAttempt call — so a module never holds a stale copy.
 export interface CloneSyncContext {
   readonly config: Config;
   readonly gitService: GitService;
   readonly logger: Logger;
   readonly branchCreatedActions: BranchCreatedActionsService;
   readonly clients: CloneGitClients;
-  // Display name only (log lines and progress messages), with any credentials
-  // in a URL fallback stripped.
   readonly repoName: string;
-  // The branch the remote refspec maintains: the resolved one once known,
-  // otherwise the configured one.
   readonly trackedBranch: string | undefined;
   readonly outcome: SyncOutcomeAccumulator | undefined;
   emitProgress(event: GitProgressEvent): void;
