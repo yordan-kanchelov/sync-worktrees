@@ -79,6 +79,9 @@ Scope is `$ARGUMENTS` if given (a path or glob), otherwise the whole repository.
    pnpm lint && pnpm typecheck && pnpm test:unit
    ```
 
+   If `.pnpmfile.cjs` changed, also run `pnpm install --lockfile-only`. pnpm records that file's checksum in
+   `pnpm-lock.yaml`, and CI's `--frozen-lockfile` install refuses a mismatch.
+
    `lint:ratchet` (ESLint `--prune-suppressions`) lowers the per-file counts in `eslint-suppressions.json` to what is left. Never run
    `--suppress-all` or `--suppress-rule` to make lint pass after adding a comment: that loosens the ratchet.
 
