@@ -40,7 +40,7 @@ should be readable without opening every file it touches.
    bulk suppressions):
    - A file may not gain a comment.
    - When a file loses one, `pnpm lint` fails with "suppressions left that do not occur anymore" until the
-     baseline is tightened with `--prune-suppressions`.
+     baseline is tightened with `pnpm lint:ratchet` (ESLint `--prune-suppressions`).
    - The count only goes down. Loosening the baseline with `--suppress-all` or `--suppress-rule` is not allowed.
 7. **Repeatable.** The `/delete-comment` Claude Code skill (`.claude/skills/delete-comment/`) runs the
    classify → delete → ADR → issue → prune loop again on any path.
