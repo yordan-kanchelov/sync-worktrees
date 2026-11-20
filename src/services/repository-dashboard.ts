@@ -6,19 +6,14 @@ import type { WorktreeSyncService } from "./worktree-sync.service";
 import type { SyncOutcomeCounts, SyncResult, WorktreeStatusEntry } from "../types";
 import type { AppEventEmitter, RepositoryDashboardRow, RepositoryRunState } from "../utils/app-events";
 
-/** How one repository's part of a sync cycle ended, as the scheduler saw it. */
 export type RepositorySyncSettlement =
   { status: "fulfilled"; result: SyncResult | undefined } | { status: "rejected"; error: unknown };
 
 export interface RepositoryDashboardHost {
   readonly events: AppEventEmitter;
-  /** The current generation of repositories; a reload replaces it. */
   getServices(): readonly WorktreeSyncService[];
-  /** The name the rest of the interface shows for the repository at `index`. */
   getRepoName(index: number): string;
-  /** The cron expression the repository runs on, or undefined for none. */
   scheduleFor(service: WorktreeSyncService): string | undefined;
-  /** False once the interface is gone: nothing is sent after that. */
   isActive(): boolean;
 }
 
@@ -33,8 +28,6 @@ interface RepositoryRecord {
 const FRESH: RepositoryRecord = { state: "idle", lastResult: null, lastSyncAt: null, worktrees: null, changes: null };
 
 const SKIP_REASONS: Record<string, string> = {
-  // The repository's lock refuses a sync while another sync, or an
-  // interactive operation such as a worktree removal, holds it.
   in_progress: "busy with another sync or operation",
   locked: "locked by another process",
 };
@@ -50,14 +43,11 @@ function describeCounts(counts: SyncOutcomeCounts): string {
   return parts.length > 0 ? parts.join(", ") : "up to date";
 }
 
-// One line: a git error can carry stderr across several, and the table has a
-// row per repository. Credentials in a quoted remote URL never reach it.
 function firstLine(message: string): string {
   const line = message.split(/\r?\n/).find((part) => part.trim().length > 0) ?? message;
   return redactSecretsInText(line.trim());
 }
 
-/** The state and result text a settled sync leaves on a repository's row. */
 export function describeSettlement(settled: RepositorySyncSettlement): {
   state: Exclude<RepositoryRunState, "syncing">;
   lastResult: string;
@@ -79,21 +69,8 @@ export function describeSettlement(settled: RepositorySyncSettlement): {
   return { state: "idle", lastResult: counts ? describeCounts(counts) : "synced" };
 }
 
-/**
- * The per-repository state behind the home screen's table: what each
- * repository is doing, how its last sync went and when, and the worktree
- * figures already known about it. Everything here is recorded as it happens --
- * a sync starting or settling, the status view finishing a check -- so drawing
- * the table never costs a git process.
- */
 export class RepositoryDashboard {
-  // Keyed by name, which the config keeps unique, so a reload that rebuilds
-  // every service keeps each repository's history.
   private records = new Map<string, RepositoryRecord>();
-  // The name each running sync was marked under. A cron tick can start a sync
-  // on an old-generation service while a reload is loading the new config;
-  // the reload swaps the services before that sync settles, so the service
-  // no longer maps to a name and the row would be left `syncing`.
   private syncingAs = new WeakMap<WorktreeSyncService, string>();
   private readonly now: () => number;
 
@@ -125,31 +102,24 @@ export class RepositoryDashboard {
     const name = this.nameOf(service) ?? this.syncingAs.get(service) ?? null;
     this.syncingAs.delete(service);
     const { state, lastResult } = describeSettlement(settled);
-    // A skip did not sync anything, so the age column keeps the last sync that did.
     this.update(name, state === "skipped" ? { state, lastResult } : { state, lastResult, lastSyncAt: this.now() });
     if (name !== null && state !== "skipped") {
       void this.refreshWorktreeCount(service, name);
     }
   }
 
-  // One `git worktree list` per repository per sync, never per render. Best
-  // effort: the column keeps its last figure if the listing fails.
   private async refreshWorktreeCount(service: WorktreeSyncService, name: string): Promise<void> {
     if (typeof service.getWorktrees !== "function") return;
     try {
       const worktrees = await service.getWorktrees();
       if (this.nameOf(service) !== name) return;
       this.update(name, { worktrees: worktrees.length });
-    } catch {
-      // Nothing to show that the log does not already say.
-    }
+    } catch {}
   }
 
-  /** The status view checked every worktree of this repository; keep the tallies. */
   public recordWorktreeStatus(repoIndex: number, entries: readonly WorktreeStatusEntry[]): void {
     const services = this.host.getServices();
     if (repoIndex < 0 || repoIndex >= services.length) return;
-    // A worktree whose probe failed says nothing about either tally.
     const probed = entries.filter((entry) => entry.error === undefined);
     this.update(this.host.getRepoName(repoIndex), {
       worktrees: entries.length,
@@ -169,7 +139,6 @@ export class RepositoryDashboard {
     });
   }
 
-  /** Send the whole table, and forget repositories a reload dropped. */
   public publish(): void {
     if (!this.host.isActive()) return;
     const rows = this.snapshot();

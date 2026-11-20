@@ -12,12 +12,8 @@ const mocks = vi.hoisted(() => ({
   hasInteractiveTerminal: vi.fn(() => true),
 }));
 
-// Only the interactive surface is mocked: the generator and the config loader
-// below are the real ones, because the point of this file is that `init` proves
-// the file it just wrote actually loads.
 vi.mock("../utils/interactive", () => ({ promptForInitConfig: mocks.promptForInitConfig }));
 vi.mock("../utils/mcp-registration", () => ({ maybeRegisterMcpClients: mocks.maybeRegisterMcpClients }));
-// The wizard refuses to start without a terminal, and vitest's stdin is not one.
 vi.mock("../utils/terminal", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   hasInteractiveTerminal: mocks.hasInteractiveTerminal,
@@ -77,8 +73,6 @@ describe("sync-worktrees init round-trips the generated config", () => {
     };
   }
 
-  // Without a terminal the prompts could never be answered: the process sat
-  // there and then died with Node's "unsettled top-level await" warning.
   it("refuses to start the wizard without a terminal", async () => {
     mocks.hasInteractiveTerminal.mockReturnValue(false);
     const configPath = path.join(tempDir, "sync-worktrees.config.js");
@@ -101,10 +95,6 @@ describe("sync-worktrees init round-trips the generated config", () => {
     expect(mocks.promptForInitConfig).toHaveBeenCalledWith(tempDir);
   });
 
-  // A config whose bareRepoDir sits on top of its worktreeDir is written
-  // happily and then rejected by the loader on the next run. Before the
-  // round-trip check the wizard printed "✅ Configuration saved", offered MCP
-  // registration and exited 0.
   it("exits non-zero with the loader error when the generated config does not load", async () => {
     mocks.promptForInitConfig.mockResolvedValue(answers({ bareRepoDir: path.join(tempDir, "app") }));
     const configPath = path.join(tempDir, "sync-worktrees.config.js");
@@ -124,16 +114,10 @@ describe("sync-worktrees init round-trips the generated config", () => {
 
     await expect(runInit(configPath)).rejects.toMatchObject({ code: 1 });
 
-    // The file holds the answers the user just typed, and is the only evidence
-    // of what went wrong, so it is kept for them to inspect or fix.
     await expect(fs.readFile(configPath, "utf-8")).resolves.toContain("bareRepoDir");
     expect(errors.join("\n")).toContain("left in place");
   });
 
-  // The check runs `buildRepositories`, the same entry point the sync run uses,
-  // so it also catches what `loadConfigFile` alone would wave through: this
-  // config parses and validates fine per-file and is only rejected by the
-  // cross-repository path-collision pass.
   it("catches a failure that only the full repository build sees", async () => {
     mocks.promptForInitConfig.mockResolvedValue({
       cronSchedule: "0 * * * *",

@@ -19,14 +19,6 @@ interface CliRun {
   stderr: string;
 }
 
-// A CI container or hardened host where the lock directory cannot be created
-// (SYNC_WORKTREES_LOCK_DIR pointing at a file, a read-only volume) must fail
-// the run loudly: nothing was cloned, fetched or checked out, so a green exit
-// that blames "another process" for holding the lock would let the pipeline
-// pass having synced nothing. Real contention stays a skip with exit code 0 —
-// and it must be real contention no matter how the two processes' HOME and
-// XDG_STATE_HOME differ, since a daemon and a shell-launched run rarely agree
-// on either.
 describe("CLI reports an unavailable repo lock as a failure", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   const originalLockDir = process.env[LOCK_DIR];
@@ -91,8 +83,6 @@ describe("CLI reports an unavailable repo lock as a failure", () => {
     return { status: result.status, stdout: result.stdout, stderr: result.stderr };
   }
 
-  // The lock lives next to the canonical worktreeDir whatever the child's
-  // environment says, so the path the child uses can be derived right here.
   function defaultLockTarget(): { dir: string; file: string } {
     return getWorktreeDirLockTarget({
       repoUrl: `file://${bareRepo}`,
@@ -118,7 +108,6 @@ describe("CLI reports an unavailable repo lock as a failure", () => {
     expect(output).not.toMatch(/another process holds/i);
     expect(output).not.toContain("Synchronization finished");
 
-    // Nothing ran: no clone, no worktrees.
     await expect(fs.access(worktreeDir)).rejects.toThrow();
   }, 60_000);
 
@@ -128,13 +117,8 @@ describe("CLI reports an unavailable repo lock as a failure", () => {
     const lockTarget = path.join(target.dir, target.file);
     await fs.mkdir(target.dir, { recursive: true });
     await fs.writeFile(lockTarget, "");
-    // Hold the worktreeDir lock from this process with the same lockfile
-    // options the CLI uses, so the child contends for the same lockfile.
     const releaseHolder = await lockfile.lock(lockTarget, { realpath: false, stale: 120_000 });
 
-    // The child runs as a shell-launched process would: XDG_STATE_HOME and
-    // HOME both differ from this (holder) process, and neither may move it
-    // onto a different lock file.
     let run: CliRun;
     try {
       run = runCli({ XDG_STATE_HOME: path.join(tempDir, "shell-state"), HOME: path.join(tempDir, "shell-home") });
@@ -147,7 +131,6 @@ describe("CLI reports an unavailable repo lock as a failure", () => {
     expect(run.stdout).toContain("0 synced, 1 skipped, 0 failed");
     expect(run.stderr).toContain("Another process holds the sync lock");
     expect(output).not.toContain("lock unavailable");
-    // Nothing ran under the child's would-be state dir, and no second lock appeared.
     await expect(fs.access(path.join(tempDir, "shell-state"))).rejects.toThrow();
     await expect(fs.access(path.join(tempDir, "shell-home"))).rejects.toThrow();
     await expect(fs.access(worktreeDir)).rejects.toThrow();

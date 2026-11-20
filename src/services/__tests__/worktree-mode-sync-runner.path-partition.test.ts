@@ -23,15 +23,10 @@ const spies = vi.hoisted(() => ({
   existsSync: vi.fn(),
   realpathSync: vi.fn(),
   realpath: vi.fn(),
-  // Highest number of async realpath calls outstanding at one moment. This is
-  // what the concurrency bound actually controls, and unlike elapsed time it
-  // does not move with machine load or coverage instrumentation.
   inFlight: 0,
   peakInFlight: 0,
 }));
 
-// The spies count calls and then delegate: the partition has to be exercised
-// against a real filesystem for the containment verdicts to mean anything.
 vi.mock("fs", async () => {
   const actual = await vi.importActual<typeof FsModule>("fs");
   const realpathSync = ((...args: Parameters<typeof actual.realpathSync>) => {
@@ -64,9 +59,6 @@ vi.mock("fs/promises", async () => {
   };
 });
 
-// A worktree count large enough that "once per worktree" and "once for the
-// whole partition" are impossible to confuse, and large enough that the
-// synchronous version's blocking was measurable.
 const WORKTREE_COUNT = 400;
 
 describe("WorktreeModeSyncRunner worktreeDir partition", () => {
@@ -100,19 +92,12 @@ describe("WorktreeModeSyncRunner worktreeDir partition", () => {
 
     gitService = {
       ensureAnchorWorktree: vi.fn().mockResolvedValue(false),
-      // Not on disk, so the anchor check makes no realpath call.
       getMainWorktreePath: vi.fn().mockReturnValue(path.join(worktreeDir, "main")),
       fetchAll: vi.fn().mockResolvedValue(undefined),
-      // Only the default branch is on the remote, so the registered worktrees
-      // are never "planned" branches and dropStaleRegistrations — the only
-      // other awaiting step between the listing and the log line below — has
-      // nothing to probe.
       getRemoteBranches: vi.fn().mockResolvedValue(["main"]),
       getDefaultBranch: vi.fn().mockReturnValue("main"),
       getWorktrees: vi.fn().mockImplementation(async () => registered),
       getRemoteBranchTips: vi.fn().mockResolvedValue(new Map()),
-      // Every registered branch is a prune candidate; a status that refuses
-      // removal keeps the phase to a mocked call per worktree.
       getFullWorktreeStatus: vi.fn().mockResolvedValue({ canRemove: false, reasons: ["has uncommitted changes"] }),
       setLfsSkipEnabled: vi.fn(),
       getBareRepoPath: vi.fn().mockReturnValue(path.join(tempDir, "bare")),
@@ -168,8 +153,6 @@ describe("WorktreeModeSyncRunner worktreeDir partition", () => {
     const resolvedTargets = spies.realpath.mock.calls.map(([target]) => target as string);
     expect(resolvedTargets.filter((target) => target === worktreeDir)).toEqual([worktreeDir]);
     expect(resolvedTargets[0]).toBe(worktreeDir);
-    // One base resolution plus one per candidate — the candidates still get
-    // canonicalized individually, which is what catches a symlink escape.
     expect(resolvedTargets).toHaveLength(WORKTREE_COUNT + 1);
   });
 
@@ -181,7 +164,6 @@ describe("WorktreeModeSyncRunner worktreeDir partition", () => {
       await fs.symlink(outside, escape, "dir");
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      // Environments without symlink privileges return EPERM/EACCES/UNKNOWN/ENOSYS.
       if (code === "EPERM" || code === "EACCES" || code === "UNKNOWN" || code === "ENOSYS") return;
       throw error;
     }
@@ -195,14 +177,6 @@ describe("WorktreeModeSyncRunner worktreeDir partition", () => {
     );
   });
 
-  // The stretch between the worktree listing and the "Found N managed" line is
-  // the partition and nothing else — with no registered branch on the remote,
-  // dropStaleRegistrations short-circuits without awaiting. Before this change
-  // that stretch held no `await` at all, so a setImmediate probe could not run
-  // once inside it however long the partition took; measured at 400 worktrees
-  // it blocked the loop for one uninterrupted 5-8 ms stall. Counting probe
-  // ticks says exactly that, and says it without a wall-clock threshold that a
-  // loaded CI machine could trip over.
   it("lets the event loop run while partitioning", async () => {
     let ticks = 0;
     let probing = false;
@@ -224,11 +198,6 @@ describe("WorktreeModeSyncRunner worktreeDir partition", () => {
     await run();
 
     expect(ticks).toBeGreaterThan(0);
-    // Yielding is only half of it: resolving all WORKTREE_COUNT paths at once
-    // queues them behind libuv's four-thread pool and lands every callback in
-    // one poll phase, which measures worse than the synchronous loop this
-    // replaced. Assert the bound the runner actually applies rather than an
-    // elapsed time, which moves with machine load and coverage instrumentation.
     expect(spies.peakInFlight).toBeGreaterThan(0);
     expect(spies.peakInFlight).toBeLessThanOrEqual(PATH_CONTAINMENT_CONCURRENCY);
   });

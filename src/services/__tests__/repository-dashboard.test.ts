@@ -192,8 +192,6 @@ describe("RepositoryDashboard", () => {
     expect(latest()[0]).toMatchObject({ state: "idle", lastResult: "1 created", lastSyncAt: 1_000 });
   });
 
-  // A repository that finished early should not read "syncing" until the
-  // slowest repository of its cycle is done.
   it("settles each row as its own repository finishes", async () => {
     let finishSlow!: () => void;
     const slow = makeService("slow", {

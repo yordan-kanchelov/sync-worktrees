@@ -14,16 +14,6 @@ import { createMockLogger, setEnvVar } from "../test-utils";
 import type { GitServiceOptions } from "../../services/git.service";
 import type { Logger } from "../../services/logger.service";
 
-// Real git, driven through a wrapper that stays silent for 400 ms before
-// handing over. simple-git's `timeout.block` resets only on stdout/stderr
-// data, so any command that quiet is killed with SIGINT once the window
-// passes: that is exactly what `git worktree add` looks like while it checks
-// out a large repository, and a monorepo whose checkout took longer than
-// fetchTimeoutMs (5 min by default) could never be created — every tick
-// SIGINT'd it, every tick recorded create_failed. Local commands therefore run
-// on clients built without the inactivity kill, while network commands keep
-// it. fetchTimeoutMs is set to 100 ms here so the 400 ms silence is decisive
-// in both directions.
 describe("Inactivity timeout applies to network commands only (E2E)", () => {
   const SILENCE_MS = 400;
   const FETCH_TIMEOUT_MS = 100;
@@ -40,9 +30,6 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
   const originalPath = process.env.PATH;
   const originalShortcut = process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
 
-  // Puts the slow wrapper ahead of the real git on PATH. createGitClient hands
-  // each child the (sanitized) process environment, so this reaches every git
-  // the service spawns from here on.
   const useSlowGit = (): void => {
     process.env.PATH = `${shimDir}${path.delimiter}${originalPath ?? ""}`;
   };
@@ -76,8 +63,6 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
     await seed.push("origin", "feat");
     await simpleGit(remote).raw(["symbolic-ref", "HEAD", "refs/heads/main"]);
 
-    // The bare repository is prepared with plain git (no shim, no timeouts) so
-    // only the commands under test run slowly.
     await fs.mkdir(path.dirname(bareRepoDir), { recursive: true });
     await simpleGit().clone(`file://${remote}`, bareRepoDir, ["--bare"]);
     const bare = simpleGit(bareRepoDir);
@@ -91,8 +76,6 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
       mode: 0o755,
     });
 
-    // The unit suite disables the inactivity timeouts process-wide; this test
-    // is about them, so it opts back out.
     delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
 
     logger = createMockLogger();
@@ -128,25 +111,10 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
     await gitService.initialize();
     useSlowGit();
 
-    // The sync's `git fetch --all` is a network command, so the inactivity
-    // kill is still armed there.
     await expect(gitService.fetchAll()).rejects.toThrow(/block timeout reached/i);
   });
 
-  /**
-   * Everything above hands GitService a Config built in the test. That is how
-   * both timeouts were only ever exercised, and it is why nobody noticed that
-   * resolveRepositoryConfig rebuilt the repository config from an allowlist
-   * that named neither of them: a config file could say anything it liked and
-   * every run still used the 5- and 15-minute built-ins. These go through the
-   * real loader instead, so the window under test is the one a written config
-   * file actually produces.
-   */
   describe("configured through a config file", () => {
-    // The loader only accepts a non-zero window of at least one second, so
-    // these run with a 1 s window behind a wrapper that is silent for 1.5 s —
-    // but only in front of `fetch` and `clone`, the commands under test, so
-    // local commands do not pay the silence.
     const CONFIG_TIMEOUT_MS = 1_000;
     const NETWORK_SILENCE_MS = 1_500;
 
@@ -169,9 +137,6 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
       process.env.PATH = `${networkShimDir}${path.delimiter}${originalPath ?? ""}`;
     };
 
-    // Builds the service the CLI would build: a config file on disk, resolved
-    // by ConfigLoaderService, and the resolved repository handed straight to
-    // GitService the way WorktreeSyncService does.
     const serviceFromConfigFile = async (options: {
       defaults?: string;
       repo?: string;
@@ -218,10 +183,6 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
     });
 
     it("disables the kill entirely at fetchTimeoutMs 0, which beats a defaults value", async () => {
-      // 0 has to mean "no inactivity kill", not "kill immediately": simple-git
-      // only installs its timeout plugin for a positive block, and so do both
-      // services. With the same silence that fails the two tests above, this
-      // one has to get all the way through the fetch.
       const service = await serviceFromConfigFile({
         defaults: `defaults: { fetchTimeoutMs: ${CONFIG_TIMEOUT_MS} },\n  `,
         repo: "fetchTimeoutMs: 0,",
@@ -233,9 +194,6 @@ describe("Inactivity timeout applies to network commands only (E2E)", () => {
     });
 
     it("kills the silent bare clone at the cloneTimeoutMs written in defaults", async () => {
-      // A bare repository that does not exist yet, so initialize() clones it —
-      // the one command on the clone budget. fetchTimeoutMs is disabled here so
-      // that nothing else in the run can produce a block timeout.
       const service = await serviceFromConfigFile({
         defaults: `defaults: { fetchTimeoutMs: 0, cloneTimeoutMs: ${CONFIG_TIMEOUT_MS} },\n  `,
         bareRepoDirOverride: path.join(tempDir, ".bare", "fresh-clone"),

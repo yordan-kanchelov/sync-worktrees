@@ -23,11 +23,6 @@ import type { MutatingGitClients } from "./git-clients";
 import type { CloneSkipDescriptor, CloneSkipReason, CloneSyncContext } from "./types";
 import type { SparseCheckoutConfig } from "../../types";
 
-// Brings `config.worktreeDir` to a clone init can hand to the sync tick:
-// adopts an existing clone (after validating it), or clones into an absent or
-// empty directory and runs the post-clone steps. Returns the skip recorded for
-// an existing clone that cannot be synced as configured, so the caller can
-// keep the tick that follows from recording it a second time; null otherwise.
 export async function initializeClone(ctx: CloneSyncContext, branch: string): Promise<CloneSkipReason | null> {
   const worktreeDir = ctx.config.worktreeDir;
   const destination = await inspectCloneDestination(worktreeDir);
@@ -38,19 +33,11 @@ export async function initializeClone(ctx: CloneSyncContext, branch: string): Pr
   return null;
 }
 
-// init's read-only destination checks, shared with `sync --dry-run`: throws
-// where init refuses the destination, else says what init does with it.
 export async function inspectCloneDestination(worktreeDir: string): Promise<"clone" | "absent" | "empty"> {
   let entries: string[] | null;
   try {
     entries = await fs.readdir(worktreeDir);
   } catch (error) {
-    // Only a definitively missing directory may proceed as a fresh clone: it
-    // is what lets prepareCloneDestination claim the destination, and that
-    // claim authorizes maybeCleanupPartialClone to rm -rf the directory
-    // after a failed clone, so a transient probe failure
-    // (EMFILE, EACCES) must never read as "the directory did not exist" —
-    // that would delete a pre-existing directory the tool never created.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw new GitOperationError(
         "clone-init",
@@ -74,20 +61,11 @@ export async function inspectCloneDestination(worktreeDir: string): Promise<"clo
   return entries === null ? "absent" : "empty";
 }
 
-// What a failed clone may remove. `createdDir` is true only when this init's
-// own mkdir made the destination; `createdParent` is the outermost ancestor the
-// same call had to create on the way, if any.
 interface CloneDestinationOwnership {
   createdDir: boolean;
   createdParent?: string;
 }
 
-// The readdir that found the destination missing proves only that it was
-// absent a moment ago, not that this process is the one that creates it. So
-// the parents are made first and the destination itself with a plain,
-// non-recursive mkdir: EEXIST there means somebody else created it in that
-// window, and a directory somebody else created is never this init's to
-// delete. A destination that already existed (empty) is not ours either.
 async function prepareCloneDestination(
   worktreeDir: string,
   destinationWasAbsent: boolean,
@@ -111,11 +89,6 @@ async function adoptExistingClone(
   worktreeDir: string,
   branch: string,
 ): Promise<CloneSkipReason | null> {
-  // Before anything treats this directory as a clone somebody else made:
-  // one of ours that never finished checking out must never be adopted.
-  // First, and not after validateExistingClone, because that path answers
-  // with soft skips — a wrong branch or a changed origin would return
-  // early and the real problem would never be reported at all.
   await assertPreviousCloneCompleted(worktreeDir);
   ctx.emitProgress({ phase: "clone", message: `Validating existing clone for '${ctx.repoName}'` });
   const invalid = await validateExistingClone(ctx, worktreeDir, branch);
@@ -123,24 +96,8 @@ async function adoptExistingClone(
     ctx.recordSkip(invalid.skip, invalid.warnMessage, `Skipping '${ctx.repoName}': ${invalid.progressDetail}`);
     return invalid.skip;
   }
-  // validateExistingClone only reads. Adopting the directory — narrowing
-  // its refspec, deleting its stale remote-tracking refs — starts here, so
-  // this is where a non-primary checkout has to be refused.
   const clients = await ctx.clients.mutatingClientsFor(worktreeDir);
-  // The one call that sweeps stale refs whether or not it had to touch the
-  // refspec: this directory is a clone somebody else made, or one an older
-  // version of this tool left behind, so a refspec that already reads
-  // narrow proves nothing about the refs sitting next to it. It runs once
-  // per process, not once per tick.
   await configureSingleBranchRemote(ctx, clients, branch, { sweepStaleRefs: "always" });
-  // A pending marker means this clone was created by an init of ours that
-  // was interrupted after the clone — finish the post-clone steps now.
-  // Sparse setup is re-run too (idempotent), so an init that died inside
-  // it does not leave the clone permanently un-narrowed. The marker is
-  // deliberately written before every one of those steps, the refspec
-  // narrowing included: written after any of them, a failure there would
-  // leave no marker and the file copy would be silently dropped forever.
-  // Pre-existing user clones never carry the marker and are left alone.
   if (await fileExists(getInitPendingMarkerPath(worktreeDir))) {
     ctx.logger.info(`Completing interrupted initialization for '${ctx.repoName}'...`);
     await recordCloneTimeDefaultBranch(ctx, clients, branch);
@@ -154,12 +111,6 @@ async function adoptExistingClone(
   return null;
 }
 
-// With no `branch` configured, the branch a clone is made on is the remote's
-// default at that moment, and resolveBranch reads it back from
-// refs/remotes/origin/HEAD on every later start. `git clone --single-branch
-// --branch` used to write that symref itself; newer git (seen on 2.56) leaves
-// it out, and a later fetch would fill it in with whatever the remote's HEAD
-// is by then. So it is written here, for the clones this tool makes.
 async function recordCloneTimeDefaultBranch(
   ctx: CloneSyncContext,
   clients: MutatingGitClients,
@@ -194,9 +145,6 @@ async function cloneFresh(
   } catch (error) {
     checkoutRecovered = await settleFailedClone(ctx, worktreeDir, ownership, error);
     if (!checkoutRecovered) {
-      // The outcome is what the MCP `sync` result and the run summary show, so
-      // carry the credential hint there too (the thrown error gets it at the
-      // WorktreeSyncService funnel).
       ctx.outcome?.recordFailed("repo", appendGitAuthHint(getErrorMessage(error)), {
         reason: "clone_failed",
         branch,
@@ -206,14 +154,6 @@ async function cloneFresh(
     }
   }
 
-  // The clone is on disk from here on, and every step that follows can fail
-  // or be killed — leaving a valid-looking clone that the next init adopts
-  // via the existing-clone path, which runs the file copy only for a clone
-  // carrying this marker. So the marker goes down first, before the refspec
-  // narrowing (which the adoption path re-runs anyway) and before anything
-  // else touches the clone. That shortens the window rather than closing it —
-  // `clone` returning and this write are two operations — but what is left is
-  // a single file write rather than the git subprocesses the narrowing spawns.
   try {
     await fs.writeFile(getInitPendingMarkerPath(worktreeDir), new Date().toISOString());
   } catch (error) {
@@ -224,8 +164,6 @@ async function cloneFresh(
   await recordCloneTimeDefaultBranch(ctx, freshClients, branch);
   await configureSingleBranchRemote(ctx, freshClients, branch);
 
-  // The progress stream carries the same nuance as the log: a TUI showing
-  // "Clone successful" for a tree that holds pointer files is not the truth.
   ctx.logger.info(checkoutRecovered ? `✅ Clone completed (LFS content skipped).` : `✅ Clone successful.`);
   ctx.emitProgress({
     phase: "clone",
@@ -247,14 +185,9 @@ async function cloneFresh(
 
   await runInitialFileCopy(ctx, worktreeDir, branch);
 
-  // Only record `created` once init is fully complete; otherwise an aborted
-  // post-clone step would leave the outcome reporting both created and failed.
   ctx.outcome?.recordCreated(branch, worktreeDir);
 }
 
-// The clone ran with `--no-checkout`, so this is its first checkout. The
-// incomplete-clone marker brackets it like the clone's own checkout, and an
-// LFS failure gets the same one retry with smudging off.
 async function checkOutSparseClone(
   ctx: CloneSyncContext,
   clients: MutatingGitClients,
@@ -301,7 +234,6 @@ async function retrySparseCheckoutWithLfsSkipped(
 
 function buildCloneArgs(ctx: CloneSyncContext, branch: string): string[] {
   const args = ["--branch", branch, "--single-branch", "--no-tags", "--progress"];
-  // Only the cone is checked out, after the patterns are set.
   if (ctx.config.sparseCheckout) args.push("--no-checkout");
   if (ctx.config.depth !== undefined) {
     args.push("--depth", String(ctx.config.depth));
@@ -309,8 +241,6 @@ function buildCloneArgs(ctx: CloneSyncContext, branch: string): string[] {
   return args;
 }
 
-// Null when the existing clone can be adopted as configured; otherwise the
-// skip that says why not. Reads only.
 async function validateExistingClone(
   ctx: CloneSyncContext,
   worktreeDir: string,
@@ -346,39 +276,12 @@ async function validateExistingClone(
   return null;
 }
 
-// A failed clone leaves the destination in one of two shapes, and each has
-// its own settlement. A clone that never got as far as writing HEAD leaves
-// rubbish maybeCleanupPartialClone removes when we created the directory. A
-// clone that fetched every object and then failed to check out ("Clone
-// succeeded, but checkout failed", exit 128 — a missing LFS object is the
-// usual cause) leaves a complete `.git` on the tracked branch next to a
-// half-written tree, and nothing on disk tells that apart from a clone the
-// user made: validateExistingClone passes it, so without a marker the next
-// run would adopt it as a pre-existing clone — no checkout retry, no sparse
-// setup, no LFS verify, no file copy — and report `dirty_tree` forever.
-//
-// Everything under that path is this clone's own work: the destination was
-// verified absent or empty before it started (a directory that is neither
-// never reaches the clone). So the checkout may be retried in place, and
-// when it cannot be, the directory is marked as ours-and-unfinished so the
-// next init refuses to adopt it. Returns true when the working tree was
-// repaired and the caller may continue with the post-clone steps.
-//
-// Known limit: this runs only once `git clone` has returned, so a process
-// killed mid-checkout still leaves an unmarked half-written clone; see
-// docs/internal/clone-mode-notes.md.
 async function settleFailedClone(
   ctx: CloneSyncContext,
   worktreeDir: string,
   ownership: CloneDestinationOwnership,
   cause: unknown,
 ): Promise<boolean> {
-  // Only a definitively absent HEAD may reach maybeCleanupPartialClone: its
-  // rm -rf arm is live for a directory this init created, and a probe that
-  // merely failed (EACCES on the destination, EMFILE under load) must never
-  // read as "nothing was fetched here". An unverifiable one is marked like a
-  // fetched clone instead — marking deletes nothing, and refusing to adopt a
-  // directory that turns out to be fine costs an error the user can clear.
   const headProbe = await probePathExists(path.join(worktreeDir, PATH_CONSTANTS.GIT_DIR, "HEAD"));
   if (headProbe === "missing") {
     await maybeCleanupPartialClone(ctx, worktreeDir, ownership);
@@ -386,8 +289,6 @@ async function settleFailedClone(
   }
 
   const message = getErrorMessage(cause);
-  // Marked before the retry, never after: a process killed in the middle of
-  // the retry must still leave a directory the next run refuses to adopt.
   await writeIncompleteCloneMarker(ctx, worktreeDir, message);
 
   if (headProbe !== "exists" || !isLfsError(message) || !(await retryCheckoutWithLfsSkipped(ctx, worktreeDir))) {
@@ -406,18 +307,10 @@ async function settleFailedClone(
   return true;
 }
 
-// Retries only the checkout half of a clone whose objects already landed,
-// with LFS smudging forced off — the same recovery fetchWithRecovery applies
-// to a fetch, and the same one worktree mode applies to a `worktree add`.
-// Reports success rather than throwing: the caller is already holding the
-// clone's failure and must report that one, not this one.
 async function retryCheckoutWithLfsSkipped(ctx: CloneSyncContext, worktreeDir: string): Promise<boolean> {
   ctx.logger.info(`⚠️  LFS error during clone of '${ctx.repoName}'; retrying the checkout with LFS disabled.`);
   ctx.emitProgress({ phase: "clone", message: `Retrying checkout for '${ctx.repoName}' with LFS disabled` });
   try {
-    // `checkout -f HEAD` is a write, so it goes through the primary-checkout
-    // guard like every other one — even here, where the directory is one
-    // this init just cloned into.
     const clients = await ctx.clients.mutatingClientsFor(worktreeDir);
     await ctx.clients.lfsSkipCheckoutClient(clients, worktreeDir).raw(["checkout", "-f", "HEAD"]);
     return true;
@@ -466,10 +359,6 @@ async function maybeCleanupPartialClone(
   }
 }
 
-// The parents this init's mkdir created for the destination, innermost first,
-// up to and including the outermost one it made. rmdir only ever removes an
-// empty directory, so anything another process put there in the meantime
-// stops the walk instead of being deleted with it.
 async function removeCreatedParents(
   ctx: CloneSyncContext,
   worktreeDir: string,

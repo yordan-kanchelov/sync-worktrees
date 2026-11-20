@@ -33,9 +33,6 @@ describe("copyTreePreservingSymlinks", () => {
     const { source, copy } = await makeTree(await createTempDirectory());
 
     await copyTreePreservingSymlinks(source, copy);
-    // Nothing may be asserted before this: a link rewritten to an absolute
-    // path under `source` still resolves while `source` is there, so an
-    // assertion made first would pass against the very bug it guards.
     await fs.rm(source, { recursive: true, force: true });
 
     await expect(fs.readlink(path.join(copy, "a", "link"))).resolves.toBe(RELATIVE_TARGET);
@@ -61,9 +58,6 @@ describe("copyTreePreservingSymlinks", () => {
     }
   });
 
-  // `force` is not pinned here on purpose: fs.cp defaults it to true, so
-  // dropping it from the forwarded options changes nothing observable. The
-  // filter is the half that only works if the caller's options reach fs.cp.
   it("forwards the caller's filter rather than replacing its options", async (ctx) => {
     if (!(await symlinksSupported())) {
       ctx.skip("this host cannot create symlinks");

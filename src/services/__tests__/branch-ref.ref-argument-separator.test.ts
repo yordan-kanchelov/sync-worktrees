@@ -11,22 +11,6 @@ import { GitService } from "../git.service";
 import type { GitServiceOptions } from "../git.service";
 import type { SimpleGit } from "simple-git";
 
-// Real git, no mocks. The branch name and start point these wrappers pass are
-// read back out of a trash manifest, and git's option parser permutes its
-// arguments, so an option-shaped value is taken as an option unless a `--`
-// separates it. Measured on git 2.43 in a bare repo whose HEAD is
-// refs/heads/main:
-//
-//   git branch -m <sha>                     renames main to <sha>, HEAD follows
-//   git branch <name> -m                    same rename, spelled the other way
-//   git worktree add --no-checkout <p> --force
-//                                           SUCCEEDS, on a brand new branch
-//                                           named after the directory
-//   git worktree add --no-checkout <p> --detach
-//                                           SUCCEEDS, detached at HEAD
-//
-// Every one of those is a silent wrong answer rather than an error, which is
-// why these tests assert on the refs that survive and not only on the throw.
 describe("git wrappers that pass a ref read out of a manifest (real git)", () => {
   let tempDir: string;
   let remote: string;
@@ -79,9 +63,6 @@ describe("git wrappers that pass a ref read out of a manifest (real git)", () =>
     bare = simpleGit(bareRepoDir);
     mainOid = (await bare.raw(["rev-parse", "refs/heads/main"])).trim();
 
-    // The fixture only proves anything while HEAD really is a branch ref:
-    // `git branch -m` renames whatever HEAD points at, so a detached bare repo
-    // would make the assertions below pass for the wrong reason.
     expect(await headBranch()).toBe("refs/heads/main");
   });
 
@@ -101,17 +82,12 @@ describe("git wrappers that pass a ref read out of a manifest (real git)", () =>
     );
 
     it("refuses an option-shaped start point instead of renaming the bare repo's HEAD branch", async () => {
-      // `git branch restored -m` is `git branch -m restored`: the manifest's
-      // headOid is as dangerous as its branch, and reaches the same argv.
       await expect(gitService.createBranchAt("restored", "-m")).rejects.toThrow();
 
       expect(await localRefs()).toEqual(["refs/heads/main"]);
       expect(await headBranch()).toBe("refs/heads/main");
     });
 
-    // The other direction. These are all names git itself creates happily, and
-    // a separator placed wrongly (or a validator stricter than git) would make
-    // restoring any of them impossible.
     it.each(["feature/x.y", "release-1.0", "team/area/sub", "fonctionnalité", "@"])(
       "still creates the branch %s",
       async (branchName) => {
@@ -124,10 +100,6 @@ describe("git wrappers that pass a ref read out of a manifest (real git)", () =>
   });
 
   describe("addWorktreeNoCheckout", () => {
-    // Not merely "it fails": without the separator these two SUCCEED and give
-    // the caller a worktree that is not the one it asked for — `--force` on a
-    // new branch named after the directory, `--detach` with no branch at all —
-    // and restore would then overlay the trashed payload onto it.
     it.each(["--force", "--detach", "-q", "--lock"])(
       "refuses the option-shaped branch %s instead of registering some other worktree",
       async (branchName) => {
@@ -153,11 +125,6 @@ describe("git wrappers that pass a ref read out of a manifest (real git)", () =>
   });
 
   describe("updateRef", () => {
-    // The reaper promotes a trash pin to a permanent keep ref through this
-    // wrapper, passing the manifest's headOid as the value. `git update-ref
-    // <ref> -d` does not error — it DELETES the ref (measured, exit 0) — so
-    // the call that is supposed to create the keep ref would remove it, on the
-    // one entry class whose commits may exist nowhere else.
     it("refuses an option-shaped value instead of deleting the ref it was asked to write", async () => {
       await bare.raw(["update-ref", "--", "refs/sync-worktrees/keep/entry", mainOid]);
 
@@ -174,12 +141,6 @@ describe("git wrappers that pass a ref read out of a manifest (real git)", () =>
   });
 
   describe("deleteLocalBranch", () => {
-    // Weaker than the two above, and deliberately asserted on the message: on
-    // git 2.43 no single option-shaped argument makes `git branch -D` delete
-    // anything it was not asked to, so the separator changes only how the
-    // failure reads — "branch '-m' not found" (git took it as a name) instead
-    // of a usage error (git took it as an option). That is the whole of what
-    // is being claimed here.
     it("treats an option-shaped argument as a branch name to look up, not as an option", async () => {
       await expect(gitService.deleteLocalBranch("-m")).rejects.toThrow(/branch '-m' not found/);
 

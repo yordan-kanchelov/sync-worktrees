@@ -12,7 +12,6 @@ export function sanitizeNameForPath(name: string, fieldContext = "name"): string
   cleaned = cleaned.replace(/[/\\]/g, "-");
   cleaned = cleaned.replace(/^\.+/, "");
   cleaned = cleaned.replace(ILLEGAL_CHARS, "_");
-  // Not `/[. ]+$/`: that rescans a long run of dots from every position in it.
   let end = cleaned.length;
   while (end > 0 && (cleaned[end - 1] === "." || cleaned[end - 1] === " ")) end--;
   cleaned = cleaned.slice(0, end);

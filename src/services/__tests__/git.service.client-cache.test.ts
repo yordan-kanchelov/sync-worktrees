@@ -37,12 +37,6 @@ vi.mock("../worktree-metadata.service", () => ({
   }),
 }));
 
-// A cached client costs ~7 KB — a simple-git instance plus its own copy of the
-// sanitized environment — and both caches are keyed by worktree path, so a
-// daemon on a repository whose branches come and go used to keep one client set
-// per branch it had ever seen for as long as it ran. Every path that stops
-// being a worktree must drop its clients: these tests pin that for the removal
-// flows, and that the worktrees which stay keep theirs.
 describe("GitService cached git clients", () => {
   const MAIN_WORKTREE_PATH = path.join(TEST_PATHS.worktree, "main");
   const FEATURE_WORKTREE_PATH = path.join(TEST_PATHS.worktree, "feature-1");
@@ -52,7 +46,6 @@ describe("GitService cached git clients", () => {
   let builtBaseDirs: (string | undefined)[];
   let registeredPaths: string[];
   let removalRefusal: string | null;
-  /** Resolvers of the commands a test chose to hold open. */
   let pending: (() => void)[];
   let holdCommand: ((args: string[]) => boolean) | null;
 
@@ -115,18 +108,16 @@ describe("GitService cached git clients", () => {
   const newService = (overrides: Partial<Config> = {}): GitService =>
     new GitService(createMockConfig({ bareRepoDir: TEST_PATHS.bareRepo, ...overrides }), logger);
 
-  /** This service's own client cache; the status service keeps a second one. */
   const clientCache = (service: GitService): GitClientCache =>
     (service as unknown as { gitInstances: GitClientCache }).gitInstances;
 
   const statusClientCache = (service: GitService): GitClientCache =>
     (service as unknown as { statusService: { gitInstances: GitClientCache } }).statusService.gitInstances;
 
-  /** Fills both caches for a worktree, in both of GitService's LFS variants. */
   const warmClientsFor = async (service: GitService, worktreePath: string): Promise<void> => {
-    await service.checkoutHead(worktreePath); // LFS-skip variant
-    await service.getCurrentCommit(worktreePath); // plain variant
-    await service.checkWorktreeStatus(worktreePath); // the status service's client
+    await service.checkoutHead(worktreePath);
+    await service.getCurrentCommit(worktreePath);
+    await service.checkWorktreeStatus(worktreePath);
   };
 
   const timesBuiltFor = (worktreePath: string): number =>
@@ -158,8 +149,6 @@ describe("GitService cached git clients", () => {
 
     expect(clientCache(service).countFor(FEATURE_WORKTREE_PATH)).toBe(0);
     expect(statusClientCache(service).countFor(FEATURE_WORKTREE_PATH)).toBe(0);
-    // The worktrees that remain keep theirs, and so does the bare repository —
-    // the client `worktree remove` itself was issued through.
     expect(clientCache(service).countFor(OTHER_WORKTREE_PATH)).toBe(2);
     expect(statusClientCache(service).countFor(OTHER_WORKTREE_PATH)).toBe(1);
     expect(clientCache(service).countFor(TEST_PATHS.bareRepo)).toBeGreaterThan(0);
@@ -172,7 +161,6 @@ describe("GitService cached git clients", () => {
 
     await expect(service.removeWorktree(FEATURE_WORKTREE_PATH)).rejects.toThrow(/git refused removal/);
 
-    // The worktree is still there, so its clients are still the right ones.
     expect(clientCache(service).countFor(FEATURE_WORKTREE_PATH)).toBe(2);
     expect(statusClientCache(service).countFor(FEATURE_WORKTREE_PATH)).toBe(1);
   });
@@ -200,7 +188,6 @@ describe("GitService cached git clients", () => {
     await service.removeWorktree(FEATURE_WORKTREE_PATH);
     pending.forEach((resolve) => resolve());
 
-    // Eviction drops the map entry, never the instance the caller is holding.
     await expect(inFlight).resolves.toBe("abc123");
   });
 
@@ -213,15 +200,11 @@ describe("GitService cached git clients", () => {
     });
     await warmClientsFor(service, FEATURE_WORKTREE_PATH);
     const builtBefore = timesBuiltFor(FEATURE_WORKTREE_PATH);
-    // The directory is there but registered to nothing — addWorktree hands it
-    // to the trasher and then recreates the worktree at the same path.
     registeredPaths = [MAIN_WORKTREE_PATH];
 
     await service.addWorktree("feature-1", FEATURE_WORKTREE_PATH);
 
     expect(trashed).toEqual([FEATURE_WORKTREE_PATH]);
-    // Every client that pointed at the trashed directory is gone; the ones the
-    // recreated worktree uses were built after the move.
     expect(timesBuiltFor(FEATURE_WORKTREE_PATH)).toBeGreaterThan(builtBefore);
     expect(statusClientCache(service).countFor(FEATURE_WORKTREE_PATH)).toBe(0);
   });

@@ -14,11 +14,6 @@ import type { Config } from "../../types";
 import type { RemovalAuditService } from "../removal-audit.service";
 import type { SimpleGit } from "simple-git";
 
-// Real git, no mocks. Restore registers the worktree with `worktree add
-// --no-checkout` and then renames the trashed payload into the directory git
-// just made — removing that directory and putting another one at its path.
-// Whether git minds is not a thing to reason about: `worktree list`, `status`
-// and `reset` have to keep working afterwards, against a real repository.
 describe("restoring a trashed worktree by renaming the payload back (real git)", () => {
   let tempDir: string;
   let remote: string;
@@ -90,11 +85,6 @@ describe("restoring a trashed worktree by renaming the payload back (real git)",
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  /**
-   * A worktree with something worth preserving in it: a tracked file edited
-   * but not committed, and an untracked directory standing in for the build
-   * output and `node_modules` that make a payload expensive to copy.
-   */
   async function makeDirtyWorktree(): Promise<string> {
     const dirPath = path.join(worktreeDir, "feature");
     await addWorktreeFor("feature", dirPath);
@@ -104,14 +94,6 @@ describe("restoring a trashed worktree by renaming the payload back (real git)",
     return dirPath;
   }
 
-  /**
-   * Takes the admin directory name `feature` before restore runs, so the
-   * `worktree add` inside it is forced onto `feature1` and the link it writes
-   * differs from the stale one the payload carries. Without this the two are
-   * byte-identical — the trashed worktree had the same path and so the same
-   * admin name — and every assertion about which link survived would hold
-   * whether or not restore rewrote anything.
-   */
   async function occupyAdminName(): Promise<void> {
     const decoyPath = path.join(tempDir, "elsewhere", "feature");
     await fs.mkdir(path.dirname(decoyPath), { recursive: true });
@@ -122,12 +104,10 @@ describe("restoring a trashed worktree by renaming the payload back (real git)",
     const dirPath = await makeDirtyWorktree();
     const { entry } = await trash.trashAndUnregisterWorktree({ dirPath, branch: "feature", reason: "prune" });
     const payloadInode = (await fs.stat(entry.payloadPath)).ino;
-    // Detached on trashing, so git run inside the payload resolves nothing.
     const staleLink = await fs.readFile(path.join(entry.payloadPath, ".git.detached"), "utf-8");
     await expect(fs.access(path.join(entry.payloadPath, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
     await occupyAdminName();
 
-    // Exactly what `worktree add --no-checkout` wrote, captured as it wrote it.
     let freshLink: string | null = null;
     const addWorktreeNoCheckout = gitService.addWorktreeNoCheckout.bind(gitService);
     vi.spyOn(gitService, "addWorktreeNoCheckout").mockImplementation(async (branchName, worktreePath) => {
@@ -142,11 +122,9 @@ describe("restoring a trashed worktree by renaming the payload back (real git)",
     expect(freshLink).not.toBe(staleLink);
     await expect(fs.readFile(path.join(dirPath, ".git"), "utf-8")).resolves.toBe(freshLink);
     await expect(fs.access(path.join(dirPath, ".git.detached"))).rejects.toMatchObject({ code: "ENOENT" });
-    // The directory itself was moved, not copied file by file.
     expect((await fs.stat(dirPath)).ino).toBe(payloadInode);
     await expect(fs.access(entry.containerPath)).rejects.toMatchObject({ code: "ENOENT" });
 
-    // Git is unbothered that the directory under its registration was replaced.
     await expect(worktreePaths()).resolves.toContain(dirPath);
     const restored = simpleGit(dirPath);
     await expect(restored.raw(["rev-parse", "--abbrev-ref", "HEAD"])).resolves.toBe("feature\n");
@@ -156,16 +134,10 @@ describe("restoring a trashed worktree by renaming the payload back (real git)",
     await expect(fs.readFile(path.join(dirPath, "node_modules", "pkg", "index.js"), "utf-8")).resolves.toBe(
       "module.exports = 1;\n",
     );
-    // The admin directory still points back at the link that now sits there.
     const adminDir = (await restored.raw(["rev-parse", "--absolute-git-dir"])).trim();
     await expect(fs.readFile(path.join(adminDir, "gitdir"), "utf-8")).resolves.toBe(`${path.join(dirPath, ".git")}\n`);
   });
 
-  // The rollback for a restore that fails after the move renames the payload
-  // back into the container, so `git worktree remove --force` runs against a
-  // path that no longer exists. Measured on git 2.43: it succeeds and clears
-  // the registration, which is what lets the next attempt register the path
-  // again rather than hitting "missing but already registered".
   it("clears the registration and leaves the entry restorable when a step after the move fails", async () => {
     const dirPath = await makeDirtyWorktree();
     const { entry } = await trash.trashAndUnregisterWorktree({ dirPath, branch: "feature", reason: "prune" });

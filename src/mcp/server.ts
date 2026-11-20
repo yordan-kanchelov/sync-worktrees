@@ -33,7 +33,6 @@ const REPO_NAME_DESCRIBE =
 
 const PATH_DESCRIBE_SUFFIX = "Absolute preferred; relative resolves from server CWD.";
 
-/** The tool/resource registry is fixed at construction, so clients may cache the listings for an hour. */
 const TOOL_REGISTRY_TTL_MS = 3_600_000;
 
 const SERVER_INSTRUCTIONS =
@@ -63,14 +62,6 @@ export function buildInstructions(snapshot?: ServerSnapshot): string {
   return `${SERVER_INSTRUCTIONS} Connect-time: ${fields.join(" ")}.`;
 }
 
-// Every tool input is a `z.strictObject`, never a plain `z.object`: a plain
-// object silently strips keys it does not declare, and the SDK hands the
-// stripped `data` to the handler. A caller that sent `repo_name` instead of
-// `repoName` would then act on the *current* repo and be told it succeeded.
-// Strict turns that into an InvalidParams error, and because zod puts the
-// offending key in the issue message (`Unrecognized key: "repo_name"`) —
-// Standard Schema drops the structured `keys` array, but not the message —
-// the name survives all the way to the client's `isError` result.
 export function createServer(context: RepositoryContext, snapshot?: ServerSnapshot): McpServer {
   const server = new McpServer(
     {
@@ -79,10 +70,6 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
     },
     {
       instructions: buildInstructions(snapshot),
-      // The tool and resource registries are built once at construction and
-      // never mutated, so they are safe to cache for a long time and carry no
-      // user-specific data. `server/discover` is kept private because its
-      // instructions embed connect-time workspace and config paths.
       cacheHints: {
         "tools/list": { ttlMs: TOOL_REGISTRY_TTL_MS, cacheScope: "public" },
         "resources/list": { ttlMs: TOOL_REGISTRY_TTL_MS, cacheScope: "public" },
@@ -99,8 +86,6 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
       description:
         "Workspace context: isWorktree, kind, currentWorktreePath, currentBranch, allWorktrees, siblingRepositories, configPath, capabilities {available,reason}, configuredRepositories (server-wide loaded-config inventory). {isWorktree:false} when outside any workspace.",
       mimeType: "application/json",
-      // Live git state (served from detect_context's 5 s discovery cache): no
-      // client caching, and never shared (the payload carries local paths).
       cacheHint: { ttlMs: 0, cacheScope: "private" },
     },
     async (uri) => {
@@ -241,12 +226,6 @@ export function createServer(context: RepositoryContext, snapshot?: ServerSnapsh
         title: "Create worktree",
         readOnlyHint: false,
         destructiveHint: false,
-        // The target path is a pure function of the branch name, so a repeat
-        // call cannot add a second anything. The branch already exists (the
-        // first call created it), so `created` is false and the push is not
-        // reattempted either; addWorktree finds the path registered and
-        // returns. Repeating is a no-op, which is what this hint promises —
-        // unlike `sync`, whose work depends on what origin has since done.
         idempotentHint: true,
         openWorldHint: true,
       },

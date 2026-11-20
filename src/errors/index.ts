@@ -27,8 +27,6 @@ export class GitOperationError extends GitError {
   }
 }
 
-// A failed push whose rollback left the new local branch behind. The wizard's
-// suffix retry must stop on it rather than discard the message naming it.
 export class UnpushedBranchLeftoverError extends GitOperationError {
   constructor(details: string, cause?: Error) {
     super("push", details, cause);
@@ -59,8 +57,6 @@ export class WorktreeNotCleanError extends WorktreeError {
   }
 }
 
-// addWorktree created the worktree but could not record its metadata, so it
-// removed the worktree again rather than leave one sync cannot manage.
 export class WorktreeMetadataError extends WorktreeError {
   constructor(
     public readonly branchName: string,
@@ -74,9 +70,6 @@ export class WorktreeMetadataError extends WorktreeError {
   }
 }
 
-// `branch --set-upstream-to` failed on a worktree addWorktree had just added;
-// the worktree has already been rolled back (or `rollbackSucceeded` says why
-// not), so callers must not retry the add through the tracking fallback.
 export class UpstreamSetupError extends WorktreeError {
   constructor(
     public readonly branchName: string,
@@ -99,16 +92,12 @@ export class ConfigError extends SyncWorktreesError {
   }
 }
 
-/** One problem the config validation found. */
 export interface ConfigValidationIssue {
-  /** Where, as a path into the config file: `repositories[1].cronSchedule`, `defaults.retry.maxAttempts`. */
   field: string;
   reason: string;
-  /** The `name` of the repository entry the field sits in, when it has one; only ever read into the message. */
   repository?: string;
 }
 
-/** Issues past this many are counted rather than listed, so one systematic mistake cannot flood the terminal. */
 const MAX_LISTED_VALIDATION_ISSUES = 10;
 
 function formatConfigValidationIssue({ field, reason, repository }: ConfigValidationIssue): string {
@@ -116,11 +105,6 @@ function formatConfigValidationIssue({ field, reason, repository }: ConfigValida
   return `Invalid configuration for '${field}'${where}: ${reason}`;
 }
 
-/**
- * A config that failed validation. `field` and `reason` describe the first
- * problem; `issues` holds every problem found, and the message lists them one
- * per line in the same shape.
- */
 export class ConfigValidationError extends ConfigError {
   public readonly field: string;
   public readonly reason: string;

@@ -25,46 +25,28 @@ export interface SyncServicesResult {
 
 export interface SyncCycleHost {
   readonly events: AppEventEmitter;
-  /** The parallelism limit shared with reload and the repository operations. */
   readonly limit: ReturnType<typeof pLimit>;
-  /** The current generation of repositories; a reload replaces it. */
   getServices(): readonly WorktreeSyncService[];
-  /** True once quitting has begun: no cycle starts and no cron job is armed after that. */
   isShuttingDown(): boolean;
   log(message: string, level: "info" | "warn" | "error"): void;
-  /** A line about waiting on syncs, which must reach the user even once Ink has let go of the screen. */
   notice(message: string, level: "info" | "warn"): void;
   setStatus(status: "idle" | "syncing"): void;
   setLastSyncOutcome(outcome: LastSyncOutcome): void;
   updateLastSyncTime(): void;
   refreshDiskSpace(): Promise<void>;
-  /** Told as each repository's sync starts and settles; feeds the home screen's table. */
   readonly dashboard?: Pick<RepositoryDashboard, "markSyncing" | "recordSettlement">;
 }
 
-/**
- * The interactive daemon's sync cycles: the cron jobs that start them, the
- * set of repositories each cycle in flight has claimed, and the syncing/idle
- * status that belongs to that set rather than to any one cycle.
- */
 export class SyncCycleScheduler {
   private cronJobs: cron.ScheduledTask[] = [];
-  // Which repositories a cycle currently owns, and how many cycles are running.
-  // Both are properties of the set of cycles in flight, not of whichever one
-  // happens to finish first -- see runSyncCycle.
   private syncingServices = new Set<WorktreeSyncService>();
   private activeSyncCycles = 0;
 
-  /**
-   * @param defaultSchedule the schedule a repository without its own
-   *   `cronSchedule` runs on; a reload replaces it.
-   */
   constructor(
     private readonly host: SyncCycleHost,
     public defaultSchedule?: string,
   ) {}
 
-  /** The schedule a cron job runs this repository on, or undefined when none does. */
   public scheduleFor(service: WorktreeSyncService): string | undefined {
     if (service.config.runOnce) return undefined;
     return service.config.cronSchedule || this.defaultSchedule || undefined;
@@ -85,16 +67,11 @@ export class SyncCycleScheduler {
     return scheduleGroups;
   }
 
-  // Every schedule a cron job runs on, which is what "Next Sync" is computed
-  // across. Repositories on different schedules used to blank it.
   public getScheduledCronExpressions(): string[] {
     return [...this.groupBySchedule().keys()];
   }
 
   public setupCronJobs(): void {
-    // A reload that was already past its checks when `q` was pressed ends
-    // here, and so does its failure path: re-arming would bring back the jobs
-    // the shutdown just released and keep the daemon syncing while it exits.
     if (this.host.isShuttingDown()) return;
 
     for (const [schedule, services] of this.groupBySchedule()) {
@@ -109,16 +86,6 @@ export class SyncCycleScheduler {
     const jobs = this.cronJobs;
     this.cronJobs = [];
     for (const job of jobs) {
-      // destroy(), not stop(): stop() only clears the runner's timer, while
-      // node-cron keeps every task it ever scheduled in a module-level registry
-      // that is released on `task:destroyed` and nothing else. The task holds
-      // the tick callback, the callback closes over this generation of
-      // WorktreeSyncService objects, and those hold a simple-git client per
-      // worktree — so every `r` reload leaked one whole generation. destroy()
-      // stops the runner on the way through, so stopping first is redundant.
-      // Both are `void | Promise<void>` (node-cron 4.6): a background task's
-      // destroy() rejects after its own 5s timeout, and dropping that promise
-      // on the floor would take the process down with an unhandled rejection.
       try {
         const settled: unknown = job.destroy();
         if (typeof (settled as PromiseLike<void> | undefined)?.then === "function") {
@@ -159,9 +126,6 @@ export class SyncCycleScheduler {
       }
     });
 
-    // Settled rather than raced bare: once the force-quit shortcut wins the
-    // race the timeout rejection still arrives, and an unattended rejection
-    // there would take the whole process down on the way out.
     const waited = Promise.all(syncChecks).then(
       () => "finished" as const,
       () => "timeout" as const,
@@ -183,8 +147,6 @@ export class SyncCycleScheduler {
     return repoDisplayLabel(service.config);
   }
 
-  // A cycle takes the repositories no other cycle holds, and leaves the rest to
-  // the cycle that holds them.
   public claimForCycle(services: readonly WorktreeSyncService[]): WorktreeSyncService[] {
     const claimed = services.filter((service) => !this.syncingServices.has(service));
     for (const service of claimed) {
@@ -199,8 +161,6 @@ export class SyncCycleScheduler {
     }
   }
 
-  // Status is a property of the set of cycles in flight: the first one in says
-  // "syncing", and only the last one out says "idle".
   public beginSyncCycle(): void {
     this.activeSyncCycles += 1;
     if (this.activeSyncCycles === 1) {
@@ -221,32 +181,7 @@ export class SyncCycleScheduler {
     services: readonly WorktreeSyncService[],
     options: { logErrors: boolean },
   ): Promise<RepoMessage[]> {
-    // Cycles overlap by design: the daemon starts a sync and arms the cron jobs
-    // in the same breath, node-cron leaves the next tick free to land inside a
-    // slow one, two schedules put two groups on the same minute, and `s` starts
-    // one by hand. Two things must not be shared across them.
-    //
-    // The repository is the first. WorktreeSyncService's repoMutex already
-    // refuses the second caller's work (`in_progress`), so nothing races the
-    // repository itself — but the losing cycle still got far enough to call
-    // clearRecordedSkips() on every service before it learned it could not run,
-    // wiping the clone-mode skips the in-flight cycle had accumulated (sync()
-    // clears that accumulator inside the lock precisely so a loser cannot
-    // truncate the winner's payload). So a cycle claims only the repositories
-    // no other cycle holds, and reports the rest as the skips they are —
-    // without which a second cron group would starve behind the first for as
-    // long as it ran.
-    //
-    // The status is the second. It belongs to the set of cycles in flight, not
-    // to whichever finishes first: driving it from this method's `finally`
-    // blanked a running cycle's progress rows and re-armed the `s`/`x`/`r`
-    // guards while that cycle was still fetching.
-    //
-    // And none starts once quitting has begun: `s` stays live while `q` waits
-    // for the running sync, and a cycle started now would be one more thing
-    // that wait has to outlast.
     if (this.host.isShuttingDown()) {
-      // The key handler already put the bar on "syncing" for this press.
       if (this.activeSyncCycles === 0) this.host.setStatus("idle");
       return [];
     }
@@ -299,8 +234,6 @@ export class SyncCycleScheduler {
   }): Promise<void> {
     const allSkipped =
       outcome.attempted > 0 && outcome.skipped.length === outcome.attempted && outcome.failures.length === 0;
-    // Before the early return: a cycle in which nothing ran leaves "Last Sync"
-    // where it was, but the bar still has to stop claiming the last one was OK.
     this.host.setLastSyncOutcome(
       outcome.failures.length > 0
         ? { kind: "failed", count: outcome.failures.length }
@@ -322,15 +255,8 @@ export class SyncCycleScheduler {
           .limit(async () => {
             dashboard?.markSyncing(service);
             service.clearRecordedSkips();
-            // A sync that fail-fasted never owned this repository, so it has no
-            // progress row of its own to close: the row on screen belongs to
-            // whoever does own it — another cycle, another process, an
-            // interactive operation holding the repo mutex — and `completed`
-            // would take that row away mid-fetch. Everything else, including a
-            // sync that threw, still has to close its row.
             let ownedProgressRow = true;
             try {
-              // sync() initializes under its lock and retry policy.
               const result = await service.sync();
               if (result?.started === false) {
                 ownedProgressRow = false;
@@ -350,9 +276,6 @@ export class SyncCycleScheduler {
           .catch((error) => {
             throw Object.assign(error instanceof Error ? error : new Error(String(error)), { repoName });
           });
-        // Each row settles as its own repository does, not when the slowest
-        // repository of the cycle does. A branch of its own: the rejection is
-        // still the allSettled below's to count.
         if (dashboard) {
           void settled.then(
             ({ result }) => dashboard.recordSettlement(service, { status: "fulfilled", result }),
@@ -377,7 +300,6 @@ export class SyncCycleScheduler {
       } else if (result.value.result && result.value.result.started === false) {
         const notStarted = result.value.result;
         if (notStarted.reason === "lock_unavailable") {
-          // Not a skip: nothing synced this repo and no other process will.
           failures.push({ repo: repoName, error: formatRepoLockUnavailable(notStarted) });
         } else {
           skipped.push({ repo: repoName, reason: `sync skipped: ${notStarted.reason}` });
@@ -387,9 +309,6 @@ export class SyncCycleScheduler {
         if (outcome?.counts.failed) {
           failures.push({ repo: repoName, error: `${outcome.counts.failed} sync action(s) failed` });
         }
-        // Per-action skips are informational; the repo did complete its sync
-        // attempt. Surface as a separate channel so updateLastSyncTime still
-        // runs and the per-cycle log stays at info-level.
         if (outcome?.mode === "worktree" && outcome.counts.skipped > 0) {
           partialSkips.push({ repo: repoName, reason: `${outcome.counts.skipped} sync action(s) skipped` });
         }

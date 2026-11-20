@@ -7,8 +7,6 @@ import { TEST_URLS, cleanupTempDirectories, createTempDirectory } from "../../__
 import { ConfigLoaderService } from "../config-loader.service";
 import { Logger } from "../logger.service";
 
-// `parallelism.maxBranchFetches` bounded a fallback that could never run. It is
-// still accepted so existing configs load, but every load says once that it does nothing.
 describe("ConfigLoaderService deprecated-key warnings", () => {
   let tempDir: string;
   let warnings: string[];

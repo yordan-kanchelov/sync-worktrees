@@ -27,16 +27,12 @@ describe("HelpModal", () => {
     });
 
     it("names q as the only way to quit, and does not offer Esc", () => {
-      // Tall enough for the whole sheet: at 24 rows it scrolls, and the quit
-      // row is below the fold.
       const { lastFrame } = render(<HelpModal {...defaultProps} availableRows={40} />);
 
       const quitRow = (lastFrame() ?? "").split("\n").find((line) => line.includes("Gracefully quit"));
 
       expect(quitRow).toBeDefined();
       expect(quitRow).toMatch(/\bq\b/);
-      // Esc closes this screen; the main screen ignores it, so listing it here
-      // as a quit key is a promise the App does not keep.
       expect(quitRow).not.toMatch(/esc/i);
     });
 
@@ -80,8 +76,6 @@ describe("HelpModal", () => {
       const { stdin } = render(<HelpModal onClose={onClose} />);
 
       stdin.write("\x1b");
-      // Ink v7 buffers a lone ESC and flushes it as `key.escape` after a 20ms
-      // debounce (to disambiguate it from the start of an escape sequence).
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(onClose).toHaveBeenCalled();

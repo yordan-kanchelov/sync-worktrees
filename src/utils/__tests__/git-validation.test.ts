@@ -28,11 +28,6 @@ describe("isValidGitBranchName", () => {
   });
 });
 
-// The bound that matters for values read back out of a trash manifest: every
-// name git itself can create must stay accepted, because a rejected manifest
-// is never listed, restored or reaped again. Each verdict below was measured
-// against `git check-ref-format --branch` and `git branch -- <name> <sha>` on
-// git 2.43.0.
 describe("isGitCreatableBranchName", () => {
   it.each([
     "main",
@@ -44,8 +39,6 @@ describe("isGitCreatableBranchName", () => {
     "feature/x.lock.y",
     "v1.2.3",
     "_leading-underscore",
-    // Accepted by `git branch` even though this tool refuses to create one, so
-    // an entry trashed from such a branch stays restorable.
     "@",
   ])("accepts %s, which git creates", (name) => {
     expect(isGitCreatableBranchName(name)).toBe(true);
@@ -64,9 +57,6 @@ describe("isGitObjectId", () => {
     expect(isGitObjectId(value)).toBe(true);
   });
 
-  // "-deadbeef" and " deadbeef" are the cases an unanchored pattern lets
-  // through: both contain a run of hex, and the first is exactly the
-  // option-shaped value git would permute into a switch.
   it.each([
     "-m",
     "-d",
@@ -86,18 +76,10 @@ describe("isGitObjectId", () => {
 });
 
 describe("isGitCreatableBranchName matches what git itself creates", () => {
-  // Regression: these are names `git branch` creates and
-  // `git check-ref-format --branch` approves. The first version of this
-  // predicate delegated to the stricter creation-time validator, which rejects
-  // any component ending in a dot — so a repository carrying `v1./x` in from a
-  // remote would have had its trash entry permanently unlistable,
-  // unrestorable and unreapable after an upgrade.
   it.each(["v1./x", "a./b", "release-1.0./rc", "team./proj", "a.b.c"])("accepts %s, which git accepts", (name) => {
     expect(isGitCreatableBranchName(name)).toBe(true);
   });
 
-  // A bare dash is the canonical option-shaped name and the whole reason this
-  // predicate exists; git branch refuses it too.
   it.each(["-", "--", "a/x.lock", ".hidden/x", "a/.b", "trailing.", "a~b", "/a", "a/"])(
     "rejects %s, which git branch refuses",
     (name) => {

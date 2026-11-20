@@ -13,19 +13,6 @@ import type { Logger } from "../../services/logger.service";
 import type { RepositoryConfig, SyncOutcome, SyncOutcomeAction } from "../../types";
 import type { Mock } from "vitest";
 
-// Real git, no mocks. A worktree whose branch has no upstream configured used
-// to pass as up to date forever: the update phase read the behind count
-// through `<branch>@{upstream}`, which fails without an upstream, and took the
-// failure as "not behind". origin/<branch> could move on every day while the
-// worktree stayed at its old commit and every sync reported already_up_to_date.
-//
-// The branch here is created the way the MCP create_worktree tool does with
-// push:false — `branch --no-track` plus a plain worktree add — and published
-// by hand without `-u`, so it never gets branch.<name>.remote/merge. (A branch
-// whose worktree was created with tracking keeps that config across a prune,
-// because the ref is deleted with `update-ref -d`; a restore of such a branch
-// regains a resolvable @{upstream} as soon as origin/<branch> is fetched
-// again, so it never showed the defect.)
 describe("Worktrees without an upstream (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -95,15 +82,12 @@ describe("Worktrees without an upstream (E2E)", () => {
   const originTip = async (branch: string): Promise<string> =>
     (await simpleGit(bareRepoDir).revparse([`refs/remotes/origin/${branch}`])).trim();
 
-  // branch.<name>.merge as seen from the worktree, or null when the branch has
-  // no upstream configured.
   const upstreamOf = async (dir: string, branch: string): Promise<string | null> =>
     simpleGit(dir)
       .raw(["config", "--get", `branch.${branch}.merge`])
       .then((out) => out.trim() || null)
       .catch(() => null);
 
-  // A teammate's commit on the branch, pushed from the seed clone.
   async function pushCommit(branch: string, content: string): Promise<string> {
     const seed = simpleGit(seedDir);
     await seed.checkout(branch);
@@ -114,9 +98,6 @@ describe("Worktrees without an upstream (E2E)", () => {
     return (await seed.revparse([branch])).trim();
   }
 
-  // The git service calls MCP create_worktree makes with push:false, followed
-  // by the user publishing the branch from the worktree without `-u`. The
-  // seed clone picks the branch up so it can act as the teammate later.
   async function createTopicWithoutUpstream(service: WorktreeSyncService): Promise<string> {
     const git = service.getGitService();
     await git.fetchAll();
@@ -132,8 +113,6 @@ describe("Worktrees without an upstream (E2E)", () => {
     return headOf(topicPath);
   }
 
-  // Deletes topic on origin and lets the next sync prune its worktree: fully
-  // pushed before the deletion, so it goes to trash. Returns the entry id.
   async function trashTopicViaPrune(service: WorktreeSyncService): Promise<string> {
     await simpleGit(seedDir).push(["origin", "--delete", "topic"]);
     const outcome = await syncOutcome(service);
@@ -153,14 +132,11 @@ describe("Worktrees without an upstream (E2E)", () => {
     await service.initialize();
     await syncOutcome(service);
     const v1 = await createTopicWithoutUpstream(service);
-    // The sync after publishing records the remote tip and has nothing to update.
     expect(actionsFor(await syncOutcome(service), "topic")).toEqual([
       expect.objectContaining({ kind: "noop", reason: "already_up_to_date", path: topicPath }),
     ]);
 
     const trashId = await trashTopicViaPrune(service);
-    // The branch comes back on origin at the same tip. Nothing has fetched it
-    // yet, so the restore cannot give the recreated branch an upstream.
     await simpleGit(seedDir).push("origin", "topic");
     const manifest = await service.restoreFromTrash(trashId);
     expect(manifest.originalPath).toBe(topicPath);
@@ -177,7 +153,6 @@ describe("Worktrees without an upstream (E2E)", () => {
     expect(await headOf(topicPath)).toBe(await originTip("topic"));
     await expect(fs.readFile(path.join(topicPath, "topic.txt"), "utf8")).resolves.toBe("v2");
 
-    // Still without an upstream, and still classified by origin/topic.
     expect(await upstreamOf(topicPath, "topic")).toBeNull();
     expect(actionsFor(await syncOutcome(service), "topic")).toEqual([
       expect.objectContaining({ kind: "noop", reason: "already_up_to_date", path: topicPath }),
@@ -194,14 +169,12 @@ describe("Worktrees without an upstream (E2E)", () => {
 
     const trashId = await trashTopicViaPrune(service);
     await simpleGit(seedDir).push("origin", "topic");
-    // Another process fetched the re-pushed branch before the restore.
     await simpleGit(bareRepoDir).fetch(["--all", "--prune"]);
 
     await service.restoreFromTrash(trashId);
 
     expect(await upstreamOf(topicPath, "topic")).toBe("refs/heads/topic");
     expect(infoLines(logger)).toContain("  - Set upstream of 'topic' to origin/topic");
-    // `git status` in the worktree reports against the upstream.
     const status = await simpleGit(topicPath).status();
     expect(status.tracking).toBe("origin/topic");
     expect(status.isClean()).toBe(true);

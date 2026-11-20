@@ -94,11 +94,6 @@ describe("BranchRefService (through GitService)", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["branch", "--no-track", "feat/new", "main"]);
     });
 
-    // The branch filters (branchMaxAge/branchInclude/branchExclude) mean a
-    // branch that is on origin very often has no local head here, so `git
-    // branch` collides with nothing and the name is taken anyway. Origin is
-    // asked directly, and the answer is phrased "already exists" because that
-    // is the wording the TUI suffixes and retries on.
     it("refuses a name that is on origin even when no local head collides", async () => {
       mockGit.revparse.mockResolvedValue("abc123\n" as any);
       (mockGit.raw as Mock).mockImplementation((args: unknown) =>
@@ -113,8 +108,6 @@ describe("BranchRefService (through GitService)", () => {
       expect(mockGit.raw).not.toHaveBeenCalledWith(["branch", "--no-track", "feat/new", "origin/main"]);
     });
 
-    // A ref that merely starts with the name is a different branch: the
-    // fully-qualified pattern must not be read as a prefix match.
     it("does not read a longer remote ref as a collision", async () => {
       mockGit.revparse.mockResolvedValue("abc123\n" as any);
       (mockGit.raw as Mock).mockImplementation((args: unknown) =>
@@ -129,9 +122,6 @@ describe("BranchRefService (through GitService)", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["branch", "--no-track", "feat/new", "origin/main"]);
     });
 
-    // `create_worktree` without a push works offline, and the create-only
-    // lease is what actually protects the remote — so a probe that cannot
-    // reach origin must not stop the branch being created.
     it("still creates the branch when origin cannot be reached", async () => {
       mockGit.revparse.mockResolvedValue("abc123\n" as any);
       (mockGit.raw as Mock).mockImplementation((args: unknown) =>
@@ -148,11 +138,6 @@ describe("BranchRefService (through GitService)", () => {
   });
 
   describe("pushBranch", () => {
-    // `--force-with-lease=<ref>:` with an EMPTY expectation is git's
-    // create-only push: the remote ref must not exist. Without it the push
-    // FAST-FORWARDS a branch that is already on origin whenever its tip is an
-    // ancestor of the base — someone else's branch, and any PR or CI run
-    // pinned to it, moved while the wizard reports a successful creation.
     it("sets the new branch upstream and refuses to advance a ref that already exists", async () => {
       await gitService.pushBranch("feat/new");
 
@@ -171,10 +156,6 @@ describe("BranchRefService (through GitService)", () => {
       await gitService.initialize();
     });
 
-    // The listing comes from `for-each-ref` on full refnames, never
-    // `branch -v -r`: nothing here has to resolve a commit to print a subject
-    // line that is then thrown away, and no output is shaped by the reader's
-    // color settings or by which short names happen to be ambiguous.
     const forEachRef = (entries: Array<string | { ref: string; oid: string }>): void => {
       (mockGit.raw as Mock).mockImplementation((args: unknown) =>
         Promise.resolve(Array.isArray(args) && args[0] === "for-each-ref" ? createRemoteRefListOutput(entries) : ""),
@@ -367,8 +348,6 @@ describe("BranchRefService (through GitService)", () => {
   });
 
   describe("trackRemoteBranchIfExists", () => {
-    // Runs in the worktree (config-only, so a --no-checkout worktree is fine);
-    // the remote ref is looked up in the bare repository.
     const useWorktreeGit = (): ReturnType<typeof makeUpstreamWorktreeGit> => {
       const worktreeGitMock = makeUpstreamWorktreeGit();
       (simpleGit as unknown as Mock).mockImplementation((p?: any) =>
@@ -429,9 +408,6 @@ describe("BranchRefService (through GitService)", () => {
       await expect(gitService.createBundleFromRef("/tmp/c.bundle", "refs/sync-worktrees/trash/id")).resolves.toBe(
         false,
       );
-      // origin's refs, not every remote-tracking ref present: one left behind
-      // by a removed remote survives `fetch --all --prune` and would make this
-      // read zero for commits no remote has.
       expect(mockGit.raw).toHaveBeenCalledWith([
         "rev-list",
         "--count",

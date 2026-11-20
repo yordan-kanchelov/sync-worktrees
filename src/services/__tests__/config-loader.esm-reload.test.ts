@@ -13,19 +13,6 @@ import { findConfigUpTree } from "../../utils/config-discovery";
 
 const execFileAsync = promisify(execFile);
 
-// Under vitest, `import()` inside the loader is served by Vite's module
-// runner, which resolves and caches differently from Node. A reload assertion
-// that only runs in-process can therefore pass while a real `node` process
-// keeps handing the daemon its first-loaded values — which is exactly the bug
-// this file is about. So the loader is bundled once with esbuild (the same
-// bundler `pnpm build` uses) and driven from a child `node` process, where the
-// module registry is Node's own.
-//
-// The bundle and every fixture live under os.tmpdir(): a fixture written
-// inside this repository would silently inherit its `"type": "module"`, which
-// decides whether a `.js` config is ESM or CommonJS and so decides what is
-// being tested. node_modules is symlinked in so the bundle's `packages:
-// "external"` imports still resolve.
 let bundleDir: string;
 let bundlePath: string;
 const fixtureDirs: string[] = [];
@@ -36,15 +23,6 @@ async function makeFixtureDir(): Promise<string> {
   return dir;
 }
 
-/**
- * Loads `configPath` twice through the real loader in one child `node`
- * process, running `mutate` between the two loads, and reports the repository
- * name each load saw. One process, one loader instance: the shape of an MCP
- * server handling a second `load_config`, which holds a single
- * `ConfigLoaderService` for the life of the process. The interactive UI's `r`
- * is the *other* shape — a second, freshly constructed loader — and has its
- * own test below.
- */
 async function reloadUnderRealNode(
   configPath: string,
   mutate: { file: string; contents: string },
@@ -110,8 +88,6 @@ describe("config reload under real Node", () => {
     });
   }, 60_000);
 
-  // Same graph, but the config is a `.js` file in a `"type": "module"`
-  // package — the shape `sync-worktrees init` writes there.
   it('re-reads a sibling module a .js config in a "type": "module" package imports', async () => {
     const dir = await makeFixtureDir();
     await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "fixture", type: "module" }));
@@ -128,10 +104,6 @@ describe("config reload under real Node", () => {
     });
   }, 60_000);
 
-  // A `.js` config in a CommonJS package is loaded through `import()` too,
-  // and Node's ESM→CommonJS bridge ignores the `?t=` query the loader used to
-  // rely on. These configs did not reload even at the top level: editing the
-  // config file itself changed nothing until the process restarted.
   it("re-reads a .js config that resolves as CommonJS, not just its children", async () => {
     const dir = await makeFixtureDir();
     await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "fixture", type: "commonjs" }));
@@ -143,11 +115,6 @@ describe("config reload under real Node", () => {
     ).resolves.toEqual({ first: "first", second: "second" });
   }, 60_000);
 
-  // A config is user-supplied JavaScript and may leave a handle open — an
-  // interval, a socket, a watcher. Evaluating it on a thread that is then left
-  // running means the daemon can never exit: a one-shot `sync-worktrees` run
-  // would hang after its work was done, and `q` in the interactive UI would
-  // stop responding. The child here must exit on its own, without a signal.
   it("does not keep the process alive when a reloaded config leaves a handle open", async () => {
     const dir = await makeFixtureDir();
     const configPath = path.join(dir, "sync-worktrees.config.mjs");
@@ -170,8 +137,6 @@ describe("config reload under real Node", () => {
     expect(stdout.trim()).toBe("second");
   }, 60_000);
 
-  // The `.cjs` path is fixed separately, by clearing the require-cache
-  // subtree. Pinned here so that the two mechanisms cannot drift.
   it("re-reads a sibling module a .cjs config requires", async () => {
     const dir = await makeFixtureDir();
     const child = path.join(dir, "repos.cjs");
@@ -184,13 +149,6 @@ describe("config reload under real Node", () => {
     ).resolves.toEqual({ first: "first", second: "second" });
   }, 60_000);
 
-  // The shape the interactive UI actually has: `handleReload` constructs a
-  // brand new ConfigLoaderService on every `r`, and so does every CLI command.
-  // What makes the second load a *reload* is Node's module registry, which is
-  // per process, not per object — so the set of already-evaluated paths has to
-  // be module-level. Move it onto the instance and every entry point sees a
-  // first load forever, reloads in-process, and the staleness is back; every
-  // other test here reuses one loader and would not notice.
   it("re-reads an imported module when the reload goes through a second ConfigLoaderService", async () => {
     const dir = await makeFixtureDir();
     const child = path.join(dir, "repos.mjs");
@@ -216,19 +174,11 @@ describe("config reload under real Node", () => {
     expect(JSON.parse(stdout.trim().split("\n").at(-1) as string)).toEqual({ first: "first", second: "second" });
   }, 60_000);
 
-  // A config may branch on CLI flags, and `process.argv.slice(2)` is how it
-  // would read them. The reload thread has to present the same array: the
-  // Worker `argv` option only *appends*, and a `data:` URL worker has no
-  // script-path slot to append after, so handing it `process.argv.slice(2)`
-  // silently shifts every flag down one.
   it("gives a reloaded config the same process.argv the first load saw", async () => {
     const dir = await makeFixtureDir();
     const configPath = path.join(dir, "sync-worktrees.config.mjs");
     await fs.writeFile(configPath, configSource("JSON.stringify(process.argv.slice(2))"));
 
-    // Run from a real script file rather than `-e`, because `node -e` has no
-    // script-path slot in `process.argv` either and would hide the very
-    // off-by-one this pins.
     const runnerPath = path.join(dir, "runner.mjs");
     await fs.writeFile(
       runnerPath,
@@ -247,10 +197,6 @@ describe("config reload under real Node", () => {
     expect(seen.second).toBe(seen.first);
   }, 60_000);
 
-  // A config is user-supplied JavaScript: it can call `process.exit()`, which
-  // on a worker thread kills the thread and nothing else. Without an `exit`
-  // handler the reload promise is never settled and `r` wedges the UI for
-  // good, so the exit has to come back as a rejection the caller can report.
   it("rejects rather than hangs when a reloaded config exits the thread", async () => {
     const dir = await makeFixtureDir();
     const configPath = path.join(dir, "sync-worktrees.config.mjs");
@@ -279,10 +225,6 @@ describe("config reload under real Node", () => {
     expect(result.message).toMatch(/worker exited with code 3/);
   }, 60_000);
 
-  // A reload that never finishes evaluating — a top-level await on a live
-  // handle, or a loop that never ends — would wedge `r` and `load_config`
-  // for good. The reload is bounded instead: it rejects with a message naming
-  // the file, and the stopped worker holds nothing that keeps the process up.
   it.each([
     ["awaits a timer that outlives the reload", "await new Promise((resolve) => setTimeout(resolve, 600_000));\n"],
     ["spins in a loop that never ends", "while (true) {}\n"],
@@ -322,7 +264,6 @@ describe("config reload under real Node", () => {
         "reloading 'sync-worktrees.config.mjs' did not finish within 1s, so it was stopped and the configuration " +
           "already loaded stays in effect",
       );
-      // Located at the config, never at the loader's own timer.
       expect(result.message).toContain(`(${configPath})`);
       expect(result.elapsedMs).toBeLessThan(10_000);
     },
@@ -330,19 +271,6 @@ describe("config reload under real Node", () => {
   );
 });
 
-/**
- * `.ts` configs, end to end, in a real `node` process — which is the only place
- * this can be tested. Under vitest a dynamic `import()` is served by Vite, which
- * compiles TypeScript with esbuild and would load an `enum`, a `namespace` or a
- * parameter property without complaint. Node does not compile: it *erases* type
- * annotations and refuses anything that would have to emit code. A suite that
- * ran in-process would therefore pass on exactly the inputs a user's `node` run
- * rejects, so these drive the bundled loader from a child process instead.
- *
- * Fixtures live under os.tmpdir() with no package.json, the way a checkout that
- * is not an npm project does; Node's module-syntax detection then reads the
- * `export default` as ESM. The `"type": "commonjs"` case is covered separately.
- */
 describe("TypeScript configs under real Node", () => {
   async function loadThroughRealNode(startDir: string): Promise<{ found: string | null; name?: string }> {
     const found = await findConfigUpTree(startDir);
@@ -373,8 +301,6 @@ describe("TypeScript configs under real Node", () => {
     return (JSON.parse(stdout.trim().split("\n").at(-1) as string) as { message: string }).message;
   }
 
-  // The whole point of the change: the walk-up finds the file (it did not, so
-  // `detect_context` reported `configPath: null`) *and* Node executes it.
   it("finds and loads a sync-worktrees.config.ts with type annotations", async () => {
     const dir = await makeFixtureDir();
     const configPath = path.join(dir, "sync-worktrees.config.ts");
@@ -402,9 +328,6 @@ describe("TypeScript configs under real Node", () => {
     await expect(loadThroughRealNode(nested)).resolves.toEqual({ found: configPath, name: "nested" });
   }, 60_000);
 
-  // Node strips types, it does not compile them, so an `enum` is refused with
-  // ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX and a message about "strip-only mode"
-  // that tells a config author nothing. The hint is what makes it actionable.
   it("explains non-erasable syntax instead of surfacing 'strip-only mode' alone", async () => {
     const dir = await makeFixtureDir();
     const configPath = path.join(dir, "sync-worktrees.config.ts");
@@ -421,10 +344,6 @@ describe("TypeScript configs under real Node", () => {
     expect(message).toContain(".js/.mjs config");
   }, 60_000);
 
-  // A `.ts` file under a `"type": "commonjs"` package.json is parsed as
-  // CommonJS-TypeScript, where `export default` is a hard SyntaxError. This is
-  // the one case `.mts` would have solved; `moduleSyntaxHint` already names the
-  // fix, which is why `.mts` is not in CONFIG_FILE_NAMES.
   it('names the fix for a .ts config under a "type": "commonjs" package', async () => {
     const dir = await makeFixtureDir();
     await fs.writeFile(path.join(dir, "package.json"), JSON.stringify({ name: "fixture", type: "commonjs" }));
@@ -440,9 +359,6 @@ describe("TypeScript configs under real Node", () => {
     expect(message).toContain('add "type": "module" to the nearest package.json');
   }, 60_000);
 
-  // Reload goes through a worker thread with its own module registry; a `.ts`
-  // config has to survive that path too, and `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`
-  // only reaches the hint because `workerEvalError` carries `code` across.
   it("re-reads a .ts config, and still explains non-erasable syntax, on reload", async () => {
     const dir = await makeFixtureDir();
     const configPath = path.join(dir, "sync-worktrees.config.ts");
@@ -478,15 +394,6 @@ describe("TypeScript configs under real Node", () => {
   }, 60_000);
 });
 
-/**
- * `hooks.timeoutMs` (T114) through the real loader in a real `node` process.
- * Under vitest the first load of a config goes through Vite and only a second
- * one through Node's own registry, so an in-process assertion can agree with a
- * resolution or a rejection that a user's `node` run never produces. The value
- * has to survive defaults→repository inheritance as a number, and `0` has to
- * survive it as `0` rather than being dropped as falsy, which is precisely the
- * kind of thing a bundler-served load can paper over.
- */
 describe("hooks.timeoutMs under real Node", () => {
   async function loadHooksThroughRealNode(configBody: string): Promise<{ hooks?: unknown; message?: string }> {
     const dir = await makeFixtureDir();
@@ -521,12 +428,6 @@ describe("hooks.timeoutMs under real Node", () => {
     expect(result.hooks).toEqual({ onBranchCreated: ["echo hi"], timeoutMs: 0 });
   });
 
-  // The ceiling is setTimeout's own. Above 2^31-1 the delay does not fit the
-  // 32-bit field: Node prints a TimeoutOverflowWarning over the alternate
-  // screen, substitutes 1, and the hook is SIGTERMed a few milliseconds after
-  // it starts while onError reports the year that was asked for. Measured at
-  // `timeoutMs: 31536000000` before this bound existed. Refused at load, so
-  // the config file and the runtime cannot disagree about it.
   it("refuses a non-integer, a negative, a non-number and an over-32-bit delay", async () => {
     for (const value of ["1.5", "-1", '"600000"', "NaN", "2147483648", "31536000000"]) {
       const result = await loadHooksThroughRealNode(repo(`, hooks: { timeoutMs: ${value} }`));

@@ -50,9 +50,6 @@ describe("getWorktreeDirLockTarget", () => {
   });
 
   it("hashes symlinked spellings to the same lock file when several trailing components do not exist yet (#review)", () => {
-    // /link/new/child vs /real/new/child with neither 'new' nor 'child' on
-    // disk: canonicalization must walk up to the nearest existing ancestor,
-    // not give up after the immediate parent.
     const viaReal = getWorktreeDirLockTarget(makeConfig(path.join(realDir, "new", "child")));
     const viaLink = getWorktreeDirLockTarget(makeConfig(path.join(linkDir, "new", "child")));
 
@@ -78,9 +75,6 @@ describe("getWorktreeDirLockTarget", () => {
   });
 
   it("returns the identical target whatever XDG_STATE_HOME and HOME the process carries (#T47)", () => {
-    // A daemon started by systemd/launchd/cron (minimal env), a --runOnce from
-    // a shell whose dotfiles export XDG_STATE_HOME, `sudo -E` versus plain
-    // sudo (different HOME): all must contend for one lock file.
     const config = makeConfig(path.join(realDir, "wt"));
     const targets: {
       home: string;

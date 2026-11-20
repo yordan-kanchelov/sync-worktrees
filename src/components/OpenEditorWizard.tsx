@@ -18,7 +18,6 @@ export interface OpenEditorWizardProps {
     branchName: string,
   ) => { success: boolean; error?: string };
   onClose: () => void;
-  /** Rows the wizard may use; defaults to the terminal height. */
   availableRows?: number;
 }
 
@@ -41,15 +40,7 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   const [worktreeFilter, setWorktreeFilter] = useState("");
   const [loading, setLoading] = useState(false);
   const [openAction, setOpenAction] = useState<OpenAction>("terminal");
-  // What ends the "not loaded yet" state is a load that finished, not a
-  // non-empty list: a repo with no worktrees (clone mode before the first sync,
-  // a status probe that rejected for every entry) legitimately returns [], and
-  // keying the effect on `worktrees.length === 0` re-fired the loader on every
-  // commit for as long as the modal stayed open -- one `git worktree list` per
-  // round trip, forever. Keyed by repository index so picking another project
-  // still loads exactly once, and reset when ESC goes back to that choice.
   const loadedForRepoRef = useRef<number | null>(null);
-  // Bumped per load and on ESC; a load whose number is stale is dropped.
   const loadGenRef = useRef(0);
 
   const [error, setError] = useState<string | null>(null);
@@ -85,9 +76,6 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
     [getWorktreesForRepo],
   );
 
-  // One loader call per selected repository, from one place. The ref, not the
-  // identity of `loadWorktrees`, is what keeps it to one: a caller that hands in
-  // a fresh `getWorktreesForRepo` on every render must not re-run the load.
   useEffect(() => {
     if (step !== "SELECT_WORKTREE" || selectedRepoIndex < 0) return;
     if (loadedForRepoRef.current === selectedRepoIndex) return;
@@ -112,8 +100,6 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   };
 
   useInput((input, key) => {
-    // Mouse reports arrive as a single `input` string; ignore them here so a
-    // scroll never registers as a keystroke.
     if (isMouseSequence(input)) return;
 
     if (key.escape) {
@@ -148,8 +134,6 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
           setSelectedRepoIndex(selectedRepo.index);
-          // The effect owns the call; this only keeps the first frame of the
-          // next step from claiming there are no worktrees before it runs.
           setLoading(true);
           setStep("SELECT_WORKTREE");
         }
@@ -202,8 +186,6 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
 
   const getTotalSteps = () => (repositories.length === 1 ? 1 : 2);
 
-  // Rows the step's list may take: what the modal has, less its chrome, the
-  // step's own lines above the list and a footer that wraps on a narrow box.
   const listRoom = (linesAboveList: number): number => {
     const footer = footerText();
     const footerExtra = footer ? wrappedRows(footer, layout.innerWidth) - 1 : 0;
@@ -211,7 +193,6 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
   };
 
   const renderProjectSelection = () => {
-    // "Select repository:", the filter, and the gaps after each.
     const visibleCount = listRowsFor(listRoom(4), filteredProjects.length);
     const { start: startIdx, end: endIdx } = listWindow(selectedProjectIndex, filteredProjects.length, visibleCount);
 
@@ -263,8 +244,6 @@ const OpenEditorWizard: React.FC<OpenEditorWizardProps> = ({
       return <Text color="red">No worktrees found</Text>;
     }
 
-    // The mode line, "Select worktree:", the filter, the gaps after each, and
-    // the repository line above them once there is more than one to choose.
     const modeLine = `Mode: ${openAction === "terminal" ? "Terminal (tmux)" : "Editor"} (Tab to switch to ${openAction === "terminal" ? "Editor" : "Terminal"})`;
     const linesAbove = 5 + wrappedRows(modeLine, layout.innerWidth) + (repositories.length > 1 ? 2 : 0);
     const visibleCount = listRowsFor(listRoom(linesAbove), filteredWorktrees.length);

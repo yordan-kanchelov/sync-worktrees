@@ -11,9 +11,6 @@ import { GIT_UNSAFE_ALLOWANCES } from "../git-env";
 
 import type { AddressInfo } from "net";
 
-// Real git, no mocks: these tests prove the environment the factory forwards
-// is one git and simple-git accept, and that git behaves non-interactively.
-
 function snapshotEnv(keys: string[]): Map<string, string | undefined> {
   return new Map(keys.map((key) => [key, process.env[key]]));
 }
@@ -52,8 +49,6 @@ describe("buildGitClientOptions", () => {
 });
 
 describe("createGitClient with a forwarded shell environment", () => {
-  // Every variable @simple-git/argv-parser maps to an allowance, plus a
-  // credential.helper entry supplied through GIT_CONFIG_KEY_n.
   const PARSER_CHECKED_ENV: Record<string, string> = {
     PAGER: "less",
     GIT_PAGER: "less",
@@ -86,8 +81,6 @@ describe("createGitClient with a forwarded shell environment", () => {
 });
 
 describe("createGitClient locale", () => {
-  // git runs GIT_SSH_COMMAND through the shell with the environment it was
-  // given, so a command that dumps `env` shows exactly what git's children see.
   let snapshot: Map<string, string | undefined>;
   let dir: string;
 
@@ -130,9 +123,6 @@ describe("createGitClient locale", () => {
 });
 
 describe("createGitClient against an HTTPS remote that requires authentication", () => {
-  // A credential source could otherwise answer for us; none may be in play:
-  // no helper (fresh HOME, no system config), no askpass, no inherited
-  // GIT_TERMINAL_PROMPT (the fix must be what disables the prompt).
   const scrubbedKeys = (): string[] => [
     "HOME",
     "XDG_CONFIG_HOME",
@@ -181,8 +171,6 @@ describe("createGitClient against an HTTPS remote that requires authentication",
 
   it("fails within seconds with git's 'terminal prompts disabled' message instead of waiting for a prompt", async () => {
     const started = Date.now();
-    // The block timeout is a backstop only: without the fix and with a
-    // terminal attached, git would wait on its prompt until it fires.
     const client = createGitClient(repoDir, {}, { timeout: { block: 20_000 } });
 
     await expect(client.fetch([remoteUrl])).rejects.toThrow(

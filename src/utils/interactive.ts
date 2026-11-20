@@ -16,18 +16,6 @@ function safeRepoName(repoUrl: string): string {
   }
 }
 
-/**
- * Every answer below is trimmed the moment it comes back, because every
- * validator here tests `value.trim()` while the raw string is what used to be
- * stored. A trailing space therefore passed validation and survived: `path`
- * does not normalize it away (`path.resolve("./wt ")` is `<cwd>/wt `), so init
- * wrote a `worktreeDir` naming a directory nobody meant to create and a
- * `repoUrl` git would be handed verbatim. The worktree-mode guard below is the
- * sharp edge of the same split — it compared the *trimmed* answer against
- * `configDir` and then stored the untrimmed one, so the path it approved was
- * not the path it saved. `branch` and `depth` were already trimmed at the point
- * of use; `cronSchedule` is trimmed where it is returned, for the same reason.
- */
 async function promptForRepository(configDir: string): Promise<InitRepositoryInput> {
   const repoUrl = (
     await input({
@@ -72,11 +60,6 @@ async function promptForRepository(configDir: string): Promise<InitRepositoryInp
         if (!value.trim() && !defaultWorktreeDir) {
           return "Directory is required";
         }
-        // The config's own directory is never a usable worktreeDir: the generator
-        // would write `worktreeDir: "./"`, and the default bareRepoDir — `.bare/<name>`
-        // resolved against the *config file's* directory, not against worktreeDir —
-        // would land inside it, so the very next run would be rejected by the
-        // bareRepoDir/worktreeDir overlap check.
         if (mode !== "clone" && pathsEqual(path.resolve(value.trim() || defaultWorktreeDir), configDir)) {
           return (
             `That is the config file's own directory. The bare repository defaults to '.bare/<name>' beside the ` +
@@ -96,8 +79,6 @@ async function promptForRepository(configDir: string): Promise<InitRepositoryInp
     worktreeDir = path.resolve(worktreeDir);
   }
 
-  // Clone mode is a warning, not a reject: `git clone` refuses a non-empty
-  // destination, and the directory holding the config file is never empty.
   if (mode === "clone" && pathsEqual(worktreeDir, configDir)) {
     console.warn(
       `\n⚠️  '${worktreeDir}' is the config file's own directory. 'git clone' refuses a destination that exists and ` +
@@ -153,10 +134,6 @@ async function promptForRepository(configDir: string): Promise<InitRepositoryInp
   return repo;
 }
 
-/**
- * @param configDir Directory the generated config file will live in. Answers
- *   equal to it are rejected (worktree mode) or warned about (clone mode).
- */
 export async function promptForInitConfig(configDir: string): Promise<InitConfigInput> {
   console.log("🔧 Welcome to sync-worktrees interactive setup!\n");
 
@@ -185,13 +162,5 @@ export async function promptForInitConfig(configDir: string): Promise<InitConfig
     },
   });
 
-  // Same split as the answers above, and the only one that is not merely
-  // cosmetic: `cron.validate` accepts a space-padded expression but rejects
-  // every other kind of whitespace, while `trim()` removes them all. A cron
-  // answer carrying a tab or a non-breaking space — what pasting one out of a
-  // crontab or a rendered doc page gives you — therefore passed this validator
-  // and was written into the generated config, which `runInit`'s own round-trip
-  // load then rejected with "Invalid cron expression in defaults". The wizard
-  // must store the string it validated.
   return { repositories, cronSchedule: cronSchedule.trim() };
 }

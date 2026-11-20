@@ -17,8 +17,6 @@ describe("sanitizeNameForPath", () => {
     expect(() => sanitizeNameForPath(" .. . ")).toThrow(ConfigValidationError);
   });
 
-  // A long run of dots that is not at the end made the trailing-trim regex
-  // rescan the run from every position in it.
   it("handles a long run of dots in the middle of a name in linear time", () => {
     const name = `a${".".repeat(200_000)}b`;
     const startedAt = performance.now();

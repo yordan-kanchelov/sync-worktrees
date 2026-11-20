@@ -17,10 +17,6 @@ import type { RemovalAuditService } from "../removal-audit.service";
 import type { TrashService } from "../trash.service";
 import type { Config } from "../../types";
 
-// The `--debug` timing table: every step of a worktree-mode attempt that costs
-// time belongs to a phase row, so the rows add up to the attempt. The clock is
-// moved by hand inside the mocked git calls, so each row's duration is exactly
-// what the step spent.
 describe("WorktreeModeSyncRunner phase timing", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;

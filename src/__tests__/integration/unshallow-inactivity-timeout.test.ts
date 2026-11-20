@@ -14,19 +14,6 @@ import { createMockLogger, setEnvVar } from "../test-utils";
 import type { Config } from "../../types";
 import type { Logger } from "../../services/logger.service";
 
-// Real git, driven through a wrapper that stays silent before handing over —
-// but only for `fetch --unshallow`, so everything else in the tick runs at full
-// speed and the assertion can be about that one command.
-//
-// Removing `depth` is how a clone-mode repository is unshallowed, and that
-// fetch transfers the entire history the shallow clone skipped: clone-sized
-// work reached through a fetch. Running it on the fetch budget meant a repo
-// whose full history took longer to enumerate than fetchTimeoutMs could never
-// unshallow — SIGINT'd every tick, the partial pack thrown away, the error
-// escaping as a hard sync failure — while the clone that first created it was
-// allowed three times as long for the very same bytes. cloneTimeoutMs is what
-// bounds it now; the two are set far apart here so which one is in force is
-// decisive in both directions.
 describe("Unshallow runs on the clone inactivity budget (E2E)", () => {
   const SILENCE_MS = 2000;
   const FETCH_TIMEOUT_MS = 1000;
@@ -62,9 +49,6 @@ describe("Unshallow runs on the clone inactivity budget (E2E)", () => {
   const isShallow = async (): Promise<string> =>
     (await simpleGit(worktreeDir).raw(["rev-parse", "--is-shallow-repository"])).trim();
 
-  // Puts the slow wrapper ahead of the real git on PATH. createGitClient hands
-  // each child the (sanitized) process environment, so this reaches every git
-  // the service spawns from here on.
   const useSlowGit = (): void => {
     process.env.PATH = `${shimDir}${path.delimiter}${originalPath ?? ""}`;
   };
@@ -93,8 +77,6 @@ describe("Unshallow runs on the clone inactivity budget (E2E)", () => {
     await seed.push("origin", "main");
     await simpleGit(remote).raw(["symbolic-ref", "HEAD", "refs/heads/main"]);
 
-    // The shallow clone the config's `depth` would have produced, made with
-    // plain git (no shim, no timeouts) so only the unshallow runs slowly.
     await simpleGit().clone(`file://${remote}`, worktreeDir, [
       "--branch",
       "main",
@@ -110,9 +92,6 @@ describe("Unshallow runs on the clone inactivity budget (E2E)", () => {
     const realGit = execFileSync("sh", ["-c", "command -v git"]).toString().trim();
     await fs.writeFile(
       path.join(shimDir, "git"),
-      // The sleep runs in the background under a trap: dash exits on the
-      // timeout's SIGINT, but bash (macOS's /bin/sh) waits out a foreground
-      // child and then carries on to the real git.
       `#!/bin/sh\ncase " $* " in\n  (*" --unshallow "*)\n` +
         `    trap 'kill "$pid" 2>/dev/null; exit 130' INT TERM\n` +
         `    sleep ${SILENCE_MS / 1000} & pid=$!\n` +
@@ -122,8 +101,6 @@ describe("Unshallow runs on the clone inactivity budget (E2E)", () => {
       { mode: 0o755 },
     );
 
-    // The unit suite disables the inactivity timeouts process-wide; this test
-    // is about them, so it opts back out.
     delete process.env[ENV_CONSTANTS.UNIT_TEST_SHORTCUT];
 
     logger = createMockLogger();
@@ -147,10 +124,6 @@ describe("Unshallow runs on the clone inactivity budget (E2E)", () => {
   });
 
   it("still kills an unshallow that goes quiet for longer than cloneTimeoutMs", async () => {
-    // The other direction: raising the budget must not have disarmed the kill.
-    // A wedged transfer produces no progress at all — `--progress` feeds the
-    // timer only while bytes are actually moving — so the guard still ends the
-    // attempt, just at the clone-sized budget.
     const service = buildService(FETCH_TIMEOUT_MS / 2);
     await service.initialize();
     useSlowGit();

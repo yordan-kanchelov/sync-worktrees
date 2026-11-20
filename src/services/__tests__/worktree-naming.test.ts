@@ -12,9 +12,6 @@ import { WorktreeSyncService } from "../worktree-sync.service";
 
 import type { RepositoryConfig } from "../../types";
 
-// Real git. New worktrees get the plain directory name (`feature/x` ->
-// `feature-x`) unless something would share it; worktrees created with the
-// older hashed names stay where they are.
 describe("worktree directory naming (real git)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -26,9 +23,6 @@ describe("worktree directory naming (real git)", () => {
 
   const hashed = (branch: string): string => path.join(worktreeDir, pathResolution.sanitizeBranchName(branch));
 
-  // Refs are packed first so that names differing only in case (`Docs`/`docs`,
-  // `main`/`MAIN`) can coexist on a case-insensitive filesystem, the way they
-  // do in a real clone: as loose files the second would collide with the first.
   async function pushBranch(branch: string): Promise<void> {
     await simpleGit(remote).raw(["pack-refs", "--all"]);
     await simpleGit(bareRepoDir).raw(["pack-refs", "--all"]);
@@ -148,7 +142,6 @@ describe("worktree directory naming (real git)", () => {
       expect(worktrees).toContainEqual({ path: hashed("feature/old"), branch: "feature/old" });
       expect(worktrees).toContainEqual({ path: path.join(worktreeDir, "feature-new"), branch: "feature/new" });
       expect(worktrees.filter((w) => w.branch === "feature/old")).toHaveLength(1);
-      // Metadata is keyed by directory name; both kinds carry their own record.
       expect(await service.getGitService().getWorktreeMetadata(hashed("feature/old"))).toMatchObject({
         upstreamBranch: "origin/feature/old",
       });

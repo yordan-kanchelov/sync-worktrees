@@ -12,11 +12,6 @@ interface CliRun {
   stderr: string;
 }
 
-// Two entries pointing at one worktreeDir used to load fine. At runtime each
-// repo's sync found the other's checkouts unregistered in its own bare repo
-// and moved them to trash before creating its own, and the run still reported
-// every repo as synced with exit code 0. The config must be rejected before
-// any git command runs, naming both entries and the shared path.
 describe("CLI rejects a config whose entries share a worktreeDir", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   let tempDir: string;
@@ -105,8 +100,6 @@ describe("CLI rejects a config whose entries share a worktreeDir", () => {
     expect(run.stderr).toContain("Error loading config file");
     expect(run.stderr).toContain("'app-a' and 'app-b'");
     expect(run.stderr).toContain(`same worktreeDir '${sharedWorktreeDir}'`);
-    // No repository was initialized or synced: nothing was cloned and no
-    // worktree directory was created.
     expect(runOutput).not.toContain("Syncing 2 repositories");
     expect(runOutput).not.toContain("Repository: app-a");
     expect(runOutput).not.toContain("synced");
@@ -120,7 +113,6 @@ describe("CLI rejects a config whose entries share a worktreeDir", () => {
     expect(list.stderr).toContain("same worktreeDir");
     expect(list.stdout).not.toContain("Configured repositories");
 
-    // Giving each entry its own worktreeDir is enough: both sync.
     const worktreeDirA = path.join(tempDir, "worktrees-a");
     const worktreeDirB = path.join(tempDir, "worktrees-b");
     await writeConfig(worktreeDirA, worktreeDirB);

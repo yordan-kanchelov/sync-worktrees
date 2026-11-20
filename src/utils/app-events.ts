@@ -12,33 +12,19 @@ export interface AppSyncProgress {
   completed?: boolean;
 }
 
-// How the most recent cycle ended, so the status bar can say "2 failed"
-// instead of leaving a fresh "Last Sync" time to imply that everything worked.
 export type LastSyncOutcome = { kind: "ok" } | { kind: "failed"; count: number } | { kind: "skipped"; count: number };
 
-// One schedule, or every distinct schedule the repositories run on. The status
-// bar shows the earliest next run across all of them.
 export type CronScheduleDisplay = string | readonly string[] | undefined;
 
-// One row of the home screen's repository table. The service sends the whole
-// table whenever a row changes; the App renders it and never asks git itself.
 export type RepositoryRunState = "idle" | "syncing" | "failed" | "skipped";
 
 export interface RepositoryDashboardRow {
   name: string;
   state: RepositoryRunState;
-  /** How the last sync of this repository went, in a few words; null until one has finished. */
   lastResult: string | null;
-  /** When a sync of this repository last ran to an end (epoch ms). A skip leaves it where it was. */
   lastSyncAt: number | null;
-  /** Worktrees the repository had after its last sync or status check; null until known. */
   worktrees: number | null;
-  /**
-   * Worktrees with uncommitted changes and with unpushed commits, as of the
-   * last time the status view (`w`) checked this repository; null until then.
-   */
   changes: { dirty: number; unpushed: number } | null;
-  /** The cron expression this repository runs on; absent for `runOnce` or no schedule. */
   schedule?: string;
 }
 
@@ -53,18 +39,10 @@ type AppEventMap = {
   uiReady: void;
   updateRepositoryCount: number;
   updateMaxProgressLines: number;
-  /** Bumped on every successful reload; repository indexes from before it are stale. */
   repositoriesReloaded: number;
   updateCronSchedule: CronScheduleDisplay;
 };
 
-/**
- * Every string an event carries is on its way to the screen — a log line, a
- * progress row's repository label and message — so this is where the
- * dashboard's copy is scrubbed, whatever built it. A caller that forgot to
- * redact a credential-bearing URL still never gets it rendered. Returns the
- * payload itself when nothing needed scrubbing.
- */
 function scrubPayload<T>(payload: T): T {
   if (typeof payload === "string") return redactSecretsInText(payload) as T;
   if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return payload;
@@ -86,9 +64,6 @@ type AnyEventCallback = EventCallback<AppEventMap[keyof AppEventMap]>;
 export class AppEventEmitter {
   private listeners: Map<keyof AppEventMap, Set<AnyEventCallback>> = new Map();
 
-  // A throwing listener is reported, never rethrown into the emitter's caller.
-  // It goes through the redacting logger: a listener's error can quote a
-  // repository URL with credentials in it.
   constructor(private readonly logger: Pick<Logger, "error"> = Logger.createDefault()) {}
 
   on<K extends keyof AppEventMap>(event: K, callback: EventCallback<AppEventMap[K]>): () => void {

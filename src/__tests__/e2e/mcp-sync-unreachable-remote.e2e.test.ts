@@ -9,9 +9,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { ChildProcessWithoutNullStreams } from "child_process";
 
-// The example config ships `retry.maxAttempts: "unlimited"`. Over MCP a sync
-// against an unreachable remote must still answer, must not keep holding the
-// repository lock afterwards, and closing stdin must end the server.
 describe("MCP sync with an unreachable remote and unlimited retries", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees-mcp.js");
   let tempDir: string;

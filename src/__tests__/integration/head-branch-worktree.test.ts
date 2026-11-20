@@ -13,12 +13,6 @@ import { createMockLogger } from "../test-utils";
 import type { Logger } from "../../services/logger.service";
 import type { RepositoryConfig, SyncOutcome } from "../../types";
 
-// Real git, no mocks. "feature/HEAD" is a branch name git accepts, and the
-// only ref under refs/remotes/origin that is not a branch is the origin/HEAD
-// symref. Sync used to tell them apart with endsWith("/HEAD"), so every branch
-// ending in /HEAD was missing from the inventory: no worktree was ever created
-// for it and — the damaging half — a worktree someone created for it through
-// the TUI or MCP read as stale on the next tick and was moved to trash.
 describe("Branches ending in /HEAD are real branches (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -80,8 +74,6 @@ describe("Branches ending in /HEAD are real branches (E2E)", () => {
     return result.outcome;
   }
 
-  // `git remote set-head` writes this symref; a fresh `clone --bare` may not
-  // have one, and the exclusion is only meaningful while it exists.
   async function ensureOriginHeadSymref(): Promise<void> {
     await simpleGit(bareRepoDir).raw(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
   }
@@ -108,7 +100,6 @@ describe("Branches ending in /HEAD are real branches (E2E)", () => {
     await expect(fs.access(path.join(featHeadPath, "README.md"))).resolves.toBeUndefined();
     expect(await trashEntries()).toEqual([]);
 
-    // The symref itself is not a branch: no worktree, no directory for it.
     const registered = await simpleGit(bareRepoDir).raw(["worktree", "list", "--porcelain"]);
     expect(registered).toContain("branch refs/heads/feature/HEAD");
     expect(registered).not.toContain("branch refs/heads/HEAD");
@@ -120,9 +111,6 @@ describe("Branches ending in /HEAD are real branches (E2E)", () => {
     await syncOnce(service);
     await ensureOriginHeadSymref();
 
-    // What the TUI wizard and MCP create_worktree do: a new remote branch, and
-    // a worktree for it that this sync has never seen. It is clean and fully
-    // pushed, so nothing but the inventory stands between it and the trash.
     await simpleGit(seedDir).raw(["push", "origin", "refs/heads/main:refs/heads/release/HEAD"]);
     const releasePath = pathResolution.getBranchWorktreePath(worktreeDir, "release/HEAD");
     const bare = simpleGit(bareRepoDir);

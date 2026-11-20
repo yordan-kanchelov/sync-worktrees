@@ -15,8 +15,6 @@ import { WorktreeSyncService } from "../../services/worktree-sync.service";
 import type { RepositoryConfig } from "../../types";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
-// Real git: stale (directory deleted), locked and detached registrations as
-// list_worktrees, detect_context { includeStatus } and update_worktree see them.
 describe("stale, locked and detached worktrees (real git)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -156,8 +154,6 @@ describe("stale, locked and detached worktrees (real git)", () => {
       expect(fetchBranch).not.toHaveBeenCalled();
     });
 
-    // Git does not mark a locked registration prunable, so nothing in the
-    // listing says the directory is gone; this used to reach `spawn git ENOENT`.
     it("update_worktree answers WORKTREE_MISSING for a locked one too", async () => {
       const target = await create("feature/x");
       await simpleGit(bareRepoDir).raw(["worktree", "lock", target]);

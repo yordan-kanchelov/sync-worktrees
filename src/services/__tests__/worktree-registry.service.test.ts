@@ -26,9 +26,6 @@ describe("WorktreeRegistryService (through GitService)", () => {
     ({ gitService, mockGit, mockMetadataService } = createGitServiceFixture());
   });
 
-  // Removal-safety regression tests: --force bypassed git's own
-  // refusal to delete dirty worktrees, and stale-directory cleanup could
-  // destroy a live checkout.
   describe("removeWorktree safety", () => {
     beforeEach(async () => {
       (fs.access as Mock<any>).mockResolvedValue(undefined);
@@ -63,9 +60,6 @@ describe("WorktreeRegistryService (through GitService)", () => {
       expect(mockMetadataService.deleteMetadataFromPath).not.toHaveBeenCalled();
     });
 
-    // A worktree the user locked is not a broken removal: git refuses it even
-    // with a single --force, and `-f -f` would defeat the lock, so the caller
-    // has to see a skip rather than a hard failure on every tick.
     it("classifies git's locked-worktree refusal as WorktreeNotCleanError, forced or not", async () => {
       (mockGit.raw as Mock).mockRejectedValue(
         new Error(
@@ -117,9 +111,6 @@ describe("WorktreeRegistryService (through GitService)", () => {
       const worktrees = await gitService.getWorktrees();
 
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain", "-z"]);
-      // The HEAD oid git prints for each worktree is carried through: the
-      // update phase compares it against origin's tip to decide, without a
-      // per-worktree probe, that nothing changed.
       expect(worktrees).toEqual([
         { path: "/path/to/repo", branch: "main", isPrunable: false, locked: false, head: "abc123" },
         { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false, locked: false, head: "def456" },
@@ -224,8 +215,6 @@ branch refs/heads/feature-2`);
       ]);
     });
 
-    // The lock flag is what keeps a worktree the user protected out of the
-    // prune pipeline entirely, so it has to survive the listing.
     it("should surface locked worktrees and their lock reason", async () => {
       await gitService.initialize();
 
@@ -256,9 +245,6 @@ locked
       ]);
     });
 
-    // `includeDetached` exists for callers that must *find* a worktree rather
-    // than act on its branch — MCP membership checks, which otherwise report a
-    // registered detached path as one this repository does not have.
     it("returns detached worktrees, flagged and with their HEAD, when asked", async () => {
       await gitService.initialize();
 
@@ -281,12 +267,6 @@ prunable gitdir file points to non-existent location
 
       const worktrees = await gitService.getWorktrees({ includeDetached: true });
 
-      // The bare repository's own row has neither a branch nor a detached
-      // HEAD. It stays out: its `branch` would be the empty string, and a
-      // caller that fetched or merged that would be fetching `origin/`. The
-      // prunable detached row stays out too: its checkout is gone, so naming
-      // it "detached, check out a branch" points at a directory that is not
-      // there, and the rest of this service already reads prunable as absent.
       expect(worktrees).toEqual([
         { path: "/path/to/worktrees/feature-1", branch: "feature-1", isPrunable: false, locked: false, head: "def456" },
         {
@@ -299,7 +279,6 @@ prunable gitdir file points to non-existent location
         },
       ]);
 
-      // Default and explicit-false stay the branch-only listing.
       expect(await gitService.getWorktrees()).toEqual(await gitService.getWorktrees({ includeDetached: false }));
       expect((await gitService.getWorktrees()).map((w) => w.path)).toEqual(["/path/to/worktrees/feature-1"]);
     });

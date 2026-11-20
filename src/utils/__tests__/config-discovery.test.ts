@@ -57,8 +57,6 @@ describe("config discovery", () => {
       }
     });
 
-    // The four names the MCP instructions and `detect_context` advertise, in
-    // walk-up order; pinned so the claims and the constant cannot drift.
     it("advertises exactly the extensions it searches, .js first", () => {
       expect([...CONFIG_FILE_NAMES]).toEqual([
         "sync-worktrees.config.js",
@@ -73,8 +71,6 @@ describe("config discovery", () => {
       expect(await findConfigUpTree(nested, home)).toBe(config);
     });
 
-    // Like a git ceiling directory: a config in /home, or one somebody left
-    // at the filesystem root, is not something a project under ~ meant to use.
     it("does not walk above the home directory when it started inside it", async () => {
       await writeConfig(path.dirname(home));
       await writeConfig(tempDir);

@@ -50,7 +50,6 @@ describe("RepoOperationLock", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // setup.ts opts the whole worker into the no-op lock; these tests exercise the real one.
     delete process.env[SHORTCUT];
     gitService = {
       getBareRepoPath: vi.fn(() => "/tmp/bare.git"),
@@ -78,8 +77,6 @@ describe("RepoOperationLock", () => {
   });
 
   it("takes the real locks when NODE_ENV=test but the unit-test shortcut is unset", async () => {
-    // A shell, CI job or .env exporting NODE_ENV=test must not switch off
-    // cross-process locking: only the tool-owned shortcut may.
     process.env.NODE_ENV = "test";
     expect(process.env[SHORTCUT]).toBeUndefined();
     const config = makeConfig();
@@ -97,8 +94,6 @@ describe("RepoOperationLock", () => {
   });
 
   it("ignores a shortcut value inherited from another process", async () => {
-    // The vitest worker exports its own pid; a child process (the built CLI
-    // under the e2e suites, a hook command) inherits that value and must lock.
     process.env[SHORTCUT] = String(process.pid + 1);
     const lock = new RepoOperationLock(makeConfig(), gitService as GitService);
 
@@ -127,10 +122,6 @@ describe("RepoOperationLock", () => {
     expect(release).toHaveBeenCalledTimes(2);
   });
 
-  // `sync-worktrees trash --restore/--purge --wait` is the only caller that
-  // asks for this. Everything periodic keeps `retries: 0` above: a cron tick
-  // that cannot take the lock is a clean skip, because whoever holds it is
-  // doing the same work.
   it("retries at a fixed interval inside the requested budget", async () => {
     const config = makeConfig();
     const worktreeTarget = getWorktreeDirLockTarget(config);
@@ -144,17 +135,12 @@ describe("RepoOperationLock", () => {
       path.join(worktreeTarget.dir, worktreeTarget.file),
     ]);
     for (const [, options] of calls) {
-      // A fixed interval, not proper-lockfile's exponential default, so the
-      // budget is the wall clock the CLI can quote to the person waiting.
       expect(options.retries).toMatchObject({ factor: 1, minTimeout: 1000, maxTimeout: 1000 });
       expect(options.retries.retries).toBeGreaterThan(0);
       expect(options.retries.retries).toBeLessThanOrEqual(5);
     }
   });
 
-  // The two locks share ONE window. A budget handed to each would make the
-  // worst case twice what the caller asked for — the difference between a
-  // bound a scripted run can rely on and one that silently doubles.
   it("spends a single shared window across both worktree-mode locks", async () => {
     vi.useFakeTimers();
     try {
@@ -184,8 +170,6 @@ describe("RepoOperationLock", () => {
 
       expectAcquired(await lock.acquire({ waitMs: 6_000 }));
 
-      // Exhausted, so the second lock falls back to the plain single attempt —
-      // never a fresh budget, and never a negative retry count.
       const budgets = (lockfile.lock as Mock).mock.calls.map(([, options]) => options.retries);
       expect(budgets[0]).toMatchObject({ retries: 6 });
       expect(budgets[1]).toBe(0);
@@ -263,9 +247,6 @@ describe("RepoOperationLock", () => {
   });
 
   it("reports lock_unavailable, not locked, when the lock directory cannot be prepared", async () => {
-    // SYNC_WORKTREES_LOCK_DIR pointing at a file, an unwritable parent
-    // directory: mkdir fails before any lock is attempted. Nothing holds the
-    // lock — say so.
     const config = makeConfig({ mode: "clone", branch: "main", __configFileDir: "/tmp/config" });
     const target = getWorktreeDirLockTarget(config);
     (fs.mkdir as Mock).mockRejectedValue(errno("ENOTDIR", `ENOTDIR: not a directory, mkdir '${target.dir}'`));
@@ -323,7 +304,6 @@ describe("RepoOperationLock", () => {
   it("releases the bare-repo lock and reports lock_unavailable when the worktreeDir lock cannot be prepared", async () => {
     const config = makeConfig();
     const target = getWorktreeDirLockTarget(config);
-    // First mkdir is the bare path (succeeds), second is the lock directory.
     (fs.mkdir as Mock)
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(errno("ENOSPC", `ENOSPC: no space left on device, mkdir '${target.dir}'`));

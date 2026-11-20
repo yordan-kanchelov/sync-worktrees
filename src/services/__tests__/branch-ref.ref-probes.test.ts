@@ -10,12 +10,6 @@ import { GitService } from "../git.service";
 
 import type { GitServiceOptions } from "../git.service";
 
-// Real git, no mocks. simple-git only rejects a command that exits non-zero
-// *and* wrote to stderr (`isTaskError` is `exitCode && stdErr.length`), so a
-// probe that reports its answer through the exit code alone — `show-ref
-// --verify --quiet`, `merge-base --is-ancestor` — resolves whatever the answer
-// was and every ref reads as present. The ref probes must therefore keep stdout
-// enabled so a missing ref produces `fatal: ... not a valid ref` on stderr.
 describe("GitService ref existence probes (real git)", () => {
   let tempDir: string;
   let remote: string;
@@ -63,8 +57,6 @@ describe("GitService ref existence probes (real git)", () => {
   });
 
   it("reports a branch that only origin has as remote-only", async () => {
-    // The local ref is genuinely absent here: a probe that cannot see a missing
-    // ref would answer "local: true" and let a caller skip creating the branch.
     await expect(gitService.branchExists("feature/only-on-origin")).resolves.toEqual({ local: false, remote: true });
   });
 

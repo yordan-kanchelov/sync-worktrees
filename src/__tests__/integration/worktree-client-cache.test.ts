@@ -15,13 +15,6 @@ import type { Logger } from "../../services/logger.service";
 import type { Config } from "../../types";
 import type { GitClientCache } from "../../utils/git-client-cache";
 
-// Both services cache one simple-git client per worktree path, and a worktree
-// path is only as long-lived as its branch. On a real repository this is what
-// the leak looked like: 30 create/status/remove cycles left 60 clients in
-// GitService and 30 in the status service behind a single live worktree, ~7 KB
-// each, for as long as the daemon ran. Driving the real removal flows against
-// real git is the only check that covers what the caches are keyed by *and*
-// every path that unregisters a worktree.
 describe("Cached git clients follow the worktrees they belong to (E2E)", () => {
   const BRANCHES = 4;
 
@@ -84,8 +77,6 @@ describe("Cached git clients follow the worktrees they belong to (E2E)", () => {
   });
 
   it("leaves no client behind after a branch is created, checked and removed", async () => {
-    // The bare repository's and the anchor worktree's clients, which outlive
-    // every branch: the cache must come back to exactly these.
     const baseline = clientCache(gitService).size;
 
     for (let i = 0; i < BRANCHES; i++) {
@@ -102,8 +93,6 @@ describe("Cached git clients follow the worktrees they belong to (E2E)", () => {
       expect(statusClientCache(gitService).countFor(worktreePath)).toBe(0);
     }
 
-    // One live worktree (the anchor) is left, so the caches are back to what
-    // the live worktrees need rather than to what every branch ever needed.
     expect(await gitService.getWorktrees()).toHaveLength(1);
     expect(clientCache(gitService).size).toBe(baseline);
     expect(statusClientCache(gitService).size).toBe(0);
@@ -136,8 +125,6 @@ describe("Cached git clients follow the worktrees they belong to (E2E)", () => {
       reason: "prune",
     });
 
-    // The directory now lives under .trash/<id>/payload, so nothing may still
-    // hold a client pointed at where it used to be.
     expect(entry.payloadPath.startsWith(trashService.getTrashRoot())).toBe(true);
     expect(clientCache(gitService).countFor(worktreePath)).toBe(0);
     expect(statusClientCache(gitService).countFor(worktreePath)).toBe(0);

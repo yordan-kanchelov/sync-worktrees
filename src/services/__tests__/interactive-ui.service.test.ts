@@ -113,9 +113,6 @@ vi.mock("ink", () => ({
   render: vi.fn(),
 }));
 
-// node-cron keeps every task it has scheduled, and has not yet destroyed, in a
-// registry: what is in there is what will fire. Tests ask it which tasks a
-// reload armed instead of reading the scheduler's private list.
 const scheduledCronTaskIds = (): Set<string> => new Set(cron.getTasks().keys());
 const cronTasksScheduledSince = (before: Set<string>): string[] =>
   [...cron.getTasks().keys()].filter((id) => !before.has(id));
@@ -354,7 +351,6 @@ describe("InteractiveUIService", () => {
 
       await service.destroy();
 
-      // After destroy, emitting events should not call listeners (they were removed)
       service.getEvents().emit("setStatus", "syncing");
       expect(statusSpy).not.toHaveBeenCalled();
     });
@@ -375,7 +371,6 @@ describe("InteractiveUIService", () => {
 
       await service.destroy();
 
-      // After destroy, these should be no-ops
       service.setStatus("syncing");
       service.updateLastSyncTime();
 
@@ -406,9 +401,6 @@ describe("InteractiveUIService", () => {
       return { events, messages };
     };
 
-    // The two timeouts are a policy, not an accident: a signal has a watchdog
-    // behind it and must not sit on a 30s wait, while `q` is a person who asked
-    // to leave and can afford to let a fetch land.
     it("keeps the 2s timeout for the signal path and the 30s timeout for the q path", async () => {
       mockSyncService.isSyncInProgress.mockReturnValue(true);
       const fast = collectLogs();
@@ -459,8 +451,6 @@ describe("InteractiveUIService", () => {
       try {
         const shutdown = service.destroy(true);
         await vi.advanceTimersByTimeAsync(10);
-        // Emitted while the interface is still mounted and listening, which is
-        // the whole point: isDestroyed is set after the wait, not before it.
         expect(messages).toContain(
           "Waiting for 1 in-progress sync(s) to finish... Press q or Ctrl+C again to quit now.",
         );
@@ -561,8 +551,6 @@ describe("InteractiveUIService", () => {
     });
 
     it("logs a repo whose lock could not be taken as a failure, not a skip", async () => {
-      // An unwritable state dir is not contention: the daemon must surface it
-      // at error level with the path and errno, never as "Sync skipped".
       const lockService = {
         sync: vi.fn<any>().mockResolvedValue({
           started: false,
@@ -704,11 +692,8 @@ describe("InteractiveUIService", () => {
       const onManualSync = (mockRender.mock.calls[0][0].props as any).onManualSync;
       await onManualSync();
 
-      // Last-sync time must still advance — per-action skips are not "whole repo skipped".
       expect(updateSpy).toHaveBeenCalled();
 
-      // The cycle log message must be info-level (not warn) and must NOT contain
-      // the whole-repo "Sync skipped for" wording.
       const partialLogs = logs.filter((l) => l.message.includes("1 sync action(s) skipped"));
       expect(partialLogs.length).toBeGreaterThan(0);
       for (const log of partialLogs) {
@@ -769,18 +754,15 @@ describe("InteractiveUIService", () => {
 
       const services = [createMockService(1), createMockService(2), createMockService(3), createMockService(4)];
 
-      // maxParallel = 2 means at most 2 services should run concurrently
       const service = new InteractiveUIService(services as any, undefined, undefined, 2);
 
       await service.triggerInitialSync();
 
-      // All services should have synced
       expect(services[0].sync).toHaveBeenCalled();
       expect(services[1].sync).toHaveBeenCalled();
       expect(services[2].sync).toHaveBeenCalled();
       expect(services[3].sync).toHaveBeenCalled();
 
-      // Max concurrent should respect the limit
       expect(maxConcurrent).toBeLessThanOrEqual(2);
 
       void service.destroy();
@@ -807,15 +789,12 @@ describe("InteractiveUIService", () => {
 
       const services = [createMockService(1), createMockService(2), createMockService(3)];
 
-      // No maxParallel specified - should use default (2)
       const service = new InteractiveUIService(services as any);
 
       await service.triggerInitialSync();
 
-      // All services should have synced
       services.forEach((s) => expect(s.sync).toHaveBeenCalled());
 
-      // Default is 2, so max concurrent should be at most 2
       expect(maxConcurrent).toBeLessThanOrEqual(2);
 
       void service.destroy();
@@ -844,10 +823,8 @@ describe("InteractiveUIService", () => {
 
       const service = new InteractiveUIService([successService, failingService] as any, undefined, undefined, 2);
 
-      // Should not throw - errors are handled gracefully
       await service.triggerInitialSync();
 
-      // Both services should have been called
       expect(successService.sync).toHaveBeenCalled();
       expect(failingService.sync).toHaveBeenCalled();
 
@@ -917,8 +894,6 @@ describe("InteractiveUIService", () => {
       void service.destroy();
     });
 
-    // --debug is applied when the config is loaded. The reload loads it again,
-    // so without being told the dashboard dropped debug output after an `r`.
     it.each([
       { debug: true, expectDebugLine: true },
       { debug: false, expectDebugLine: false },
@@ -949,15 +924,12 @@ describe("InteractiveUIService", () => {
       expect(mockConfigLoaderInstance.buildRepositories).toHaveBeenCalledWith("/test/config.js", { debug: c.debug });
       const reloaded = vi.mocked(WorktreeSyncService).mock.calls.at(-1)![0] as any;
       expect(reloaded.debug).toBe(c.debug);
-      // And the logger the dashboard built for it follows suit.
       reloaded.logger.debug("debug probe line");
       expect(logs.some((message) => message.includes("debug probe line"))).toBe(c.expectDebugLine);
 
       void service.destroy();
     });
 
-    // `sync-worktrees --filter backend-*` starts the UI on a subset; a reload
-    // re-reads the whole file and must not widen that back to every repository.
     it("keeps the --filter the CLI started with across a reload", async () => {
       const repo = (name: string): Record<string, unknown> => ({
         name,
@@ -1077,18 +1049,14 @@ describe("InteractiveUIService", () => {
       const service = new InteractiveUIService([mockSyncService], "/test/config.js");
       const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
 
-      // Start first reload
       const firstReload = onReload();
 
-      // Second reload should be a no-op since first is still in progress
       const secondReload = onReload();
 
-      // Release the config loading
       resolveLoadConfig!();
       await firstReload;
       await secondReload;
 
-      // loadConfigFile should only be called once (second reload was skipped)
       expect(mockConfigLoaderInstance.loadConfigFile).toHaveBeenCalledTimes(1);
 
       void service.destroy();
@@ -1127,16 +1095,12 @@ describe("InteractiveUIService", () => {
         mockConfigLoaderInstance.loadConfigFile.mockRejectedValue(new Error("Failed to load config"));
 
         const service = new InteractiveUIService([mockSyncService], "/test/config.js", "0 * * * *");
-        // destroy() as well as stop(): the teardown at the end of this test
-        // calls it, and a double without it only reaches cancelCronJobs' catch,
-        // which would turn a missing method into a warning nobody reads.
         const preExistingJob = { stop: vi.fn(), destroy: vi.fn() };
         (service as any).scheduler.cronJobs = [preExistingJob];
 
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
-        // A failed reload leaves the job that was already armed alone: nothing released it.
         expect(preExistingJob.destroy).not.toHaveBeenCalled();
 
         void service.destroy();
@@ -1230,7 +1194,6 @@ describe("InteractiveUIService", () => {
         const before = scheduledCronTaskIds();
         await onReload();
 
-        // 2 non-runOnce repos with same schedule = 1 grouped cron job
         expect(cronTasksScheduledSince(before)).toHaveLength(1);
 
         void service.destroy();
@@ -1385,8 +1348,6 @@ describe("InteractiveUIService", () => {
         const onReload = (mockRender.mock.calls[0][0].props as any).onReload;
         await onReload();
 
-        // Once per service by the reload; the cycle's sync() initializes
-        // itself rather than calling initialize() first.
         expect(mockWorktreeSyncServiceInstance.initialize).toHaveBeenCalledTimes(2);
         expect(mockWorktreeSyncServiceInstance.sync).toHaveBeenCalledTimes(2);
 
@@ -1446,7 +1407,6 @@ describe("InteractiveUIService", () => {
         expect(cronTasksScheduledSince(before)).toHaveLength(1);
 
         await onReload();
-        // 2 repos with different schedules = 2 cron jobs
         expect(cronTasksScheduledSince(before)).toHaveLength(2);
 
         await onReload();
@@ -1585,15 +1545,11 @@ describe("InteractiveUIService", () => {
 
       const service = new InteractiveUIService([hourly, often, once] as any, undefined, undefined);
 
-      // runOnce repositories have no cron job, so they have no next run either.
       expect((mockRender.mock.calls[0][0].props as any).cronSchedule).toEqual(["0 * * * *", "*/5 * * * *"]);
       void service.destroy();
     });
   });
 
-  // FU-T42-3: the interface stays live for the whole shutdown wait, and a
-  // reload ends by arming cron jobs, so `r` pressed after `q` used to bring
-  // back the jobs the shutdown had just released.
   describe("reload and sync during shutdown", () => {
     it("ignores a reload requested after quitting has started", async () => {
       let syncInProgress = true;
@@ -1645,7 +1601,6 @@ describe("InteractiveUIService", () => {
       await reload;
 
       expect(cronTasksScheduledSince(before)).toEqual([]);
-      // The services the abandoned reload built never replace the running ones.
       expect(adopted).not.toHaveBeenCalled();
       expect(mockSyncService.sync).not.toHaveBeenCalled();
     });
@@ -1662,7 +1617,6 @@ describe("InteractiveUIService", () => {
       await onManualSync();
 
       expect(mockSyncService.sync).not.toHaveBeenCalled();
-      // The key handler put the bar on "syncing"; it has to come back.
       expect(statuses).toEqual(["idle"]);
 
       syncInProgress = false;
@@ -1680,10 +1634,6 @@ describe("InteractiveUIService", () => {
         branchExists: vi.fn().mockResolvedValue({ local: false, remote: false }),
         createBranch: vi.fn().mockResolvedValue(undefined),
         pushBranch: vi.fn().mockResolvedValue(undefined),
-        // Derived from the name, never a constant: the rollback's
-        // compare-and-swap has to be on the commit THIS attempt created, and a
-        // stand-in that answers the same oid for every branch would let a
-        // rollback that reuses a stale oid pass.
         getLocalBranchCommit: vi.fn(async (name: string) => `oid-${name}`),
         deleteLocalBranchIfAt: vi.fn().mockResolvedValue(undefined),
         getBareRepoPath: vi.fn().mockReturnValue("/test/.bare/app"),
@@ -1707,7 +1657,6 @@ describe("InteractiveUIService", () => {
       };
 
       mockSyncService.getGitService = vi.fn().mockReturnValue(mockGitService);
-      // Worktree mode: WorktreeSyncService.getWorktrees lists through its GitService.
       mockSyncService.getWorktrees = vi.fn(function (this: typeof mockSyncService) {
         return this.getGitService().getWorktrees();
       });
@@ -1805,8 +1754,6 @@ describe("InteractiveUIService", () => {
       });
 
       it("should mark the size as a lower bound when only some paths fail", async () => {
-        // Bare succeeds, worktree path fails: the failed path counts as 0, so
-        // the total is a guaranteed undercount and must read as "at least" (≥).
         vi.mocked(calculateDirectorySize).mockResolvedValueOnce(1024).mockRejectedValueOnce(new Error("ENOENT"));
         const service = new InteractiveUIService([mockSyncService]);
 
@@ -1901,9 +1848,6 @@ describe("InteractiveUIService", () => {
       });
 
       it("should return the tracked branch for a clone-mode repo, not GitService's constant", async () => {
-        // GitService.initialize() never runs in clone mode, so its default
-        // branch is the 'main' the constructor set. Reading it here made the
-        // wizard pre-select and label a branch the clone does not track.
         mockSyncService.isCloneMode.mockReturnValue(true);
         mockSyncService.getDefaultBranch.mockResolvedValue("develop");
         const service = new InteractiveUIService([mockSyncService]);
@@ -1955,10 +1899,6 @@ describe("InteractiveUIService", () => {
         void service.destroy();
       });
 
-      // The wizard submits the name it displayed, so a typed `x` whose name was
-      // taken arrives here ALREADY suffixed. Appending to what it was handed
-      // would offer `x-1-1` and then `x-1-2`; the sequence the user was shown,
-      // and the only one that reads as a suffix walk, is `x-1`, `x-2`, `x-3`.
       it("continues the suffix it was handed instead of restarting the walk under it", async () => {
         mockGitService.createBranch
           .mockRejectedValueOnce(new Error("already exists"))
@@ -1977,8 +1917,6 @@ describe("InteractiveUIService", () => {
         void service.destroy();
       });
 
-      // One collision after the wizard's own: the whole visible sequence is
-      // `x-1` then `x-2`, which is what the picker would have offered next.
       it("takes a name the wizard already suffixed once to the next suffix, not a nested one", async () => {
         mockGitService.pushBranch.mockRejectedValueOnce(new Error("stale info: refs/heads/x-1"));
 
@@ -1993,8 +1931,6 @@ describe("InteractiveUIService", () => {
         void service.destroy();
       });
 
-      // A trailing `-<n>` is a suffix to continue; nothing else is. A name that
-      // merely ends in a hyphen or a non-number keeps the walk at `-1`.
       it("starts the walk at -1 for a name that does not end in a number", async () => {
         mockGitService.createBranch.mockRejectedValueOnce(new Error("already exists")).mockResolvedValueOnce(undefined);
 
@@ -2006,9 +1942,6 @@ describe("InteractiveUIService", () => {
         void service.destroy();
       });
 
-      // The name the result carries is the branch that was actually tried. A
-      // failure reported under the caller's name points at a branch this call
-      // never touched — here `x` was never pushed, `x-1` was.
       it("names the branch it actually attempted when the failure is not a collision", async () => {
         mockGitService.createBranch.mockRejectedValueOnce(new Error("already exists"));
         mockGitService.pushBranch.mockRejectedValueOnce(new Error("connection reset"));
@@ -2037,10 +1970,6 @@ describe("InteractiveUIService", () => {
         void service.destroy();
       });
 
-      // A push that never landed must not leave the local branch behind: the
-      // wizard offers the same name again, and the next attempt would collide
-      // with this attempt's own leftover and quietly produce '<name>-1' while
-      // '<name>' is still nowhere on the remote.
       it("deletes the branch it just created when the push fails, and names the push failure", async () => {
         mockGitService.pushBranch.mockRejectedValueOnce(new Error("remote rejected: pre-receive hook declined"));
 
@@ -2050,15 +1979,11 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain("could not push 'feature/new'");
         expect(result.error).toContain("pre-receive hook declined");
-        // Compare-and-swap on the commit THIS attempt created the branch at.
         expect(mockGitService.deleteLocalBranchIfAt).toHaveBeenCalledWith("feature/new", "oid-feature/new");
 
         void service.destroy();
       });
 
-      // The create-only lease reports a name that turned out to be on origin
-      // as "stale info". Phrased as the collision it is, so the loop suffixes
-      // and retries instead of handing the user git's wording.
       it("retries under a suffix when the lease refuses a name that is already on origin", async () => {
         mockGitService.pushBranch
           .mockRejectedValueOnce(new Error("stale info: refs/heads/feature/x"))
@@ -2071,18 +1996,12 @@ describe("InteractiveUIService", () => {
         expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(1, "feature/x");
         expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(2, "feature/x-1");
         expect(mockGitService.pushBranch).toHaveBeenNthCalledWith(3, "feature/x-2");
-        // Every rollback swaps on ITS OWN attempt's commit. Re-reading the
-        // first attempt's oid would pass against a stand-in that answers the
-        // same value for every name, and would leave the second attempt's
-        // branch behind against a real repository.
         expect(mockGitService.deleteLocalBranchIfAt).toHaveBeenNthCalledWith(1, "feature/x", "oid-feature/x");
         expect(mockGitService.deleteLocalBranchIfAt).toHaveBeenNthCalledWith(2, "feature/x-1", "oid-feature/x-1");
 
         void service.destroy();
       });
 
-      // The branch is left in place when it cannot be removed, so the message
-      // has to say so rather than let the user believe it was cleaned up.
       it("reports the leftover branch when the rollback itself fails", async () => {
         mockGitService.pushBranch.mockRejectedValueOnce(new Error("connection reset"));
         mockGitService.deleteLocalBranchIfAt.mockRejectedValueOnce(new Error("ref moved"));
@@ -2092,15 +2011,11 @@ describe("InteractiveUIService", () => {
 
         expect(result.success).toBe(false);
         expect(result.error).toContain("is still in the bare repository");
-        // The branch is in `.bare/<repo>`, which the user never cd's into, so
-        // the command has to name the repository it is to be run against.
         expect(result.error).toContain('git -C "/test/.bare/app" branch -D feature/new');
 
         void service.destroy();
       });
 
-      // git's stderr for an https remote embeds the credential in the URL it
-      // failed on, and this message is shown in the wizard's result pane.
       it("redacts the credential out of the push failure and appends the auth hint", async () => {
         mockGitService.pushBranch.mockRejectedValueOnce(
           new Error(
@@ -2121,11 +2036,6 @@ describe("InteractiveUIService", () => {
         void service.destroy();
       });
 
-      // The retry exists to get past a name that is taken. It must not run
-      // once this attempt has left a branch behind: suffixing past the leftover
-      // recreates the exact defect this flow is about — '<name>' orphaned
-      // locally and never pushed while '<name>-1' is created instead — and it
-      // would discard the only message that names the leftover.
       it("stops instead of suffixing past a branch the rollback could not remove", async () => {
         mockGitService.pushBranch.mockRejectedValueOnce(new Error("stale info: refs/heads/feature/x"));
         mockGitService.deleteLocalBranchIfAt.mockRejectedValueOnce(new Error("ref moved"));
@@ -2135,8 +2045,6 @@ describe("InteractiveUIService", () => {
 
         expect(result.success).toBe(false);
         expect(result.finalName).toBe("feature/x");
-        // The collision wording is still there — and so is the notice that the
-        // retry would otherwise have thrown away with it.
         expect(result.error).toContain("already exists on origin");
         expect(result.error).toContain("The local branch 'feature/x' is still in the bare repository");
         expect(result.error).toContain('git -C "/test/.bare/app" branch -D feature/x');
@@ -2172,7 +2080,6 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
         await service.operations.createAndPushBranch(0, "main", "feature/new");
 
-        // Branch+push must run behind any in-flight sync to avoid racing git's refs.
         expect(mockSyncService.runQueuedRepoOperation).toHaveBeenCalledTimes(1);
 
         void service.destroy();
@@ -2191,13 +2098,6 @@ describe("InteractiveUIService", () => {
         void service.destroy();
       });
 
-      // Clone-mode repositories have no bare repository, and GitService's
-      // createBranch/pushBranch both run in one — through `bareRepoPath`,
-      // which falls back to the RELATIVE '.bare/<repo name>' when bareRepoDir
-      // is undefined, as it deliberately is in clone mode. That path is either
-      // missing (simple-git's constructor: "Cannot use simple-git on a
-      // directory that does not exist") or, under a working directory holding
-      // a bare store of the same repository name, somebody else's refs.
       it("creates the branch inside the clone for clone-mode repositories", async () => {
         const cloneService = {
           ...mockSyncService,
@@ -2213,8 +2113,6 @@ describe("InteractiveUIService", () => {
         expect(mockGitService.createBranch).not.toHaveBeenCalled();
         expect(mockGitService.pushBranch).not.toHaveBeenCalled();
 
-        // ...and the wizard's follow-up switches the clone in place rather
-        // than adding a worktree — the branch it just pushed is now real.
         await service.operations.createWorktreeForBranch(0, "feature/x");
         expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/x");
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
@@ -2351,7 +2249,6 @@ describe("InteractiveUIService", () => {
         const service = new InteractiveUIService([mockSyncService]);
         await service.operations.createWorktreeForBranch(0, "feature/new");
 
-        // The directory is named inside the queued operation, by GitService.
         expect(mockGitService.resolveNewWorktreePath).toHaveBeenCalledWith("feature/new");
         expect(mockGitService.addWorktree).toHaveBeenCalledWith("feature/new", "/test/worktrees/feature-new");
 
@@ -2368,8 +2265,6 @@ describe("InteractiveUIService", () => {
 
         await service.operations.createWorktreeForBranch(0, "feature/new");
 
-        // The wizard just created+pushed this branch; the drift from
-        // config.branch is warned downstream.
         expect(cloneService.checkoutBranch).toHaveBeenCalledWith("feature/new");
         expect(mockGitService.addWorktree).not.toHaveBeenCalled();
 
@@ -2415,8 +2310,6 @@ describe("InteractiveUIService", () => {
 
         expect(mockSyncService.runQueuedRepoOperation).toHaveBeenCalledTimes(1);
         expect(mockGitService.fetchAll).toHaveBeenCalledTimes(1);
-        // Must use initializeUnlocked inside the queued op; initialize() would
-        // re-enter the repo mutex and self-deadlock.
         expect(mockSyncService.initializeUnlocked).toHaveBeenCalledTimes(1);
         expect(mockSyncService.initialize).not.toHaveBeenCalled();
 
@@ -2573,10 +2466,6 @@ describe("InteractiveUIService", () => {
         void service.destroy();
       });
 
-      // -g is vim's GUI flag and nobody else's: nano and pico read it as --showcursor (verified
-      // against `nano --help` on this box), helix as --grammar, emacs as --geometry, and nvim
-      // has no -g at all. Treating it as GUI-forcing everywhere spawned into the void exactly
-      // the TTY-less editors this refusal exists for.
       it.each([
         ["nano", "-g"],
         ["pico", "-g"],
@@ -2599,8 +2488,6 @@ describe("InteractiveUIService", () => {
         void service.destroy();
       });
 
-      // An explicit terminal flag is the user saying what they want, and a flag that means
-      // something else to this editor does not get to overrule it.
       it.each([["emacs -nw -g"], ["emacs -g -nw"], ["emacs --gui -t"], ["emacsclient -nw -g"]])(
         "refuses '%s', because the terminal flag wins over the GUI one",
         (value) => {
@@ -2687,8 +2574,6 @@ describe("InteractiveUIService", () => {
         void service.destroy();
       });
 
-      // The refusal names Terminal mode as the remedy, so it asks whether one resolves first:
-      // on a headless host none does, and sending the user there is a second dead end.
       it.each([
         [false, "no emulator is available", "use Terminal mode"],
         [true, "use Terminal mode", "no emulator is available"],
@@ -2769,8 +2654,6 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(true);
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === "open");
         expect(call).toBeDefined();
-        // Whole argv, not a prefix: a stray flag after --args would slip past a slice() check
-        // and change what Ghostty is actually told to run.
         expect(call[1]).toEqual([
           "-na",
           "Ghostty.app",
@@ -2849,7 +2732,6 @@ describe("InteractiveUIService", () => {
         expect(result.success).toBe(true);
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === terminal);
         expect(call, `${terminal} was never spawned`).toBeDefined();
-        // Whole-argv equality, not toContain: a stray extra "-e" would slip past a substring check.
         expect(call[1]).toEqual([
           flag,
           "sh",
@@ -2948,9 +2830,6 @@ describe("InteractiveUIService", () => {
         void service.destroy();
       });
 
-      // The override used to consult the exec-flag table only when it carried no args of its
-      // own, so a user who added one flag of theirs lost the exec flag altogether -- the
-      // original "-e sh -c" defect wearing a different hat.
       it("gives an override that carries its own flags the exec flag as well", () => {
         Object.defineProperty(process, "platform", { value: "linux" });
         process.env.SYNC_WORKTREES_TERMINAL = "gnome-terminal --tab";
@@ -2988,7 +2867,6 @@ describe("InteractiveUIService", () => {
 
         const call = (mockSpawn.mock.calls as any[]).find(([cmd]) => cmd === command);
         expect(call, `${command} was never spawned`).toBeDefined();
-        // Exactly one: a second flag would be read as an argument to the first.
         expect(call[1]).toEqual([
           flag,
           "sh",
@@ -3330,8 +3208,6 @@ describe("InteractiveUIService", () => {
         void ui.destroy();
       });
 
-      // A gc the busy probe held back is not a gc that ran and failed; the log
-      // line has to keep the two apart or every skip reads as a broken repo.
       it("logs a gc held back by the busy probe as skipped, not failed", async () => {
         const ui = new InteractiveUIService([mockSyncService]);
         mockSyncService.forceClean.mockResolvedValue({
@@ -3358,7 +3234,6 @@ describe("InteractiveUIService", () => {
         const message = logs.map((entry) => entry.message).join("\n");
         expect(message).toContain("GC skipped");
         expect(message).not.toContain("GC failed");
-        // The modal may truncate its line; the log keeps the whole error.
         expect(message).toContain("git gc skipped, git is busy in: /w/feature-1 (index.lock)");
 
         void ui.destroy();
@@ -3374,8 +3249,6 @@ describe("InteractiveUIService", () => {
         const ui = new InteractiveUIService([mockSyncService, failingService]);
 
         const preview = await ui.operations.getForceCleanPreview();
-        // Both repos are named in the confirmation here, so repo-2's own
-        // failure — not a missing selection — is what has to survive.
         const result = await ui.operations.forceClean([
           { repoIndex: 0, trashEntryIds: ["entry-a"], keepRefNames: [] },
           { repoIndex: 1, trashEntryIds: [], keepRefNames: [] },

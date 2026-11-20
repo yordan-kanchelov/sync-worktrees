@@ -13,11 +13,6 @@ import { createMockLogger } from "../test-utils";
 import type { Logger } from "../../services/logger.service";
 import type { RepositoryConfig, SyncOutcome } from "../../types";
 
-// Real git, no mocks. refs/stash lives in the repository's common dir, so
-// `git stash list` run in any worktree lists the stashes made in every
-// worktree. Counting that list as-is made one stash anywhere report "stashed
-// changes" for every worktree: no prune could pass the safety gate, every
-// diverged replace was skipped, and MCP labelled every worktree dirty.
 describe("Stashes are attributed to the worktree they were made in (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -34,8 +29,6 @@ describe("Stashes are attributed to the worktree they were made in (E2E)", () =>
     const seedDir = path.join(tempDir, "seed");
     worktreeDir = path.join(tempDir, "worktrees");
     bareRepoDir = path.join(tempDir, ".bare", "app");
-    // The default branch sits at its plain name, every other branch at the
-    // sanitized+hashed one.
     mainPath = path.join(worktreeDir, "main");
     featAPath = pathResolution.getBranchWorktreePath(worktreeDir, "feature/a");
     featBPath = pathResolution.getBranchWorktreePath(worktreeDir, "feature/b");
@@ -54,8 +47,6 @@ describe("Stashes are attributed to the worktree they were made in (E2E)", () =>
     await seed.branch(["-M", "main"]);
     await seed.addRemote("origin", remote);
     await seed.push("origin", "main");
-    // Both feature branches carry no commits of their own, so each stays fully
-    // pushed once its remote branch is gone and only a stash can block it.
     await seed.push("origin", "main:refs/heads/feature/a");
     await seed.push("origin", "main:refs/heads/feature/b");
     await simpleGit(remote).raw(["symbolic-ref", "HEAD", "refs/heads/main"]);
@@ -96,7 +87,6 @@ describe("Stashes are attributed to the worktree they were made in (E2E)", () =>
     const service = new WorktreeSyncService(makeConfig(createMockLogger()));
     const first = await syncOnce(service);
     expect(first.counts.failed).toBe(0);
-    // Stashing needs an identity; the config is shared by every worktree.
     await simpleGit(mainPath).addConfig("user.name", "Test User");
     await simpleGit(mainPath).addConfig("user.email", "test@example.com");
     return service;
@@ -107,7 +97,6 @@ describe("Stashes are attributed to the worktree they were made in (E2E)", () =>
     await stashAChange(mainPath);
     await stashAChange(featBPath, "wip: colons in: the message");
 
-    // Precondition: git itself lists both stashes from every worktree.
     expect((await simpleGit(featAPath).stashList()).total).toBe(2);
 
     const status = new WorktreeStatusService({}, createMockLogger());
@@ -131,8 +120,6 @@ describe("Stashes are attributed to the worktree they were made in (E2E)", () =>
   it("attributes a detached-HEAD stash by the commit it was made on", async () => {
     await setUpWorktrees();
     const main = simpleGit(mainPath);
-    // A commit feature/a does not have, stashed on while detached, then main
-    // is checked out again at that same commit.
     await fs.writeFile(path.join(mainPath, "local.txt"), "local\n");
     await main.add("local.txt");
     await main.commit("Local-only commit");

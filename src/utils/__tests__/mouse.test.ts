@@ -28,8 +28,6 @@ const recordingExitTarget = (): MouseTrackingExitTarget & { listeners: Array<() 
 };
 
 const ESC = String.fromCharCode(27);
-// Ink strips the leading ESC before handing the sequence to useInput, so the
-// stripped form is what components actually see. The raw form is checked too.
 const sgr = (button: number, column = 10, row = 5, final = "M"): string => `[<${button};${column};${row}${final}`;
 const rawSgr = (button: number): string => `${ESC}[<${button};10;5M`;
 
@@ -44,20 +42,18 @@ describe("mouse", () => {
       expect(parseWheelEvent(sgr(64, 1, 1, "m"))).toBe("up");
     });
 
-    // Shift/meta/ctrl are OR'd into the same field, so a modifier-held scroll
-    // must still scroll rather than fall through to key handling.
     it("ignores modifier bits riding along with the button", () => {
-      expect(parseWheelEvent(sgr(64 + 4))).toBe("up"); // shift
-      expect(parseWheelEvent(sgr(65 + 8))).toBe("down"); // meta
-      expect(parseWheelEvent(sgr(65 + 16))).toBe("down"); // ctrl
+      expect(parseWheelEvent(sgr(64 + 4))).toBe("up");
+      expect(parseWheelEvent(sgr(65 + 8))).toBe("down");
+      expect(parseWheelEvent(sgr(65 + 16))).toBe("down");
       expect(parseWheelEvent(sgr(64 + 4 + 8 + 16))).toBe("up");
     });
 
     it("returns null for clicks, horizontal wheel and plain text", () => {
-      expect(parseWheelEvent(sgr(0))).toBeNull(); // left button
-      expect(parseWheelEvent(sgr(2))).toBeNull(); // right button
-      expect(parseWheelEvent(sgr(66))).toBeNull(); // wheel left
-      expect(parseWheelEvent(sgr(67))).toBeNull(); // wheel right
+      expect(parseWheelEvent(sgr(0))).toBeNull();
+      expect(parseWheelEvent(sgr(2))).toBeNull();
+      expect(parseWheelEvent(sgr(66))).toBeNull();
+      expect(parseWheelEvent(sgr(67))).toBeNull();
       expect(parseWheelEvent("j")).toBeNull();
       expect(parseWheelEvent("")).toBeNull();
       expect(parseWheelEvent(`${ESC}[B`)).toBeNull();
@@ -81,8 +77,6 @@ describe("mouse", () => {
       expect(isMouseSequence(sgr(0, 1, 1, "m"))).toBe(true);
     });
 
-    // Typed characters reach useInput one at a time, so a person typing "[" then
-    // "<" into a filter must never be swallowed as a mouse event.
     it("leaves ordinary input alone", () => {
       expect(isMouseSequence("j")).toBe(false);
       expect(isMouseSequence("<")).toBe(false);
@@ -126,8 +120,6 @@ describe("mouse", () => {
       expect(exitTarget.listeners).toEqual([]);
     });
 
-    // The path that matters when nothing in the app gets to run its teardown:
-    // an uncaught exception, or a process.exit from somewhere else entirely.
     it("restores the terminal from a process exit listener", () => {
       const stream = recordingStream();
       const exitTarget = recordingExitTarget();
@@ -144,10 +136,6 @@ describe("mouse", () => {
       expect(stream.written).toEqual([MOUSE_TRACKING_ENABLE, MOUSE_TRACKING_DISABLE]);
     });
 
-    // The listener is registered with `once` and removed by disable(), so a
-    // second restore should not be able to happen - but the sequence must never
-    // go out twice if a host re-emits, or the terminal ends up with an extra
-    // reset in the middle of whatever runs next.
     it("writes the disable sequence once even if the exit listener fires twice", () => {
       const stream = recordingStream();
       const exitTarget = recordingExitTarget();

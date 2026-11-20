@@ -12,7 +12,6 @@ interface FakeChild extends EventEmitter {
   kill: () => boolean;
 }
 
-/** A spawn that answers each command with the outcome the test names for it. */
 function fakeSpawn(outcomes: Record<string, Outcome>, written: Record<string, string>): typeof spawn {
   return vi.fn((command: string) => {
     const child = new EventEmitter() as FakeChild;

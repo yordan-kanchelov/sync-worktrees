@@ -10,8 +10,6 @@ interface NodeVersionModule {
   nodeVersionWarning(version: string, program: string): string | null;
 }
 
-// bin/ is plain JavaScript that ships as-is, so it is loaded by URL rather
-// than through a typed import.
 const modulePath = path.join(__dirname, "../../bin/node-version.js");
 const { MIN_NODE_MAJOR, nodeVersionWarning } = (await import(pathToFileURL(modulePath).href)) as NodeVersionModule;
 

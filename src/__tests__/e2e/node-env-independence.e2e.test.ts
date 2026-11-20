@@ -17,10 +17,6 @@ interface CliRun {
   pid: number;
 }
 
-// The built CLI must take the cross-process lock, reap expired trash and run
-// gc no matter what NODE_ENV the caller's shell exported, and no matter whether
-// the vitest worker's SYNC_WORKTREES_UNIT_TEST reached it through env
-// inheritance — that value names the worker's pid, never the child's.
 describe("CLI safety features are independent of NODE_ENV", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   let tempDir: string;
@@ -106,8 +102,6 @@ describe("CLI safety features are independent of NODE_ENV", () => {
     return containerPath;
   }
 
-  // The lock lives next to the canonical worktreeDir whatever the child's
-  // environment says, so the path the child used can be derived right here.
   async function expectedLockFile(): Promise<string> {
     const target = getWorktreeDirLockTarget({
       repoUrl: `file://${bareRepo}`,
@@ -139,15 +133,12 @@ describe("CLI safety features are independent of NODE_ENV", () => {
       expect(run.stdout).toContain("Synchronization finished");
       expect(run.stderr).not.toContain(ENV_CONSTANTS.UNIT_TEST_SHORTCUT);
 
-      // Cross-process lock: the worktreeDir-keyed lock file is created on acquire.
       const lockStats = await fs.stat(await expectedLockFile());
       expect(lockStats.isFile()).toBe(true);
 
-      // Trash reaper: the pre-seeded expired entry is gone.
       expect(run.stdout).toContain("Trash reaper: deleted expired entry 'expired-entry'");
       await expect(fs.access(containerPath)).rejects.toThrow();
 
-      // Periodic gc: ran and persisted its state next to the bare repo.
       expect(run.stdout).toContain("Running git gc (maintenance)");
       const state = JSON.parse(
         await fs.readFile(path.join(bareRepoDir, MAINTENANCE_CONSTANTS.STATE_FILENAME), "utf8"),
@@ -158,8 +149,6 @@ describe("CLI safety features are independent of NODE_ENV", () => {
   );
 
   it("warns at startup when the unit-test shortcut is genuinely active for the CLI process", async () => {
-    // Only a value equal to the CLI's own pid activates the shortcut, so it has
-    // to be set from inside the process before the CLI entry point loads.
     const wrapper = path.join(tempDir, "shortcut-wrapper.mjs");
     await fs.writeFile(
       wrapper,

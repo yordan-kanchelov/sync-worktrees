@@ -63,8 +63,6 @@ describe("trackPhaseItems", () => {
     ]);
   });
 
-  // A repository with thousands of branches must not turn one phase into
-  // thousands of TUI re-renders and MCP notifications.
   it("samples a phase with thousands of items and still finishes on the total", () => {
     const { emitter, events } = collect();
     const itemDone = trackPhaseItems(emitter, "create", "Creating worktrees", 5000);
@@ -80,9 +78,6 @@ describe("trackPhaseItems", () => {
     expect(events.every((event) => event.total === 5000)).toBe(true);
   });
 
-  // Sampling must not swallow the beginning of the phase: waiting for item 50
-  // to say anything leaves the opening message standing for exactly the kind of
-  // long serial phase the counts were added for.
   it("reports the first item of a sampled phase, not just every step-th one", () => {
     const { emitter, events } = collect();
     const itemDone = trackPhaseItems(emitter, "create", "Creating worktrees", 5000);
@@ -94,8 +89,6 @@ describe("trackPhaseItems", () => {
     ]);
   });
 
-  // Callers hang this off the item's own promise, so a throw here would turn a
-  // finished item into a failed one.
   it("never throws out of the item callback", () => {
     const emitter = {
       emit: () => {

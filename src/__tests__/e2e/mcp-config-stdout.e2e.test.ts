@@ -8,9 +8,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { ChildProcessWithoutNullStreams } from "child_process";
 
-// stdout is the JSON-RPC stream: whatever a config prints while it is
-// evaluated (first load on the main thread, reloads in a worker) must not
-// reach it.
 describe("MCP server with a config that writes to stdout", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees-mcp.js");
   let tempDir: string;
@@ -60,9 +57,7 @@ export default {
       try {
         const message = JSON.parse(line);
         pending.get(message.id)?.(message);
-      } catch {
-        // recorded above; asserted below
-      }
+      } catch {}
     });
 
     let nextId = 1;
@@ -97,7 +92,6 @@ export default {
     for (const line of stdoutLines) {
       expect(() => JSON.parse(line), `non-JSON stdout line: ${line}`).not.toThrow();
     }
-    // The config did run, and its output went to stderr instead.
     expect(stderr.match(/\[dotenv\] injecting env from \.env/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
     expect(stderr).toContain("raw write from config");
   }, 90_000);

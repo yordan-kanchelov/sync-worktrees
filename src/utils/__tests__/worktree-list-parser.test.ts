@@ -98,9 +98,6 @@ describe("parseWorktreeListPorcelain", () => {
     expect(result[0].lockReason).toBeNull();
   });
 
-  // git runs the reason through quote_c_style, so a reason holding a newline or
-  // a quote arrives on one line, double-quoted and escaped. Keeping it exactly
-  // as git printed it is what makes the value safe to put in a log line.
   it("keeps a C-quoted lock reason as git printed it", () => {
     const output = [
       "worktree /repo/locked",
@@ -143,8 +140,6 @@ describe("parseWorktreeListPorcelain with NUL-terminated (-z) output", () => {
     expect(locked).toMatchObject({ locked: true, lockReason: null, branch: "l" });
   });
 
-  // -z prints the lock reason raw; the parser quotes it the way the newline
-  // form does, so the value stays single-line and safe to log.
   it("C-quotes a raw lock reason that holds a newline, quote, backslash or control character", () => {
     const output = z([["worktree /repo/l", "branch refs/heads/l", 'locked multi\nline "quoted" \\ reason\x01']]);
 

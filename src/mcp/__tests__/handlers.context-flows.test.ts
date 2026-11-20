@@ -31,28 +31,6 @@ import type { SyncResult } from "../../types";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import type { z } from "zod";
 
-// Every other MCP handler suite hands the handlers a hand-written `ctx`: its
-// getDiscoveredContext is a constant, its capabilities are literals and its
-// invalidateDiscovered is a spy that does nothing. That makes the whole
-// ctx/service state machine — detection, the discovery cache, repository
-// selection, capability derivation — untestable from the handler side, so a
-// regression in it passes every one of those tests.
-//
-// These flows use the REAL RepositoryContext against a temporary bare/worktree
-// fixture and the REAL WorktreeSyncService. Only three seams are faked:
-// simple-git (so no git process runs), WorktreeSyncService.sync (so no network
-// or clone happens) and WorktreeSyncService.getGitService (so the per-worktree
-// probes answer deterministically). `isCloneMode` and `getWorktrees` are the
-// real methods — they are what the handlers now call through the real type
-// instead of a duck-typed cast.
-//
-// Every flow also `.parse()`s the tool's advertised output schema. The SDK
-// validates `structuredContent` against that schema on the wire, so a response
-// that drops a required field is an `isError` result for every real client
-// while still satisfying any assertion written against the fields a test
-// happens to name. Note the schemas are `z.looseObject`: a parse catches a
-// missing or mistyped required field, never an extra one.
-
 type GitCommandFn = (baseDir: string | undefined, command: string[]) => Promise<string>;
 
 const gitRaw = vi.hoisted(() => vi.fn<GitCommandFn>());
@@ -65,7 +43,6 @@ vi.mock("simple-git", () => ({
       raw: (command: string[]) => gitRaw(baseDir, command),
       remote: (command: string[]) => gitRemote(baseDir, command),
     };
-    // createGitClient returns the result of .env(), so it has to be the client.
     client.env = (): unknown => client;
     client.cwd = (): unknown => client;
     return client;
@@ -75,7 +52,6 @@ vi.mock("simple-git", () => ({
 const REPO_URL = "https://github.com/acme/app.git";
 const MISSING_DIR_ERROR = "Cannot use simple-git on a directory that does not exist";
 
-/** Porcelain listings keyed by the resolved bare-repo path git is asked about. */
 const listings = new Map<string, string>();
 
 function porcelain(entries: Array<{ path: string; branch: string }>): string {
@@ -129,11 +105,6 @@ async function invoke<T>(
   }
 }
 
-/**
- * Reads a tool result and, for a success result, checks it against the schema
- * the server advertises for that tool. `structuredContent` is compared with the
- * text block as well: the SDK sends both and a client may read either.
- */
 function readResult(result: CallToolResult, schema: z.ZodType | null): any {
   const [block] = result.content as Array<{ type: string; text: string }>;
   const body = JSON.parse(block.text);
@@ -220,8 +191,6 @@ beforeEach(() => {
       },
     } as SyncResult;
   });
-  // Only the flows below decide when a repository counts as cloned; nothing
-  // here may reach the real initialize(), which would clone over the network.
   vi.spyOn(WorktreeSyncService.prototype, "isInitialized").mockReturnValue(true);
   vi.spyOn(WorktreeSyncService.prototype, "getGitService").mockImplementation(() => fakeGit as unknown as GitService);
 });
@@ -245,8 +214,6 @@ async function writeConfig(dir: string, body: string): Promise<string> {
   return configPath;
 }
 
-// One repoUrl per entry: two entries sharing a URL are legal but make the
-// loader warn about reorder-proofing, which is noise this suite is not about.
 function repoBlock(name: string, bareRepoDir: string, worktreeDir: string, repoUrl = REPO_URL): string {
   return (
     `{ name: ${JSON.stringify(name)}, repoUrl: ${JSON.stringify(repoUrl)}, ` +
@@ -254,10 +221,6 @@ function repoBlock(name: string, bareRepoDir: string, worktreeDir: string, repoU
     `cronSchedule: "0 * * * *" }`
   );
 }
-
-// ---------------------------------------------------------------------------
-// 1. auto-detect -> mutating tool -> sync denied
-// ---------------------------------------------------------------------------
 
 describe("flow: auto-detect, then a mutating tool, then sync", () => {
   it("denies sync after update_worktree has cleared the discovery cache", async () => {
@@ -273,14 +236,11 @@ describe("flow: auto-detect, then a mutating tool, then sync", () => {
     expect(detected.bareRepoPath).toBe(fx.bareRepo);
     expect(detected.worktreeDir).toBe(fx.worktreesDir);
     expect(detected.allWorktrees.map((w: { path: string }) => w.path)).toEqual([fx.mainWorktree, fx.featureWorktree]);
-    // Auto-detect has no config, so the two config-driven capabilities are off
-    // while the two worktree-mutating ones are on.
     expect(detected.capabilities.updateWorktree).toEqual({ available: true });
     expect(detected.capabilities.sync.available).toBe(false);
     expect(detected.capabilities.initialize.available).toBe(false);
     expect(ctx.__discoveryCacheSizeForTest()).toBe(1);
 
-    // get_worktree_status rides on the snapshot the detection just stored.
     const status = readResult(
       await invoke(handleGetWorktreeStatus, ctx, { path: fx.mainWorktree }),
       getWorktreeStatusOutputSchema,
@@ -295,14 +255,9 @@ describe("flow: auto-detect, then a mutating tool, then sync", () => {
     expect(updated).toEqual({ success: true, worktreePath: fx.mainWorktree, updated: true });
     expect(fakeGit.fetchBranch).toHaveBeenCalledWith("main");
 
-    // The real invalidateDiscovered ran: both the per-path cache and the
-    // entry's snapshot are gone.
     expect(ctx.__discoveryCacheSizeForTest()).toBe(0);
     expect(ctx.getDiscoveredContext()).toBeNull();
 
-    // T1's bypass: with the discovery snapshot cleared, the capability gate
-    // used to fall through to "allowed" and let sync run against a repository
-    // that was never configured.
     const denied = readResult(await invoke(handleSync, ctx, {}), null);
     expect(denied.isError).toBe(true);
     expect(denied.code).toBe("CAPABILITY_UNAVAILABLE");
@@ -312,8 +267,6 @@ describe("flow: auto-detect, then a mutating tool, then sync", () => {
     );
     expect(syncSpy).not.toHaveBeenCalled();
 
-    // And the cleared cache is a real re-read, not a stale replay: the second
-    // detection reports the listing git gives now.
     listings.set(path.resolve(fx.bareRepo), porcelain([{ path: fx.mainWorktree, branch: "main" }]));
     const redetected = readResult(
       await invoke(handleDetectContext, ctx, { path: fx.mainWorktree }),
@@ -322,10 +275,6 @@ describe("flow: auto-detect, then a mutating tool, then sync", () => {
     expect(redetected.allWorktrees.map((w: { path: string }) => w.path)).toEqual([fx.mainWorktree]);
   });
 });
-
-// ---------------------------------------------------------------------------
-// 2. load_config (single and multi repo) -> selection
-// ---------------------------------------------------------------------------
 
 describe("flow: load_config then repository selection", () => {
   it("auto-selects the only repository of a single-repo config", async () => {
@@ -344,8 +293,6 @@ describe("flow: load_config then repository selection", () => {
       { name: "solo", repoUrl: REPO_URL, worktreeDir: fx.worktreesDir, source: "config" },
     ]);
 
-    // The selection is what the next tool acts on: sync with no repoName must
-    // reach `solo`, and a configured repo has the sync capability.
     const synced = readResult(await invoke(handleSync, ctx, {}), syncOutputSchema);
     expect(synced.outcome.repoName).toBe("solo");
     expect(synced.outcome.mode).toBe("worktree");
@@ -369,14 +316,11 @@ describe("flow: load_config then repository selection", () => {
     expect(loaded.currentRepository).toBeNull();
     expect(loaded.repositories.map((r: { name: string }) => r.name)).toEqual(["alpha", "beta"]);
 
-    // Nothing may be selected by default, so a repo-scoped tool has to refuse.
     const ambiguous = readResult(await invoke(handleSync, ctx, {}), null);
     expect(ambiguous.isError).toBe(true);
     expect(ambiguous.message).toContain("No repository specified and no current repository set.");
     expect(syncSpy).not.toHaveBeenCalled();
 
-    // A name the config does not list is refused by ctx.getService, before any
-    // service is built or any fallback to the current repository happens.
     const ghost = readResult(await invoke(handleListWorktrees, ctx, { repoName: "ghost" }), null);
     expect(ghost.isError).toBe(true);
     expect(ghost.message).toBe(
@@ -394,10 +338,6 @@ describe("flow: load_config then repository selection", () => {
     expect(synced.success).toBe(true);
   });
 });
-
-// ---------------------------------------------------------------------------
-// 3. sync outcome carrying failed counts
-// ---------------------------------------------------------------------------
 
 describe("flow: sync reporting a partly failed outcome", () => {
   it("reports success=false and lists every failed action", async () => {
@@ -449,10 +389,6 @@ describe("flow: sync reporting a partly failed outcome", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 4. list_worktrees against a bare repository that is not on disk
-// ---------------------------------------------------------------------------
-
 describe("flow: list_worktrees for a repository that was never cloned", () => {
   it("names the cause and the remedy per repository without failing the call", async () => {
     const fx = await fixture("t105-list-missing-");
@@ -483,10 +419,6 @@ describe("flow: list_worktrees for a repository that was never cloned", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 5. update_worktree after the worktree disappeared
-// ---------------------------------------------------------------------------
-
 describe("flow: update_worktree after a worktree disappears", () => {
   it("refuses the path the discovery snapshot still lists and fast-forwards nothing", async () => {
     const fx = await fixture("t105-vanished-");
@@ -498,9 +430,6 @@ describe("flow: update_worktree after a worktree disappears", () => {
     );
     expect(detected.allWorktrees.map((w: { path: string }) => w.path)).toEqual([fx.mainWorktree, fx.featureWorktree]);
 
-    // The worktree goes away out of band. Nothing tells the context, so its
-    // snapshot still lists feature-x — which is exactly the state a mutating
-    // tool must not trust.
     await fs.rm(fx.featureWorktree, { recursive: true, force: true });
     listings.set(path.resolve(fx.bareRepo), porcelain([{ path: fx.mainWorktree, branch: "main" }]));
     expect(ctx.getDiscoveredContext()?.allWorktrees.map((w) => w.path)).toEqual([fx.mainWorktree, fx.featureWorktree]);
@@ -512,8 +441,6 @@ describe("flow: update_worktree after a worktree disappears", () => {
     expect(fakeGit.fetchBranch).not.toHaveBeenCalled();
     expect(fakeGit.updateWorktree).not.toHaveBeenCalled();
 
-    // The worktree that is still registered still updates, so the refusal above
-    // is about that path and not about the repository.
     const updated = readResult(
       await invoke(handleUpdateWorktree, ctx, { path: fx.mainWorktree }),
       updateWorktreeOutputSchema,

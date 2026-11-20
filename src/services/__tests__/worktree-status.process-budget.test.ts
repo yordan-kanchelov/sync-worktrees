@@ -14,15 +14,10 @@ import type { Mock } from "vitest";
 vi.mock("fs/promises");
 vi.mock("simple-git");
 
-// One snapshot fans out to four git commands at once and then to more, and
-// the prune phase asks for `maxStatusChecks` snapshots in parallel — so the
-// setting only bounds git processes if every command shares one budget. These
-// tests count commands in flight rather than worktrees.
 describe("WorktreeStatusService git process budget", () => {
   let inFlight: number;
   let peakInFlight: number;
 
-  /** Resolves on a later turn of the event loop, the way a real spawn does. */
   const tracked = async <T>(value: T): Promise<T> => {
     inFlight++;
     peakInFlight = Math.max(peakInFlight, inFlight);
@@ -36,7 +31,6 @@ describe("WorktreeStatusService git process budget", () => {
     inFlight = 0;
     peakInFlight = 0;
 
-    // Plus the `## main...origin/main` header simple-git parses off `status -b`.
     const cleanStatus = {
       modified: [],
       deleted: [],
@@ -52,7 +46,6 @@ describe("WorktreeStatusService git process budget", () => {
       behind: 0,
     };
 
-    // A fresh client per worktree, as createGitClient hands back.
     (simpleGit as unknown as Mock).mockImplementation(
       () =>
         ({
@@ -69,8 +62,6 @@ describe("WorktreeStatusService git process budget", () => {
         }) as unknown as SimpleGit,
     );
 
-    // The worktree directory exists; the merge/rebase/bisect marker files under
-    // its .git directory do not.
     (fs.access as Mock).mockImplementation((probed: string) =>
       /^\/test\/worktree-\d+$/.test(probed)
         ? Promise.resolve(undefined)
@@ -115,7 +106,6 @@ describe("WorktreeStatusService git process budget", () => {
 
     await checkAll(service, 1);
 
-    // status, the ref scan, stash list and submodule status all at once.
     expect(peakInFlight).toBe(4);
   });
 
@@ -128,8 +118,6 @@ describe("WorktreeStatusService git process budget", () => {
     expect(result.reasons).toEqual([]);
   });
 
-  // The knob users actually set. Without this wiring the budget would silently
-  // stay at its default however low `maxStatusChecks` is set.
   it("takes its size from the repository's maxStatusChecks", async () => {
     const gitService = new GitService({
       repoUrl: "https://github.com/test/repo.git",
@@ -144,8 +132,6 @@ describe("WorktreeStatusService git process budget", () => {
     expect(peakInFlight).toBeLessThanOrEqual(2);
   });
 
-  // The whole chain the example config documents: a top-level `parallelism`
-  // block, through config resolution, into the budget that bounds git.
   it("honours a top-level parallelism block, not just a per-repository one", async () => {
     const resolved = new ConfigLoaderService().resolveRepositoryConfig(
       {

@@ -11,12 +11,6 @@ import { createMockLogger } from "../test-utils";
 
 import type { RepositoryConfig } from "../../types";
 
-// Real git, real trash, real `gc`. The force-clean modal takes its
-// preview outside the repo mutex and then waits for a keypress; a cron tick in
-// that window trashes more worktrees. Before the selection snapshot, confirming
-// a preview that said "1 trash" purged everything present at run time —
-// including a fully-pushed-then-deleted branch whose pin ref was the last thing
-// keeping its commits out of the garbage collector.
 describe("Force clean purges only the previewed set (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -47,13 +41,9 @@ describe("Force clean purges only the previewed set (E2E)", () => {
     await seed.addRemote("origin", remote);
     await seed.push("origin", "main");
 
-    // shown-first carries no commits of its own: it is only there to be trashed
-    // before the preview, so the preview has something to count.
     await seed.checkoutLocalBranch("shown-first");
     await seed.push("origin", "shown-first");
 
-    // unseen-later carries a commit that exists nowhere else once its remote
-    // branch is deleted. Its trash pin is the only thing that survives gc.
     await seed.checkout("main");
     await seed.checkoutLocalBranch("unseen-later");
     await fs.writeFile(path.join(seedDir, "only-copy.txt"), "work that lives nowhere else");
@@ -106,15 +96,12 @@ describe("Force clean purges only the previewed set (E2E)", () => {
       ]),
     );
 
-    // The trash the user is about to be shown.
     await simpleGit(remote).raw(["update-ref", "-d", "refs/heads/shown-first"]);
     await service.sync();
     const preview = await service.getForceCleanPreview();
     expect(preview.trashEntries).toBe(1);
     const shownId = preview.trashEntryIds[0];
 
-    // 10:00:00 — the cron tick fires while the modal waits for a keypress and
-    // trashes a fully-pushed branch whose remote side has just been deleted.
     await simpleGit(remote).raw(["update-ref", "-d", "refs/heads/unseen-later"]);
     await service.sync();
     const { entries } = await service.listTrashEntries();
@@ -122,7 +109,6 @@ describe("Force clean purges only the previewed set (E2E)", () => {
     expect(unseen?.manifest.keepPinOnReap).toBe(true);
     expect(await commitExists(onlyCopyOid)).toBe(true);
 
-    // 10:00:40 — the user presses y on the preview above.
     const result = await service.forceClean(preview);
 
     expect(result.trashDeleted).toBe(1);
@@ -134,10 +120,6 @@ describe("Force clean purges only the previewed set (E2E)", () => {
     expect(await commitExists(onlyCopyOid)).toBe(true);
   });
 
-  // Every worktree writes into the bare repository's object store, so the gc is
-  // the step that can reach a developer's in-flight work. An `index.lock` is
-  // what a running `git add`/`git commit` — or an IDE staging in the background
-  // — leaves on disk while it does.
   it("skips the gc while a worktree has a git command in flight, and still purges", async () => {
     const service = makeService();
     await service.initialize();
@@ -158,11 +140,9 @@ describe("Force clean purges only the previewed set (E2E)", () => {
     expect(result.gcSkipped).toBe(true);
     expect(result.gcSucceeded).toBe(false);
     expect(result.errors.join(" ")).toContain("index.lock");
-    // The purge is not the risky half, so it is not the half that waits.
     expect(result.trashDeleted).toBe(1);
     expect((await service.listTrashEntries()).entries).toHaveLength(0);
 
-    // Once the command finishes, the next force clean runs the gc as usual.
     await fs.rm(lock);
     const after = await service.forceClean(await service.getForceCleanPreview());
     expect(after.gcSkipped).toBe(false);

@@ -1,15 +1,4 @@
 #!/usr/bin/env node
-// Post-build smoke test for the published surface of the package.
-//
-// The vitest suite imports the TypeScript sources, so nothing else exercises
-// what `npm install` actually delivers: the bin shims, the esbuild bundles in
-// dist/ (external packages, the version define, the shared chunk), the public
-// type declarations and the tarball contents chosen by package.json `files`. A dependency that esbuild
-// bundles "successfully" but that throws at import time would otherwise reach
-// npm with a green CI. Run it after `pnpm build`: `pnpm smoke`.
-//
-// Every check runs in an empty temporary directory with HOME and the config
-// lookup pointed away from the real environment.
 
 import { spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -30,18 +19,11 @@ const MCP_BUNDLE = path.join(repoRoot, "dist", "mcp-server.js");
 const TSC = path.join(repoRoot, "node_modules", "typescript", "bin", "tsc");
 const SERVER_NAME = "sync-worktrees";
 const SHEBANG = "#!/usr/bin/env node";
-// Protocol revision the server serves on the legacy `initialize` path. Both
-// `dist/mcp-server.js` (legacy: "serve") and src/mcp/__tests__/server.test.ts
-// pin this one; the 2026-07-28 revision uses `server/discover` instead.
 const MCP_PROTOCOL_VERSION = "2025-11-25";
-// Every file path package.json `exports` maps to, "./x" spelled as `npm pack`
-// lists it ("x").
 function exportTargets(value) {
   if (typeof value === "string") return [value.replace(/^\.\//, "")];
   return Object.values(value ?? {}).flatMap(exportTargets);
 }
-// Paths that must be in the tarball (package.json entry points) and path
-// prefixes that must not be (sources and tooling that `files` should exclude).
 const REQUIRED_TARBALL_PATHS = [
   ...new Set([
     packageJson.main,
@@ -51,47 +33,7 @@ const REQUIRED_TARBALL_PATHS = [
   ]),
 ];
 const FORBIDDEN_TARBALL_PREFIXES = ["src/", "scripts/", ".pnpmfile.cjs"];
-// Source maps are deliberately not published: esbuild.config.js builds with
-// `sourcemap: false` and tsconfig.json has `declarationMap: false`. A map in
-// the tarball means one of those was switched back on, or dist/ still holds
-// output from an earlier build (tsc does not delete files it no longer emits).
 const FORBIDDEN_TARBALL_SUFFIXES = [".map"];
-// Ceilings so that tarball growth is noticed rather than shipped. `npm pack`
-// reports 14 files and ~0.97 MB unpacked: the esbuild output (~0.91 MB: the
-// shared chunk plus the two entries), the public .d.ts files, the three bin/
-// files, package.json, LICENSE and the README. The total can grow by 100 kB
-// over a few dozen commits; the byte ceiling is sized to absorb that while
-// still tripping on the step changes it is for: a dependency that
-// stops being `external` in esbuild, `splitting` being switched off (the
-// shared src/utils and src/services code billed once per entry again), source
-// maps coming back, or tsc's declarations for every module reappearing, each
-// of which adds 0.1 MB or more at once. Raise it when it is ordinary growth
-// that reached it, and say so.
-//
-// What actually costs bytes: only dist/*.js, the .d.ts files and README.md.
-// Tests, changesets and CHANGELOG.md are outside `files` and cost nothing.
-// Code both entries import ships once, in dist/chunk-*.js; src/mcp/* ships
-// only in mcp-server.js and the CLI's own modules only in index.js. Only the
-// declarations reachable from dist/public-types.d.ts ship
-// (scripts/finalize-declarations.mjs deletes the rest).
-//
-// Comments: `minify` is off, and esbuild keeps a comment that leads a MEMBER
-// of a braced or bracketed member list — an object-literal property, an array
-// element, a class field — while dropping one that leads a STATEMENT, at
-// module scope or inside a function or method body; a surviving line costs
-// ~75 bytes. A `/** */` block is separate: tsc copies it verbatim into a .d.ts
-// when it leads a declaration the emitter reaches, which now matters only for
-// the modules behind the public types. So rationale is free in a function
-// body, at module scope, or in the changeset.
-//
-// A bundle delta runs about 45 bytes per line of shipped code, so a ~35-line
-// change costs a bit under 2 kB.
-//
-// History: the ceiling was 1,640,000 bytes and 120 files while each entry
-// bundled its own copy of the shared code and every module's .d.ts shipped
-// (1,509,649 bytes across 91 files when the shared chunk landed), then
-// 1,000,000. Raised to 1,150,000 at 973,422 bytes (esbuild output 907,495)
-// after ordinary growth left only ~27 kB of headroom.
 const MAX_TARBALL_FILES = 40;
 const MAX_TARBALL_UNPACKED_BYTES = 1_150_000;
 const STEP_TIMEOUT_MS = 10_000;
@@ -117,8 +59,6 @@ function indent(text) {
     .join("\n");
 }
 
-// `details` is read when the timeout fires, so a hung process still reports
-// whatever it logged up to that point.
 function withTimeout(promise, ms, what, details = () => ({})) {
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -140,8 +80,6 @@ function collect(stream) {
   return () => buffer;
 }
 
-// Runs a command to completion, killing it on timeout. Resolves on `close` so
-// stdout and stderr are fully drained before the result is inspected.
 function run(command, args, { cwd, env }) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -169,8 +107,6 @@ function describeExit({ code, signal, timedOut }) {
 }
 
 async function checkCliVersion(sandbox) {
-  // Goes through the bin shim, so the whole CLI bundle is imported with its
-  // external dependencies resolved from node_modules, before yargs exits.
   const result = await run(process.execPath, [CLI_BIN, "--version"], sandbox);
   if (result.code !== 0) {
     fail(`bin/sync-worktrees.js --version failed (${describeExit(result)})`, {
@@ -198,25 +134,15 @@ async function checkBinShebangs() {
 async function checkMcpHandshake(sandbox) {
   await checkBinShebangs();
 
-  // Through the bin shim, which is what an MCP client's `sync-worktrees-mcp`
-  // command runs; the shim imports dist/mcp-server.js and its shared chunk.
   const child = spawn(process.execPath, [MCP_BIN], { ...sandbox, stdio: ["pipe", "pipe", "pipe"] });
   const stderr = collect(child.stderr);
-  // A write after the server died raises EPIPE on stdin; the exit itself is
-  // what gets reported, so the stream error is not worth a crash.
   child.stdin.on("error", () => {});
-  // `close` fires after `exit` once stdout and stderr are drained, so the
-  // captured stderr is complete by the time an exit is reported.
   const exited = new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("close", (code, signal) => resolve({ code, signal }));
   });
-  // Keep an early exit from surfacing as an unhandled rejection: it is
-  // reported by whichever await is in flight.
   exited.catch(() => {});
 
-  // Newline-delimited JSON-RPC over stdio: every stdout line must be a
-  // JSON-RPC message, since anything else corrupts the transport for clients.
   const pending = new Map();
   let malformed = null;
   const lines = readline.createInterface({ input: child.stdout });
@@ -274,7 +200,6 @@ async function checkMcpHandshake(sandbox) {
         stderr: stderr(),
       });
     }
-    // serverInfo.version comes from the __SYNC_WORKTREES_VERSION__ define.
     if (serverInfo.version !== version) {
       fail(
         `initialize reported server version ${JSON.stringify(serverInfo.version)}, expected ${JSON.stringify(version)}`,
@@ -287,13 +212,6 @@ async function checkMcpHandshake(sandbox) {
     }
     send({ jsonrpc: "2.0", method: "notifications/initialized" });
 
-    // Tool inputs are strict objects, so an argument key no tool declares is
-    // refused by name. The vitest suite asserts this against a bundle it builds
-    // from src/ at test time, which leaves the shipped artifact unproven: only
-    // this check runs the tools/call path through the shipped bundle. Were the
-    // schemas loose again, `repo_name` would be stripped and the call would
-    // reach the handler, failing on the empty sandbox instead — an error either
-    // way, so the key name in the text is what separates the two.
     const toolCall = await request({
       jsonrpc: "2.0",
       id: 2,
@@ -308,7 +226,6 @@ async function checkMcpHandshake(sandbox) {
       });
     }
 
-    // A stdio server must shut down when the client closes its end.
     child.stdin.end();
     const exit = await withTimeout(
       exited,
@@ -331,7 +248,6 @@ async function checkMcpHandshake(sandbox) {
 }
 
 async function checkTarballContents() {
-  // `npm pack --dry-run` applies package.json `files` exactly as publish does.
   const result = await run("npm", ["pack", "--dry-run", "--json"], { cwd: repoRoot, env: process.env });
   if (result.code !== 0) {
     fail(`npm pack --dry-run failed (${describeExit(result)})`, { stdout: result.stdout, stderr: result.stderr });
@@ -342,11 +258,6 @@ async function checkTarballContents() {
   } catch (error) {
     fail(`could not parse npm pack --dry-run --json output: ${error.message}`, { stdout: result.stdout });
   }
-  // `npm pack --json` changed shape in npm 12: up to npm 11 it printed an array
-  // with one entry per packed package, and it now prints an object keyed by
-  // package name. The release job pins npm@11 before publishing (OIDC trusted
-  // publishing needs npm >= 11.5.1) while `pnpm smoke` locally and in PR CI
-  // runs whatever npm ships with Node, so both shapes can reach this check.
   const [packed] = Array.isArray(parsed) ? parsed : Object.values(parsed ?? {});
   if (packed === null || typeof packed !== "object") {
     fail("npm pack --dry-run --json output describes no packed package", { stdout: result.stdout });
@@ -393,9 +304,6 @@ async function checkTarballContents() {
   return `${shipped.length} files, ${unpackedSize} bytes unpacked`;
 }
 
-// Chunk names are content hashes, so a dist/ that was not cleaned before a
-// rebuild keeps the previous build's chunks and `npm pack` ships them. Every
-// dist/*.js must be an entry or a chunk an entry imports.
 async function checkNoStaleChunks(shipped) {
   const entries = ["dist/index.js", "dist/mcp-server.js"];
   const imported = new Set(entries);
@@ -411,11 +319,6 @@ async function checkNoStaleChunks(shipped) {
   }
 }
 
-// The documented use of the package's types: a config file that says
-// `@satisfies {import("sync-worktrees").SyncWorktreesConfig}`. Checked the
-// way a consumer's TypeScript sees it — through package.json `exports`, under
-// NodeNext resolution, without skipLibCheck — and required to catch a
-// misspelled key, so types that silently degrade to `any` fail too.
 async function checkPublicTypes(sandbox) {
   const project = path.join(sandbox.cwd, "types-consumer");
   await mkdir(path.join(project, "node_modules"), { recursive: true });
@@ -447,9 +350,6 @@ export default {
 
   const result = await run(process.execPath, [TSC, "-p", project, "--pretty", "false"], { ...sandbox, cwd: project });
   const errors = result.stdout.split("\n").filter((line) => line.includes("error TS"));
-  // tsc prints paths relative to the real cwd; when the temp dir sits behind a
-  // symlink (macOS /var/folders -> /private/var/folders) that path climbs out
-  // and back in, so match the file name rather than a bare prefix.
   const unexpected = errors.filter((line) => !/(^|[\\/])bad\.config\.js\(/.test(line));
   if (unexpected.length > 0 || result.timedOut) {
     fail(`the published types do not type-check a documented config (${describeExit(result)})`, {
@@ -504,7 +404,6 @@ async function main() {
     for (const [name, check] of checks) {
       const startedAt = performance.now();
       try {
-        // A check may return a short note (measurements worth seeing in CI logs).
         const note = await check(sandbox);
         const suffix = typeof note === "string" ? ` [${note}]` : "";
         console.log(`ok   ${name}${suffix} (${Math.round(performance.now() - startedAt)} ms)`);

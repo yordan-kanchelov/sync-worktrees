@@ -70,7 +70,6 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
     service = new WorktreeSyncService(makeConfig());
   });
 
-  // Prototype spies below would otherwise outlive their test.
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -85,7 +84,6 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
     });
     await started.promise;
 
-    // A second fail-fast caller (sync/MCP semantics) must not start.
     const second = await service.runExclusiveRepoOperation(async () => "blocked");
     expect(second).toEqual({ started: false, reason: "in_progress" });
 
@@ -93,11 +91,6 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
     await first;
   });
 
-  // The daemon starts a sync and arms the cron jobs in the same breath, so a
-  // tick can land on a repository whose very first initialize() is still
-  // running. isInitialized() is an in-process flag (`this.git !== null`), so
-  // both callers genuinely observe `false`; what stops the second one is the
-  // fail-fast check above, not the flag.
   it("runs the real init once when two callers race initialize() on a fresh repo", async () => {
     mocks.gitIsInitialized.mockReturnValue(false);
     const entered = deferred<void>();
@@ -111,10 +104,8 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
     expect(service.isInitialized()).toBe(false);
     const first = service.initialize();
     await entered.promise;
-    // Still false for the second caller — this is the race, not a hypothetical.
     expect(service.isInitialized()).toBe(false);
 
-    // Resolves rather than throwing or deadlocking: the loser logs and returns.
     await service.initialize();
     expect(mocks.gitInitialize).toHaveBeenCalledTimes(1);
     const logger = service.config.logger as unknown as { warn: Mock };
@@ -143,7 +134,6 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
       return "done";
     });
 
-    // The queued op must wait — the first op still holds the single mutex slot.
     await Promise.resolve();
     expect(order).toEqual(["first-start"]);
 
@@ -153,7 +143,6 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
 
     expect(order).toEqual(["first-start", "first-end", "second-run"]);
     expect(result).toEqual({ started: true, value: "done" });
-    // Each op acquires and releases the cross-process file lock exactly once.
     expect(mocks.acquire).toHaveBeenCalledTimes(2);
     expect(mocks.release).toHaveBeenCalledTimes(2);
   });
@@ -170,7 +159,6 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
     await started.promise;
     expect(service.isSyncInProgress()).toBe(true);
 
-    // A queued op still counts as "in progress" so reload waits for it too.
     const second = service.runQueuedRepoOperation(async () => undefined);
     expect(service.isSyncInProgress()).toBe(true);
 
@@ -186,9 +174,6 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
   });
 
   it("returns lock_unavailable with its cause, logged as an error, when the lock cannot be prepared", async () => {
-    // An unwritable state dir is not contention: no other process holds the
-    // lock, the operation simply cannot run. The result must carry the path
-    // and errno and the log must not blame another process.
     mocks.acquire.mockResolvedValueOnce({
       acquired: false,
       reason: "lock_unavailable",
@@ -211,13 +196,8 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
     expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("Another process holds"));
   });
 
-  // The in-process mutex has always queued for these two, but the cross-process
-  // lock was taken with `retries: 0`, so a restore attempted while a daemon was
-  // mid-sync failed on the spot for a reason that clears itself in a minute.
   describe("trash operations and the cross-process lock", () => {
     it("takes the lock fail-fast by default and with a bounded budget under --wait", async () => {
-      // An id no listing can produce: the point is which options reached
-      // acquire(), and the operation body may reject for any reason after that.
       await expect(service.purgeTrashEntry("missing-entry")).rejects.toThrow("no trash entry with id");
       expect(mocks.acquire).toHaveBeenLastCalledWith({ waitMs: undefined });
 
@@ -240,8 +220,6 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
       );
     });
 
-    // A typed error, so the CLI can print it as one line with exit code 1
-    // instead of letting it reach main().catch as an unhandled crash.
     it("reports a keep-ref drop the lock refused as a trash error", async () => {
       mocks.acquire.mockResolvedValueOnce({ acquired: false, reason: "locked" });
       await expect(service.deleteKeepRef("preserved-entry")).rejects.toBeInstanceOf(TrashError);
@@ -250,10 +228,6 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
       await expect(service.deleteKeepRefs(["preserved-entry"])).rejects.toBeInstanceOf(TrashError);
     });
 
-    // Which reap path a single-entry purge takes is the whole safety question:
-    // purgeAllUnlocked deliberately mints no keep refs, because force clean's
-    // confirmation covered the recovery refs too. A --purge confirmation covers
-    // one entry, so it must go through the path that still mints them.
     it("purges one named entry through the reap path that mints keep refs", async () => {
       const entry = { manifest: { id: "entry-1" } } as unknown as TrashEntry;
       vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({ entries: [entry], invalid: [] });
@@ -276,10 +250,6 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
       expect(purgeAll).not.toHaveBeenCalled();
     });
 
-    // A reap that deleted nothing is a failed purge, and the CLI prints
-    // "✅ Purged <id>" off this boolean. Without a case where the count is 0,
-    // widening the comparison to `>= 0` reports success while the entry is
-    // still sitting on disk.
     it("reports a purge that deleted nothing as a failure, not a success", async () => {
       const entry = { manifest: { id: "entry-2" } } as unknown as TrashEntry;
       vi.spyOn(TrashService.prototype, "listEntries").mockResolvedValue({ entries: [entry], invalid: [] });
@@ -307,7 +277,6 @@ describe("WorktreeSyncService repo mutex / queued operations", () => {
     ).rejects.toThrow("boom");
 
     expect(mocks.release).toHaveBeenCalledTimes(1);
-    // Mutex slot freed after the throw — a later op still runs.
     expect(service.isSyncInProgress()).toBe(false);
     const next = await service.runQueuedRepoOperation(async () => "ok");
     expect(next).toEqual({ started: true, value: "ok" });

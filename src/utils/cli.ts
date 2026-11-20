@@ -30,9 +30,7 @@ export type CliOptions =
       debug: boolean;
       filter?: string;
       quiet: boolean;
-      /** Compute and print what a sync would do, change nothing, exit. Implies a one-shot run. */
       dryRun: boolean;
-      /** With dryRun: print the plans as JSON on stdout. */
       json: boolean;
     }
   | { command: typeof CLI_COMMANDS.INIT; config?: string; force: boolean }
@@ -44,8 +42,6 @@ export type { TrashCliOptions };
 
 const DOCS_URL = "https://github.com/yordan-kanchelov/sync-worktrees/tree/main/docs";
 
-/** The words a user can type as the first argument, for "did you mean" hints. */
-/** The commands other than the default one; `sync` is the default command's explicit name. */
 const SUBCOMMAND_NAMES = [
   CLI_COMMANDS.INIT,
   CLI_COMMANDS.LIST,
@@ -55,7 +51,6 @@ const SUBCOMMAND_NAMES = [
 ] as const;
 const COMMAND_NAMES = ["sync", ...SUBCOMMAND_NAMES] as const;
 
-/** Every long flag any command accepts, in its canonical kebab-case spelling. */
 const FLAG_NAMES = [
   "config",
   "run-once",
@@ -69,7 +64,6 @@ const FLAG_NAMES = [
   "version",
 ] as const;
 
-/** Root-command flags, which yargs' completion leaves out because `$0` never runs its builder there. */
 const ROOT_FLAG_NAMES = ["config", "run-once", "debug", "filter", "quiet", "dry-run", "json"] as const;
 
 function toKebabCase(name: string): string {
@@ -81,18 +75,12 @@ function wasTyped(name: string, argv: readonly string[]): boolean {
   return argv.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
 }
 
-/** For a trash flag given to a subcommand that does not take it: where it does belong. */
 const TRASH_FLAG_HOMES: Readonly<Record<string, string>> = {
   json: "'trash list'",
   wait: "'trash restore' and 'trash purge'",
   all: "'trash purge'",
 };
 
-/**
- * Whether argv runs `trash`: a "trash" word that is not the value of the flag
- * before it (`list -f trash` filters on a repository called trash). A flag
- * spelled `--flag=value` carries its own value, so the word after it is free.
- */
 function namesTrashCommand(argv: readonly string[]): boolean {
   return argv.some((arg, i) => {
     if (arg !== CLI_COMMANDS.TRASH) return false;
@@ -101,18 +89,6 @@ function namesTrashCommand(argv: readonly string[]): boolean {
   });
 }
 
-/**
- * What to print for a failed parse: yargs' message, then "did you mean" hints
- * for an "Unknown argument(s): a, b" failure.
- *
- * Camel-case expansion makes yargs report one unknown flag under both
- * spellings (`list --runOnce` fails with "runOnce, run-once"), so the names
- * are collapsed to the one that was typed. The root command is a default
- * command, so yargs' own recommendCommands() never fires (it is skipped
- * whenever a default command exists) and a mistyped subcommand arrives here as
- * an unknown positional instead. A name that is already a real command or flag
- * gets no hint: it was given in the wrong place, not misspelled.
- */
 export function describeParseFailure(message: string, argv: readonly string[]): string[] {
   const match = /^Unknown arguments?: (.+)$/.exec(message.trim());
   if (!match) return [message];
@@ -129,21 +105,18 @@ export function describeParseFailure(message: string, argv: readonly string[]): 
   const underTrash = namesTrashCommand(argv);
   for (const { name, positional } of unknown.values()) {
     if (positional && underTrash && name !== CLI_COMMANDS.TRASH) {
-      // `trash restor <id>`: the typo is a trash subcommand, not a top-level one.
       if ((TRASH_SUBCOMMAND_NAMES as readonly string[]).includes(name)) continue;
       const subcommand = suggestConfigKey(name, TRASH_SUBCOMMAND_NAMES);
       if (subcommand) lines.push(`💡 Did you mean 'sync-worktrees trash ${subcommand}'?`);
       continue;
     }
     if (positional) {
-      // A real command in the wrong place (`trash list`) is not a typo.
       if ((COMMAND_NAMES as readonly string[]).includes(name)) continue;
       const command = suggestConfigKey(name, COMMAND_NAMES);
       if (command) lines.push(`💡 Did you mean 'sync-worktrees ${command}'?`);
       continue;
     }
     const kebab = toKebabCase(name);
-    // `trash restore <id> --purge <id>`: the old action flags only work without a subcommand.
     const replacement = underTrash ? legacyFlagReplacement(kebab) : undefined;
     if (replacement) {
       lines.push(
@@ -151,7 +124,6 @@ export function describeParseFailure(message: string, argv: readonly string[]): 
       );
       continue;
     }
-    // `trash restore <id> --json`: a real trash flag where that form does not take it.
     const home = underTrash ? TRASH_FLAG_HOMES[kebab] : undefined;
     if (home) {
       lines.push(`💡 --${kebab} belongs to ${home}.`);
@@ -164,12 +136,6 @@ export function describeParseFailure(message: string, argv: readonly string[]): 
   return lines;
 }
 
-/**
- * Shell completion: yargs' own suggestions, plus the root command's flags at
- * the top level (a default command's builder only runs when it is executed,
- * so yargs never sees them there), minus the `--c`/`--f` spellings it derives
- * from one-letter aliases, which no parser accepts.
- */
 function completeArguments(
   current: string,
   argv: { _: Array<string | number> },
@@ -187,11 +153,6 @@ function completeArguments(
   });
 }
 
-/**
- * `--config` and `--filter` need a non-blank value: an empty `--filter "$UNSET"`
- * would select every repository. A repeated `--filter` is a union; a repeated
- * `--config` has no single file to load.
- */
 function checkConfigAndFilter(args: { config?: unknown; filter?: unknown }): string | true {
   if (Array.isArray(args.config)) return "--config was given more than once";
   if (typeof args.config === "string" && args.config.trim() === "") return "--config needs a non-empty path";
@@ -211,9 +172,6 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
 
   yargs(argv)
     .scriptName("sync-worktrees")
-    // Kebab-case is the canonical spelling shown in --help; camel-case
-    // expansion keeps the camelCase spellings (`--runOnce`, `--dropKeepRef`)
-    // working as aliases. strict() still rejects anything neither spelling names.
     .parserConfiguration({ "camel-case-expansion": true })
     .strict()
     .command(
@@ -393,9 +351,6 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
     .epilog(`Documentation: ${DOCS_URL}`)
     .demandCommand(0, 0)
     .fail((msg, err) => {
-      // A .check() that returns a message hands it over as `err` too; that is
-      // a usage error to report, not an exception; so is a YError ("Not enough
-      // arguments following: filter").
       if (err && typeof (err as unknown) !== "string" && err.name !== "YError") throw err;
       const subcommandFlag = argv.find((arg) => arg === "--init" || arg === "--list");
       if (subcommandFlag) {
@@ -410,8 +365,6 @@ export function parseArguments(argv: string[] = hideBin(process.argv)): CliOptio
     })
     .help()
     .alias("help", "h")
-    // yargs would otherwise look for package.json next to its own install
-    // directory, which from a bundled or pnpm-installed copy is not ours.
     .version(__SYNC_WORKTREES_VERSION__)
     .alias("version", "V")
     .parseSync();

@@ -7,10 +7,8 @@ import { DASHBOARD_CHROME_ROWS, dashboardColumns, formatAge, formatUntil } from 
 import type { DashboardColumn } from "./layout";
 import type { RepositoryDashboardRow, RepositoryRunState } from "../utils/app-events";
 
-/** How often the age and next-run columns are recomputed. */
 export const DASHBOARD_REFRESH_MS = 15_000;
 
-/** Columns the table spends outside its cells: the border and `paddingX={1}`. */
 const FRAME_COLUMNS = 4;
 
 type Color = "green" | "yellow" | "red";
@@ -36,9 +34,7 @@ const RIGHT_ALIGNED: ReadonlySet<DashboardColumn> = new Set(["worktrees"]);
 
 export interface RepositoryDashboardProps {
   rows: readonly RepositoryDashboardRow[];
-  /** Rows the table may take, border and headings included. */
   height: number;
-  /** For tests: how often the relative times are recomputed. */
   refreshMs?: number;
 }
 
@@ -81,11 +77,6 @@ function cell(
   }
 }
 
-/**
- * The home screen's repository table: one row per repository with what it is
- * doing, how its last sync went and how long ago, its worktrees, and when it
- * runs next. It draws what the service sent and a clock; it never asks git.
- */
 const RepositoryDashboard: React.FC<RepositoryDashboardProps> = ({
   rows,
   height,
@@ -99,7 +90,6 @@ const RepositoryDashboard: React.FC<RepositoryDashboardProps> = ({
     return () => clearInterval(timer);
   }, [refreshMs]);
 
-  // Cron parsing once per schedule and minute, not per row and render.
   const minuteStart = Math.floor(now / 60_000) * 60_000;
   const nextRuns = useMemo(() => {
     const runs = new Map<string, Date | null>();
@@ -111,15 +101,12 @@ const RepositoryDashboard: React.FC<RepositoryDashboardProps> = ({
     return runs;
   }, [rows, minuteStart]);
 
-  // At least the heading's width, while the result column can spare it.
   const longestName = useMemo(
     () => rows.reduce((longest, row) => Math.max(longest, [...row.name].length), HEADINGS.name.length),
     [rows],
   );
   const { columns, widths } = dashboardColumns(terminalColumns - FRAME_COLUMNS, longestName);
 
-  // Every row that fits; when they do not all fit, the last line counts the
-  // rest -- and names what among them needs a look.
   const room = Math.max(1, height - DASHBOARD_CHROME_ROWS);
   const overflow = rows.length > room;
   const shown = overflow ? rows.slice(0, room - 1) : rows;
@@ -175,5 +162,4 @@ const RepositoryDashboard: React.FC<RepositoryDashboardProps> = ({
   );
 };
 
-// Memoised: the App re-renders on every log flush, and none of that is here.
 export default React.memo(RepositoryDashboard);

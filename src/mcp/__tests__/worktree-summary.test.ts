@@ -41,8 +41,6 @@ describe("deriveLabel", () => {
     expect(deriveLabel(makeStatus(), false)).toBe("clean");
   });
 
-  // Squash-merge case: commits absent from every remote, but proven fully
-  // pushed before the remote branch was deleted — unpushed must not block.
   it("returns 'stale', not 'dirty', when unpushed commits are fully-pushed-before-upstream-deletion", () => {
     expect(
       deriveLabel(

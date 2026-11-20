@@ -15,16 +15,6 @@ import type { RepositoryContext } from "../context";
 import type { RepositoryConfig } from "../../types";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
-// Real git, no mocks. This is the whole failure the guard exists for, end to
-// end: create_worktree never consulted the repository's branch filters, and the
-// sync planner prunes every registered worktree whose branch is missing from
-// the FILTERED remote branch list. A worktree created seconds ago is clean, has
-// no unpushed commits and no gone upstream, so canRemove is true and the next
-// tick moves it to .trash and deletes its local branch ref — after which
-// get_worktree_status and update_worktree both fail on the path the agent was
-// just handed. The sync half is asserted here against real git, so the refusal
-// the handler now returns is measured against what actually happens rather than
-// against a description of it.
 describe("create_worktree against a filtered repository (real git)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -50,8 +40,6 @@ describe("create_worktree against a filtered repository (real git)", () => {
     };
   }
 
-  // The handler only needs a repository selection, a capability verdict and the
-  // service; everything else it touches is git.
   function makeCtx(target: WorktreeSyncService): RepositoryContext {
     return {
       autoSelectCurrentRepoIfSingleConfig: () => "app",
@@ -157,8 +145,6 @@ describe("create_worktree against a filtered repository (real git)", () => {
 
     await syncOnce();
 
-    // Exactly what the warning promised, and what an unguarded create used to
-    // do in silence: the checkout is gone and so is the branch.
     expect(await exists(target)).toBe(false);
     expect(await trashedDirectoryCount()).toBe(1);
     expect(await localBranches()).not.toContain("feature/x");
@@ -180,9 +166,6 @@ describe("create_worktree against a filtered repository (real git)", () => {
     expect(await localBranches()).not.toContain("exp");
   });
 
-  // Filters are configured and the branch passes them, so a guard that is
-  // over-broad *within* the filter path — refusing a branch branchInclude
-  // actually keeps — fails here, not only one that refuses everything.
   it("creates and pushes an included branch that the next sync then keeps", async () => {
     await start(["main", "feature/*"]);
     const target = pathResolution.getBranchWorktreePath(worktreeDir, "feature/kept");

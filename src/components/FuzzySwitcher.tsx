@@ -14,7 +14,6 @@ export interface SwitcherEntry {
   repoName: string;
   branch: string;
   path: string;
-  /** `repo › branch`: what is shown, and what the query is matched against. */
   label: string;
 }
 
@@ -25,16 +24,11 @@ export interface FuzzySwitcherProps {
   getWorktreesForRepo: (index: number) => Promise<Array<{ path: string; branch: string }>>;
   openEditorInWorktree: (worktreePath: string) => LaunchResult;
   openTerminalInWorktree: (repoIndex: number, worktreePath: string, branchName: string) => LaunchResult;
-  /** Absent: the copy action is not offered. */
   copyToClipboard?: (text: string) => Promise<LaunchResult>;
-  /** Start a sync of one repository. Returns why it could not start, or null once it has. Absent: not offered. */
   syncRepository?: (repoIndex: number) => string | null;
-  /** Hand over to the status view for this worktree. Absent: not offered. */
   showStatus?: (repoIndex: number, branch: string) => void;
-  /** A one-line confirmation the App shows after the switcher has closed. */
   notify?: (message: string) => void;
   onClose: () => void;
-  /** Rows the switcher may use; defaults to the terminal height. */
   availableRows?: number;
 }
 
@@ -48,13 +42,10 @@ interface ActionRow {
   description: string;
 }
 
-// `git worktree list` per repository, a few at a time: a config with dozens of
-// repositories should not open dozens of git processes the moment `/` is hit.
 const LOAD_CONCURRENCY = 4;
 
 const entryKey = (entry: SwitcherEntry): string => `${entry.repoIndex}\u0000${entry.path}`;
 
-/** The label split into runs of matched and unmatched characters, for highlighting. */
 function labelRuns(label: string, positions: readonly number[]): Array<{ text: string; matched: boolean }> {
   if (positions.length === 0) return [{ text: label, matched: false }];
   const matched = new Set(positions);
@@ -84,8 +75,6 @@ const FuzzySwitcher: React.FC<FuzzySwitcherProps> = ({
   const [mode, setMode] = useState<Mode>("LIST");
   const [query, setQuery] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  // Per repository, in the order the repositories are listed, so a slow one
-  // arriving last does not reorder what is already on screen.
   const [loaded, setLoaded] = useState<Record<number, SwitcherEntry[]>>({});
   const [failed, setFailed] = useState<Array<{ repoName: string; error: string }>>([]);
   const [settledCount, setSettledCount] = useState(0);
@@ -100,10 +89,6 @@ const FuzzySwitcher: React.FC<FuzzySwitcherProps> = ({
     };
   }, []);
 
-  // One load per opening, of the repository list as it was when the switcher
-  // opened: a reload while it is open must not relabel what it already shows.
-  // Worktrees are read afresh each time the switcher opens rather than cached,
-  // so one a sync just added or removed is shown as it is now.
   const repositoriesRef = useRef(repositories);
   const getWorktreesRef = useRef(getWorktreesForRepo);
   useEffect(() => {
@@ -142,8 +127,6 @@ const FuzzySwitcher: React.FC<FuzzySwitcherProps> = ({
     [entries, query],
   );
 
-  // The selection follows the entry, not the row: repositories still loading
-  // insert rows above it, and a moving index would silently swap what Enter opens.
   const foundIndex = selectedKey === null ? -1 : results.findIndex((r) => entryKey(r.item) === selectedKey);
   const selectedIndex = Math.max(0, foundIndex);
   const selected = results[selectedIndex]?.item ?? null;
@@ -190,8 +173,6 @@ const FuzzySwitcher: React.FC<FuzzySwitcherProps> = ({
               notify?.(`Copied ${entry.path}`);
               onClose();
             } else {
-              // The path stays on screen with the reason, so it can still be
-              // selected by hand (Shift+drag) when there is no clipboard tool.
               setMessage({ text: `${result.error ?? "Copy failed"} — path: ${entry.path}`, level: "error" });
             }
           });
@@ -222,7 +203,6 @@ const FuzzySwitcher: React.FC<FuzzySwitcherProps> = ({
 
   const editQuery = (next: string): void => {
     setQuery(next);
-    // Back to the best match: a query that changed has re-ranked everything.
     setSelectedKey(null);
     setMessage(null);
   };
@@ -256,8 +236,6 @@ const FuzzySwitcher: React.FC<FuzzySwitcherProps> = ({
       if (selected) runAction("editor", selected);
     } else if (key.tab) {
       if (selected) {
-        // Pinned by key: a repository that finishes loading while the menu is
-        // open must not re-rank a different entry under the actions.
         setSelectedKey(entryKey(selected));
         setMessage(null);
         setMode("ACTIONS");
@@ -295,8 +273,6 @@ const FuzzySwitcher: React.FC<FuzzySwitcherProps> = ({
     const status = loading ? ` loading ${settledCount}/${snapshot.length} repositories…` : "";
     const failureLine =
       failed.length > 0 ? `Could not list ${failed.map((f) => f.repoName).join(", ")}: ${failed[0].error}` : null;
-    // The query line and the gap under it, the gap above the path line and the
-    // path line itself, and whichever of the message and failure lines show.
     const linesAround = 4 + (message ? 1 : 0) + (failureLine ? 1 : 0);
     const visibleCount = listRowsFor(room - linesAround, results.length);
     const { start, end } = listWindow(selectedIndex, results.length, visibleCount);
@@ -361,8 +337,6 @@ const FuzzySwitcher: React.FC<FuzzySwitcherProps> = ({
 
   const renderActions = () => {
     if (!selected) return null;
-    // One row per action when the terminal has them; otherwise all of them on
-    // one line, so the menu never pushes the status bar off the screen.
     const roomy = room >= actions.length + 3 + (message ? 1 : 0);
     return (
       <Box flexDirection="column">

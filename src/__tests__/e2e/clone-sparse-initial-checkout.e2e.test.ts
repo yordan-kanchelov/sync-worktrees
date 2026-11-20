@@ -6,10 +6,6 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-// A smudge filter that logs every path it is asked to produce stands in for
-// git-lfs downloading an object. With sparseCheckout set, the initial clone
-// must only ever produce the paths the cone keeps, each exactly once: a full
-// checkout narrowed afterwards writes (and downloads) everything first.
 describe("clone-mode initial clone with sparseCheckout", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
 
@@ -94,7 +90,6 @@ describe("clone-mode initial clone with sparseCheckout", () => {
     expect(run.stdout).toContain("1 synced");
 
     const smudged = (await fs.readFile(smudgeLog, "utf8")).split("\n").filter(Boolean).sort();
-    // Cone mode always keeps top-level files.
     expect(smudged).toEqual(["pkg/a.dat", "pkg/sub/b.dat", "top.dat"]);
 
     await expect(fs.readFile(path.join(worktreeDir, "pkg", "sub", "b.dat"), "utf8")).resolves.toBe("b\n");

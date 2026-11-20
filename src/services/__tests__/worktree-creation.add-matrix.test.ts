@@ -18,9 +18,6 @@ vi.mock("../worktree-metadata.service", async () =>
   (await import("./helpers/metadata-service-mock")).worktreeMetadataServiceModuleMock(),
 );
 
-// Which `git worktree add` WorktreeCreationService runs for each combination
-// of local and remote branch, and what it does around it (upstream setup,
-// fast-forwarding a stale local ref, rolling back a failed add).
 describe("WorktreeCreationService add matrix (through GitService)", () => {
   let gitService: GitService;
   let mockGit: Mocked<SimpleGit>;
@@ -149,7 +146,6 @@ describe("WorktreeCreationService add matrix (through GitService)", () => {
     });
 
     it("should not enter tracking-error fallback when upstream-set fails with tracking-classified message", async () => {
-      // Fresh add: no existing dir.
       (fs.access as Mock<any>).mockRejectedValue(new Error("Not found"));
 
       const worktreeGitMock = {
@@ -183,8 +179,6 @@ describe("WorktreeCreationService add matrix (through GitService)", () => {
         /Failed to set upstream/,
       );
 
-      // Only the initial `worktree add <path> <branch>` should fire.
-      // The fallback non-tracking add at addWorktree's L498 must NOT fire.
       const plainWorktreeAdds = (mockGit.raw as Mock).mock.calls.filter(
         (call) =>
           Array.isArray(call[0]) && call[0][0] === "worktree" && call[0][1] === "add" && !call[0].includes("--track"),

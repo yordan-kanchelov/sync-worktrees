@@ -9,7 +9,6 @@ import type { Logger } from "../services/logger.service";
 import type { Config } from "../types";
 import type { SimpleGit } from "simple-git";
 
-// Common test data constants
 export const TEST_BRANCHES = {
   main: "main",
   feature: "feature/test",
@@ -31,7 +30,6 @@ export const TEST_PATHS = {
   bareRepo: ".bare/repo",
 };
 
-// Mock Git Service Factory
 export function createMockGitService(overrides: Partial<SimpleGit> = {}): SimpleGit {
   const defaultMock = {
     clone: vi.fn<any>().mockResolvedValue(undefined),
@@ -55,7 +53,6 @@ export function createMockGitService(overrides: Partial<SimpleGit> = {}): Simple
   return defaultMock as unknown as SimpleGit;
 }
 
-// Mock Configuration Factory
 export function createMockConfig(overrides: Partial<Config> = {}): Config {
   return {
     repoUrl: TEST_URLS.github,
@@ -66,7 +63,6 @@ export function createMockConfig(overrides: Partial<Config> = {}): Config {
   };
 }
 
-// Mock Logger Factory
 export function createMockLogger(): Logger {
   return {
     debug: vi.fn(),
@@ -76,7 +72,6 @@ export function createMockLogger(): Logger {
   } as unknown as Logger;
 }
 
-// Temporary Directory Helper
 let tempDirs: string[] = [];
 
 export async function createTempDirectory(prefix = "sync-worktrees-test-"): Promise<string> {
@@ -90,16 +85,10 @@ export async function cleanupTempDirectories(): Promise<void> {
   tempDirs = [];
 }
 
-// Git Raw Output Helpers
 export function createWorktreeListOutput(worktrees: Array<{ path: string; branch: string; commit: string }>): string {
   return worktrees.map((wt) => `worktree ${wt.path}\nHEAD ${wt.commit}\nbranch refs/heads/${wt.branch}\n`).join("\n");
 }
 
-// One `for-each-ref --format=%(refname)%00%(objectname) refs/remotes/origin`
-// listing: the inventory GitService reads to learn which branches origin has
-// and where each one points. Entries are given as branch names (with a
-// placeholder oid) or as explicit ref/oid pairs, for the refs that are not
-// plain "refs/remotes/origin/<branch>".
 export function createRemoteRefListOutput(entries: Array<string | { ref: string; oid: string }>): string {
   return entries
     .map((entry) =>
@@ -108,7 +97,6 @@ export function createRemoteRefListOutput(entries: Array<string | { ref: string;
     .join("\n");
 }
 
-// Mock Response Builders
 export function buildGitStatusResponse(
   options: {
     isClean?: boolean;
@@ -130,8 +118,6 @@ export function buildGitStatusResponse(
   };
 }
 
-// process.env coerces every assignment to a string, so restoring a variable
-// that was originally unset has to delete it rather than assign undefined.
 export function setEnvVar(name: string, value: string | undefined): void {
   if (value === undefined) {
     delete process.env[name];
@@ -140,11 +126,6 @@ export function setEnvVar(name: string, value: string | undefined): void {
   }
 }
 
-// Clone mode only writes to a checkout it has proved is a primary, non-linked
-// one: `.git` must be that checkout's own directory, and git must report it as
-// both the git dir and the common git dir (a linked worktree or submodule
-// reports the owning repository's instead). A fake that stands in for an
-// ordinary clone has to answer that probe, or every write path refuses it.
 export const PRIMARY_CHECKOUT_GIT_DIR_PROBE = "rev-parse --git-dir --git-common-dir";
 export const PRIMARY_CHECKOUT_GIT_DIRS = ".git\n.git\n";
 

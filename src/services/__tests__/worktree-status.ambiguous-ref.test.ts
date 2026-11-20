@@ -9,15 +9,6 @@ import { WorktreeStatusService } from "../worktree-status.service";
 
 import type { SimpleGit } from "simple-git";
 
-// Real git, no mocks. Cutting a branch from a same-named tag
-// (`git checkout -b 1.4.2 1.4.2`) is the standard hotfix workflow, and it used
-// to hide the branch's unpushed commits: git resolves a bare name through
-// refs/tags/<name> before refs/heads/<name>, so
-// `rev-list --count <name> --not --remotes` counted from the tag — which is on
-// the remote — and returned 0. Git reports the shadowing only as
-// `warning: refname '<name>' is ambiguous.` on stderr with exit 0, which
-// simple-git treats as success, so the worktree read as "clean, nothing
-// unpushed" and the prune pipeline was free to remove it.
 describe("WorktreeStatusService with a tag shadowing the branch name", () => {
   const BRANCH = "release-1";
 
@@ -49,8 +40,6 @@ describe("WorktreeStatusService with a tag shadowing the branch name", () => {
     await seed.branch(["-M", "main"]);
     await seed.addRemote("origin", remote);
     await seed.push("origin", "main");
-    // The release tag and the hotfix branch share a name, and the tag's commit
-    // is on the remote.
     await seed.addTag(BRANCH);
     await seed.pushTags("origin");
 
@@ -81,7 +70,6 @@ describe("WorktreeStatusService with a tag shadowing the branch name", () => {
   it("still counts commits the bare name would hide", async () => {
     await commitLocally();
 
-    // The shadowing itself, so the fixture keeps proving the bug it guards.
     const byBareName = (await worktreeGit.raw(["rev-list", "--count", BRANCH, "--not", "--remotes"])).trim();
     const byBranchRef = (
       await worktreeGit.raw(["rev-list", "--count", `refs/heads/${BRANCH}`, "--not", "--remotes"])
@@ -97,7 +85,6 @@ describe("WorktreeStatusService with a tag shadowing the branch name", () => {
 
   it("still reports a fully pushed branch as removable", async () => {
     await commitLocally();
-    // Explicit refspec: `git push origin release-1` is itself ambiguous here.
     await worktreeGit.push(["origin", `refs/heads/${BRANCH}:refs/heads/${BRANCH}`]);
 
     const status = await service.getFullWorktreeStatus(worktreePath);

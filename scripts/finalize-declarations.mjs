@@ -1,17 +1,4 @@
 #!/usr/bin/env node
-// Runs after `tsc -p tsconfig.types.json` (see the `build` script) and leaves
-// dist/ with exactly the declarations package.json `exports["."].types` needs.
-//
-// tsc writes a .d.ts for every module the public entry pulls into the program,
-// including modules that only its *values* import, so most of what it emits is
-// unreachable from dist/public-types.d.ts. It also writes relative specifiers
-// exactly as the sources spell them, without an extension, which a consumer
-// resolving with `moduleResolution: "nodenext"` refuses in an ESM package —
-// and with `skipLibCheck` on, the types behind them silently become `any`.
-//
-// So: walk the declaration graph from the entry, rewrite each relative
-// specifier to the `.js` path Node would load, and delete every .d.ts the walk
-// did not reach.
 
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
@@ -21,7 +8,6 @@ import { fileURLToPath } from "node:url";
 const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
 const entry = path.join(distDir, "public-types.d.ts");
 
-// `from "./x"` (import/export ... from) and `import("./x")` (type queries).
 const RELATIVE_SPECIFIER = /(\bfrom\s*|\bimport\s*\(\s*)(["'])(\.\.?\/[^"']*)\2/g;
 
 function resolveSpecifier(fromFile, specifier) {

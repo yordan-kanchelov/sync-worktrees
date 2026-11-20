@@ -7,8 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { DoctorCheck } from "../../cli/doctor";
 
-// `sync-worktrees doctor` through the built bin, against a real file:// remote:
-// what a user sees before their first sync.
 describe("sync-worktrees doctor", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   let tempDir: string;

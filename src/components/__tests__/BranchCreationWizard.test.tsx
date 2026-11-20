@@ -62,7 +62,7 @@ describe("BranchCreationWizard", () => {
     it("should navigate down with arrow key", async () => {
       const { stdin, lastFrame } = render(<BranchCreationWizard {...defaultProps} />);
 
-      stdin.write("\u001B[B"); // Down arrow
+      stdin.write("\u001B[B");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("> repo-2");
@@ -71,9 +71,9 @@ describe("BranchCreationWizard", () => {
     it("should navigate up with arrow key", async () => {
       const { stdin, lastFrame } = render(<BranchCreationWizard {...defaultProps} />);
 
-      stdin.write("\u001B[B"); // Down arrow
+      stdin.write("\u001B[B");
       await waitForStateUpdate();
-      stdin.write("\u001B[A"); // Up arrow
+      stdin.write("\u001B[A");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("> repo-1");
@@ -82,7 +82,7 @@ describe("BranchCreationWizard", () => {
     it("should proceed to branch selection on Enter", async () => {
       const { stdin, lastFrame } = render(<BranchCreationWizard {...defaultProps} />);
 
-      stdin.write("\r"); // Enter
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
@@ -93,7 +93,7 @@ describe("BranchCreationWizard", () => {
       const onClose = vi.fn();
       const { stdin } = render(<BranchCreationWizard {...defaultProps} onClose={onClose} />);
 
-      stdin.write("\x1b"); // ESC
+      stdin.write("\x1b");
       await waitForStateUpdate();
       expect(onClose).toHaveBeenCalled();
     });
@@ -103,7 +103,7 @@ describe("BranchCreationWizard", () => {
     it("should show branches after project selection", async () => {
       const { stdin, lastFrame } = render(<BranchCreationWizard {...defaultProps} />);
 
-      stdin.write("\r"); // Enter to select project
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
@@ -112,9 +112,6 @@ describe("BranchCreationWizard", () => {
     });
 
     it("should pre-select and mark the default branch when it is not the first one", async () => {
-      // Clone-mode repos commonly track something other than the list's first
-      // entry; pressing Enter straight away must create from the branch the
-      // repository actually follows.
       const props: BranchCreationWizardProps = {
         ...defaultProps,
         repositories: [{ index: 0, name: "single-repo", repoUrl: "https://example.com/repo.git" }],
@@ -131,8 +128,6 @@ describe("BranchCreationWizard", () => {
     });
 
     it("should keep the branch list when the default branch cannot be resolved", async () => {
-      // Resolving a clone's default branch can hit the network; a failure
-      // costs the marker, never the list the user came here to pick from.
       const props: BranchCreationWizardProps = {
         ...defaultProps,
         repositories: [{ index: 0, name: "single-repo", repoUrl: "https://example.com/repo.git" }],
@@ -169,11 +164,11 @@ describe("BranchCreationWizard", () => {
     it("should go back to project selection on ESC", async () => {
       const { stdin, lastFrame } = render(<BranchCreationWizard {...defaultProps} />);
 
-      stdin.write("\r"); // Enter to select project
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      stdin.write("\x1b"); // ESC
+      stdin.write("\x1b");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Select repository");
@@ -189,7 +184,7 @@ describe("BranchCreationWizard", () => {
       const { stdin, lastFrame } = render(<BranchCreationWizard {...singleRepoProps} />);
 
       await waitForStateUpdate();
-      stdin.write("\r"); // Select branch
+      stdin.write("\r");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Enter new branch name");
@@ -204,10 +199,10 @@ describe("BranchCreationWizard", () => {
       const { stdin, lastFrame } = render(<BranchCreationWizard {...singleRepoProps} />);
 
       await waitForStateUpdate();
-      stdin.write("\r"); // Select branch
+      stdin.write("\r");
       await waitForStateUpdate();
 
-      stdin.write("\x1b"); // ESC
+      stdin.write("\x1b");
       await waitForStateUpdate();
 
       expect(lastFrame()).toContain("Select base branch");
@@ -221,18 +216,15 @@ describe("BranchCreationWizard", () => {
       const { stdin, lastFrame } = render(<BranchCreationWizard {...singleRepoProps} />);
 
       await waitForStateUpdate();
-      stdin.write("\r"); // Select base branch
+      stdin.write("\r");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("Enter new branch name");
 
-      // Bracketed paste (\x1b[200~ … \x1b[201~). Spaces and "!" are outside the
-      // [a-zA-Z0-9/._-] allowlist and must be stripped; the "/" is valid in a
-      // branch name and must survive — otherwise pasted names create bad refs.
       stdin.write("\u001B[200~feature/new thing!\u001B[201~");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("feature/newthing");
 
-      stdin.write("\r"); // Submit
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
@@ -249,15 +241,12 @@ describe("BranchCreationWizard", () => {
       ...overrides,
     });
 
-    // The step displayed `will create: x-1` and then submitted `x`. In worktree
-    // mode that name has no local head whenever the filters hid it, so nothing
-    // collided and the push moved the branch that was already on the remote.
     it("submits the suffixed name it displayed, not the name that was typed", async () => {
       const props = singleRepo();
       const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
 
       await waitForStateUpdate();
-      stdin.write("\r"); // Select base branch
+      stdin.write("\r");
       await waitForStateUpdate();
 
       stdin.write("x");
@@ -265,7 +254,7 @@ describe("BranchCreationWizard", () => {
       expect(lastFrame()).toContain("Name exists, will create:");
       expect(lastFrame()).toContain("x-1");
 
-      stdin.write("\r"); // Submit
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
@@ -323,13 +312,11 @@ describe("BranchCreationWizard", () => {
       };
       const { stdin, lastFrame } = render(<BranchCreationWizard {...manyRepos} />);
 
-      // Navigate to last item
-      stdin.write("\u001B[B"); // Down
-      stdin.write("\u001B[B"); // Down
+      stdin.write("\u001B[B");
+      stdin.write("\u001B[B");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("> gamma-repo");
 
-      // Type filter that only matches one repo - index should be clamped
       stdin.write("alpha");
       await waitForStateUpdate();
 
@@ -352,13 +339,13 @@ describe("BranchCreationWizard", () => {
 
       stdin.write("zz");
       await waitForStateUpdate();
-      stdin.write("\u001B[B"); // down arrow while filter empty
+      stdin.write("\u001B[B");
       await waitForStateUpdate();
-      stdin.write("\u007F"); // backspace
-      stdin.write("\u007F"); // backspace
+      stdin.write("\u007F");
+      stdin.write("\u007F");
       await waitForStateUpdate();
 
-      stdin.write("\r"); // Enter
+      stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
 
@@ -417,33 +404,27 @@ describe("BranchCreationWizard", () => {
 
       const { stdin, lastFrame } = render(<BranchCreationWizard {...props} />);
 
-      // Type "g" to filter to gamma-repo (index 2)
       stdin.write("g");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("gamma-repo");
 
-      // Press Enter to select gamma-repo
       stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
       await waitForStateUpdate();
 
-      // Verify branches loaded for correct repo
       expect(getBranchesForRepo).toHaveBeenCalledWith(2);
       expect(lastFrame()).toContain("Select base branch");
 
-      // Select base branch
       stdin.write("\r");
       await waitForStateUpdate();
       expect(lastFrame()).toContain("Enter new branch name");
 
-      // Type branch name character by character to ensure proper state updates
       for (const char of "my-feature") {
         stdin.write(char);
       }
       await waitForStateUpdate();
 
-      // Press Enter to create
       stdin.write("\r");
       await waitForStateUpdate();
       await waitForStateUpdate();
@@ -465,8 +446,6 @@ describe("BranchCreationWizard", () => {
     });
   });
 
-  // A load that resolves after the user has gone back and picked another
-  // repository must not replace that repository's list.
   describe("a late load for a repository the user left", () => {
     it("keeps the second repository's branches and creates the branch there", async () => {
       let resolveA: (branches: string[]) => void = () => {};

@@ -13,13 +13,6 @@ import type { Logger } from "../../services/logger.service";
 import type { RepositoryConfig, SyncOutcome, SyncOutcomeAction } from "../../types";
 import type { Mock } from "vitest";
 
-// Real git, no mocks. refs/remotes/origin/HEAD is only ever written by
-// `remote set-head`: after the remote renames its default branch (main ->
-// trunk) and deletes the old one, `fetch --prune` drops origin/main but the
-// symref keeps naming main. Sync used to keep main as the default forever —
-// its worktree stayed an update candidate whose upstream was gone (every sync
-// failed with diverged_recovery_failed), it was never pruned, and trunk was
-// created as an ordinary hashed peer directory.
 describe("Default branch renamed on the remote (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -78,8 +71,6 @@ describe("Default branch renamed on the remote (E2E)", () => {
     };
   }
 
-  // The new default is pushed at main's tip plus one commit, so that a
-  // worktree at origin's tip is distinguishable from one at main's.
   async function pushTrunk(): Promise<string> {
     const seed = simpleGit(seedDir);
     await seed.checkout("main");
@@ -91,8 +82,6 @@ describe("Default branch renamed on the remote (E2E)", () => {
     return (await seed.revparse(["trunk"])).trim();
   }
 
-  // The remote's side of the migration. A bare repository refuses to delete
-  // its current branch, so HEAD moves first.
   async function retireMain(): Promise<void> {
     await simpleGit(remote).raw(["symbolic-ref", "HEAD", "refs/heads/trunk"]);
     await simpleGit(seedDir).push(["origin", "--delete", "main"]);
@@ -126,8 +115,6 @@ describe("Default branch renamed on the remote (E2E)", () => {
     const trunkTip = await pushTrunk();
     await retireMain();
 
-    // The same process keeps running: initialize() is a no-op and the sync
-    // re-resolves the default after its fetch pruned origin/main.
     await service.initialize();
     const outcome = await syncOutcome(service);
 
@@ -136,8 +123,6 @@ describe("Default branch renamed on the remote (E2E)", () => {
     expect(infoLines(logger)).toContain("Default branch changed from 'main' to 'trunk' on origin.");
     expect(await originHead()).toBe("refs/remotes/origin/trunk");
 
-    // trunk got the default branch's worktree — not a hashed peer directory —
-    // at origin's tip, so the same sync's update phase found nothing to do.
     expect(actionsFor(outcome, "trunk")).toEqual([
       { kind: "created", branch: "trunk", path: trunkPath },
       expect.objectContaining({ kind: "noop", reason: "already_up_to_date", path: trunkPath }),
@@ -150,15 +135,12 @@ describe("Default branch renamed on the remote (E2E)", () => {
     expect((await simpleGit(trunkPath).revparse(["HEAD"])).trim()).toBe(trunkTip);
     await expect(fs.readFile(path.join(trunkPath, "TRUNK.md"), "utf8")).resolves.toBe("# trunk");
 
-    // main was a prune candidate — never an update candidate — and, being
-    // fully pushed before its deletion, was moved to trash.
     expect(actionsFor(outcome, "main")).toEqual([
       expect.objectContaining({ kind: "removed", branch: "main", path: mainPath }),
     ]);
     expect(worktrees.map((w) => w.branch)).not.toContain("main");
     await expect(fs.access(mainPath)).rejects.toThrow();
 
-    // The next fetch runs from the trunk worktree; the old anchor is gone.
     const second = await syncOutcome(service);
     expect(second.counts.failed).toBe(0);
     expect(actionsFor(second, "trunk")).toEqual([
@@ -173,8 +155,6 @@ describe("Default branch renamed on the remote (E2E)", () => {
     const service = new WorktreeSyncService(makeConfig(logger));
     await service.initialize();
 
-    // trunk has an ordinary branch worktree under the hashed directory name
-    // every branch got before plain names, and sync keeps it there...
     expect((await syncOutcome(service)).counts.failed).toBe(0);
     await pushTrunk();
     await service.getGitService().fetchAll();
@@ -182,13 +162,11 @@ describe("Default branch renamed on the remote (E2E)", () => {
     await service.getGitService().addWorktree("trunk", hashedTrunkPath);
     expect((await syncOutcome(service)).counts.failed).toBe(0);
     expect(await registeredWorktrees(service)).toContainEqual({ path: hashedTrunkPath, branch: "trunk" });
-    // ...while a branch new to this version gets its plain name.
     expect(await registeredWorktrees(service)).toContainEqual({
       path: path.join(worktreeDir, "feature-1"),
       branch: "feature-1",
     });
 
-    // ...then the remote makes it the default and deletes main.
     await retireMain();
     const outcome = await syncOutcome(service);
 
@@ -205,7 +183,6 @@ describe("Default branch renamed on the remote (E2E)", () => {
       expect.objectContaining({ kind: "removed", branch: "main", path: mainPath }),
     ]);
 
-    // Fetches run from the adopted worktree from now on.
     const second = await syncOutcome(service);
     expect(second.counts.failed).toBe(0);
     expect(await registeredWorktrees(service)).toEqual([
@@ -219,8 +196,6 @@ describe("Default branch renamed on the remote (E2E)", () => {
     const service = new WorktreeSyncService(makeConfig(logger));
     await service.initialize();
 
-    // A single-segment branch's plain directory is the path the default
-    // branch's worktree uses, so nothing has to move when trunk becomes it.
     await pushTrunk();
     expect((await syncOutcome(service)).counts.failed).toBe(0);
     expect(await registeredWorktrees(service)).toContainEqual({ path: trunkPath, branch: "trunk" });
@@ -248,7 +223,6 @@ describe("Default branch renamed on the remote (E2E)", () => {
 
     await pushTrunk();
     await retireMain();
-    // Another process already pruned origin/main; origin/HEAD still names main.
     await simpleGit(bareRepoDir).fetch(["--all", "--prune"]);
     expect(await originHead()).toBe("refs/remotes/origin/main");
     expect((await simpleGit(bareRepoDir).branch(["-r"])).all).not.toContain("origin/main");

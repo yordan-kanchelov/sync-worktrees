@@ -12,11 +12,6 @@ interface CliRun {
   trace: string;
 }
 
-// Real git, real worktree mode. A cone-mode `include` git refuses used to load
-// fine and then cost a `worktree add` plus a rollback per branch, every tick,
-// forever (#T80). GIT_TRACE is written to a file rather than read off stderr so
-// the assertion is about the git processes the run actually started, not about
-// what the logger chose to print.
 describe("Sparse-checkout cone rules at config load", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
 
@@ -91,8 +86,6 @@ describe("Sparse-checkout cone rules at config load", () => {
     return { status: result.status, output: result.stdout + result.stderr, trace };
   }
 
-  // The control half. Without it a "no worktree add" assertion would pass on a
-  // run that never traced anything at all.
   it("adds worktrees for a cone include git accepts", async () => {
     const run = await runCli(["apps/web"]);
 
@@ -110,7 +103,6 @@ describe("Sparse-checkout cone rules at config load", () => {
     expect(run.output).toContain("'/apps/web'");
     expect(run.output).toContain("monorepo");
     expect(run.output).toContain("Drop the leading slash");
-    // The point of the fix: not one `worktree add`, and nothing to roll back.
     expect(run.trace).not.toContain("worktree add");
     await expect(fs.access(worktreeDir)).rejects.toThrow();
   }, 60_000);

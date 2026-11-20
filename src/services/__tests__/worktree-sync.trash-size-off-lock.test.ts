@@ -13,20 +13,10 @@ import type { GitService } from "../git.service";
 import type { Logger } from "../logger.service";
 import type { RemovalAuditService } from "../removal-audit.service";
 
-// The scan `sizeBytes` needs execs `du` over a whole worktree. Everything in
-// this file is about WHERE it is allowed to run: never while this repository's
-// lock is held, because every other sync, MCP call and interactive action is
-// refused or queued for its duration.
 const probe = vi.hoisted(() => ({
   events: [] as string[],
-  // One entry per size scan: could an ordinary fail-fast repository operation
-  // have started while that scan was in flight? Recording the answer from
-  // inside the scan is what makes this impossible to pass vacuously — a scan
-  // under the lock cannot produce a `true` here.
   couldStartOperationDuringScan: [] as boolean[],
   lockHeld: false,
-  // Set while the probe operation below runs, so its own lock traffic is
-  // labelled and the sync's sequence stays readable.
   inScan: false,
   onScan: null as null | (() => Promise<void>),
 }));
@@ -43,8 +33,6 @@ vi.mock("../../utils/disk-space", async (importOriginal) => {
   };
 });
 
-// Models the cross-process file lock faithfully enough for this question: a
-// second acquire while it is held is refused, and release is observable.
 vi.mock("../repo-operation-lock", () => ({
   RepoOperationLock: vi.fn(function () {
     return {
@@ -148,10 +136,6 @@ describe("trash sizing never runs under the repository lock", () => {
     };
     service = new WorktreeSyncService(config);
 
-    // Asked from inside every scan: can an ordinary fail-fast caller — a
-    // scheduled sync, an MCP tool, the TUI — start a repository operation
-    // right now? Under the lock the answer is "no, another operation is
-    // already in progress", which is exactly the harm.
     probe.onScan = async () => {
       probe.inScan = true;
       try {
@@ -167,7 +151,6 @@ describe("trash sizing never runs under the repository lock", () => {
     await cleanupTempDirectories();
   });
 
-  // A trash entry as a tick leaves one: payload in place, size not yet known.
   async function seedUnsizedEntry(name: string): Promise<string> {
     const trash = new TrashService(
       config,
@@ -190,9 +173,6 @@ describe("trash sizing never runs under the repository lock", () => {
     const result = await service.sync();
     expect(result.started).toBe(true);
 
-    // The seam, in full: the sync takes the lock, gives it back, and only then
-    // is anything scanned — and the probe operation nested inside that scan
-    // took the lock for itself, which is impossible from inside a held one.
     expect(probe.events).toEqual(["lock:acquire", "lock:release", "size", "probe:lock:acquire", "probe:lock:release"]);
     expect(probe.couldStartOperationDuringScan).toEqual([true]);
 
@@ -202,19 +182,12 @@ describe("trash sizing never runs under the repository lock", () => {
 
   it("still sizes what a failing tick trashed — the throw leaves exactly the entries this measures", async () => {
     await seedUnsizedEntry("feature-doomed");
-    // A tick can trash a worktree and then fail on a later phase. The size
-    // pass is the sync's own responsibility on that path too: nothing else
-    // runs until the next tick, so skipping it leaves the entry unmeasured
-    // for a scheduling interval — and for good, if the repository keeps
-    // failing, which is precisely when the trash grows.
     config.retry = { maxAttempts: 1, initialDelayMs: 0, maxDelayMs: 0, jitterMs: 0 };
     gitStub.instance.getRemoteBranches.mockRejectedValue(new Error("fetch exploded"));
     probe.events.length = 0;
 
     await expect(service.sync()).rejects.toThrow("fetch exploded");
 
-    // Same seam as the passing tick: lock taken, lock given back, only then
-    // the scan — and the fail-fast probe inside it still gets the lock.
     expect(probe.events).toEqual(["lock:acquire", "lock:release", "size", "probe:lock:acquire", "probe:lock:release"]);
     expect(probe.couldStartOperationDuringScan).toEqual([true]);
 
@@ -224,7 +197,7 @@ describe("trash sizing never runs under the repository lock", () => {
 
   it("sizes nothing when the lock was never taken — a refused sync trashed nothing to measure", async () => {
     await seedUnsizedEntry("feature-blocked");
-    probe.lockHeld = true; // another process holds it
+    probe.lockHeld = true;
     probe.events.length = 0;
 
     const result = await service.sync();
@@ -251,8 +224,6 @@ describe("trash sizing never runs under the repository lock", () => {
 
     expect(probe.events).toContain("size");
     expect(probe.couldStartOperationDuringScan).toEqual([true]);
-    // The number is on screen the first time the modal is opened, not after a
-    // later one: no entry is counted as an unknown size.
     expect(preview.trashEntries).toBe(1);
     expect(preview.unknownTrashSizes).toBe(0);
     expect(preview.trashBytes).toBeGreaterThan(0);
@@ -263,8 +234,6 @@ describe("trash sizing never runs under the repository lock", () => {
     const preview = await service.getForceCleanPreview();
     expect(preview.trashEntryIds).toEqual([purged]);
 
-    // Trashed after the confirmation was drawn, so force clean leaves it and
-    // recounts it — from inside the exclusive operation.
     await seedUnsizedEntry("feature-survivor");
     probe.events.length = 0;
 
@@ -273,7 +242,6 @@ describe("trash sizing never runs under the repository lock", () => {
     expect(result.skippedNewEntries).toBe(1);
     expect(result.trashEntries).toBe(1);
     expect(probe.events).not.toContain("size");
-    // The survivor is still unsized; the next sync or preview measures it.
     expect(result.unknownTrashSizes).toBe(1);
   });
 });

@@ -9,8 +9,6 @@ import { WorktreeSyncService } from "../worktree-sync.service";
 
 import type { Config } from "../../types";
 
-// A clone-mode repository has no bare repository, so nothing may derive one
-// from its URL: a URL with no repository path segment is valid there.
 describe("clone mode derives no bare-repository path", () => {
   const worktreeDir = path.join(os.tmpdir(), "sync-worktrees-cln4-clone");
   const config = {

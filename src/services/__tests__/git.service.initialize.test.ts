@@ -12,13 +12,6 @@ import { WorktreeSyncService } from "../worktree-sync.service";
 
 import type { RepositoryConfig } from "../../types";
 
-// Real git, no mocks. A directory that already sits at the default branch's
-// worktree path but is not a registered worktree — a checkout left behind after
-// the user deleted `.bare/` to recover from corruption, or any unrelated
-// directory of the same name — must never be adopted as the main worktree:
-// every later fetch would run inside a non-repository. It goes through the same
-// trash/quarantine path as every other branch's stale directory, and the
-// default-branch worktree is recreated and registered.
 describe("GitService.initialize with a stale default-branch directory", () => {
   let tempDir: string;
   let remote: string;
@@ -86,26 +79,21 @@ describe("GitService.initialize with a stale default-branch directory", () => {
     const originalGitFile = await fs.readFile(path.join(mainPath, ".git"), "utf8");
     expect(originalGitFile).toMatch(/^gitdir: /);
 
-    // A registered default-branch worktree is reused as-is: nothing is trashed.
     const second = new WorktreeSyncService(makeConfig());
     await second.initialize();
     await expect(fs.access(path.join(worktreeDir, GIT_CONSTANTS.TRASH_DIR_NAME))).rejects.toThrow();
 
-    // The user deletes .bare/ to recover from corruption but keeps worktrees/:
-    // main/.git is now a gitfile pointing at a dead admin directory.
     await fs.rm(bareRepoDir, { recursive: true, force: true });
     await fs.writeFile(path.join(mainPath, "notes.txt"), "keep me");
 
     const third = new WorktreeSyncService(makeConfig());
     await expect(third.initialize()).resolves.toBeUndefined();
 
-    // The stale directory was moved to trash intact, with a manifest and an audit record.
     const trashRoot = path.join(worktreeDir, GIT_CONSTANTS.TRASH_DIR_NAME);
     const entries = await fs.readdir(trashRoot);
     expect(entries).toHaveLength(1);
     const container = path.join(trashRoot, entries[0]);
     const payload = path.join(container, TRASH_CONSTANTS.PAYLOAD_DIRNAME);
-    // Its stale .git link is detached so git no longer resolves inside it.
     await expect(fs.readFile(path.join(payload, ".git.detached"), "utf8")).resolves.toBe(originalGitFile);
     await expect(fs.access(path.join(payload, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.readFile(path.join(payload, "notes.txt"), "utf8")).resolves.toBe("keep me");
@@ -115,8 +103,6 @@ describe("GitService.initialize with a stale default-branch directory", () => {
     expect(audit).toContain('"action":"trash_create"');
     expect(audit).toContain(mainPath);
 
-    // A fresh, registered main worktree whose .git points at a live admin
-    // directory inside the new bare repository (the old one died with .bare/).
     expect(await registeredWorktreePaths(third)).toContain(mainPath);
     const newGitFile = await fs.readFile(path.join(mainPath, ".git"), "utf8");
     const adminDir = newGitFile.replace(/^gitdir: /, "").trim();
@@ -125,7 +111,6 @@ describe("GitService.initialize with a stale default-branch directory", () => {
     await expect(fs.readFile(path.join(mainPath, "README.md"), "utf8")).resolves.toBe("# app");
     await expect(fs.access(path.join(mainPath, "notes.txt"))).rejects.toThrow();
 
-    // Every fetch runs inside the main worktree, so a sync must now succeed.
     const result = await third.sync();
     expect(result.started).toBe(true);
     if (result.started) {
@@ -147,7 +132,6 @@ describe("GitService.initialize with a stale default-branch directory", () => {
     const service = new WorktreeSyncService(makeConfig({ trash: { enabled: false } }));
     await expect(service.initialize()).resolves.toBeUndefined();
 
-    // Never deleted: a directory containing a .git is quarantined under .removed/.
     const removedRoot = path.join(worktreeDir, GIT_CONSTANTS.REMOVED_DIR_NAME);
     const quarantined = await fs.readdir(removedRoot);
     expect(quarantined).toHaveLength(1);

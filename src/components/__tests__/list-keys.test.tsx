@@ -128,8 +128,6 @@ describe("list keys", () => {
     });
   });
 
-  // `d` used to open the delete prompt whenever a diverged row was selected,
-  // so a filter could never contain the letter while one was.
   describe("deleting a diverged directory", () => {
     const renderStatusOnDiverged = async () => {
       const deleteDivergedDirectory = vi.fn().mockResolvedValue(undefined);

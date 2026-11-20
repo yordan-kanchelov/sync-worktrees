@@ -141,10 +141,6 @@ describe("GitMaintenanceService", () => {
       expect(raw).toHaveBeenCalledWith(["gc", `--prune=${MAINTENANCE_CONSTANTS.FORCE_CLEAN_PRUNE_EXPIRE}`]);
     });
 
-    // The object store is shared with every checkout, and `--prune=now` deletes
-    // objects a concurrent `git commit` has written but not yet anchored to a
-    // ref. An explicit run still prunes — just not into that window — unless
-    // the config flag that documents the hazard asks for `now`.
     it("does not prune to `now` on an explicit run unless aggressive asks for it", async () => {
       const { factory, raw } = createGitFactory();
       const svc = new GitMaintenanceService(config({ enabled: false }), gitService, logger, factory);
@@ -231,8 +227,6 @@ describe("GitMaintenanceService", () => {
       const svc = new GitMaintenanceService(config(), gitService, logger, factory);
 
       await svc.runIfDueUnlocked(NOW);
-      // The persisted timestamp must survive (not be swallowed by the array), so an
-      // immediate second run is throttled instead of running gc again every tick.
       await svc.runIfDueUnlocked(NOW + 60_000);
 
       expect(raw).toHaveBeenCalledTimes(1);
@@ -272,7 +266,7 @@ describe("GitMaintenanceService", () => {
       const svc = new GitMaintenanceService(config(), gitService, logger, factory);
 
       await svc.runIfDueUnlocked(NOW);
-      await svc.runIfDueUnlocked(NOW + 60_000); // one minute later, well within 7d
+      await svc.runIfDueUnlocked(NOW + 60_000);
 
       expect(raw).toHaveBeenCalledTimes(1);
     });

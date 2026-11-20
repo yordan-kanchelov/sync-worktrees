@@ -54,7 +54,6 @@ const entries = (count: number): WorktreeStatusEntry[] =>
     status,
   }));
 
-/** Items of a rendered list: rows that start with the selection marker or its indent. */
 const listedNames = (frame: string | undefined, prefix: string): string[] =>
   frameLines(frame)
     .map((line) => line.match(new RegExp(`(?:> |  )(${prefix}-\\d+)`))?.[1])
@@ -64,7 +63,6 @@ describe("layout helpers", () => {
   it("never makes a modal wider than the terminal leaves room for", () => {
     expect(modalWidth(70, 120)).toBe(70);
     expect(modalWidth(70, 50)).toBe(48);
-    // Below the floor nothing inside is legible; the floor wins.
     expect(modalWidth(70, 10)).toBe(24);
   });
 
@@ -75,7 +73,6 @@ describe("layout helpers", () => {
     expect(listRowsFor(40, 100)).toBe(38);
     expect(listRowsFor(2, 100)).toBe(MIN_LIST_ROWS);
     expect(listRowsFor(-5, 100)).toBe(MIN_LIST_ROWS);
-    // "No matches" still takes a row.
     expect(listRowsFor(10, 0)).toBe(1);
   });
 
@@ -91,7 +88,6 @@ describe("layout helpers", () => {
     expect(wrappedRows("one two three four", 13)).toBe(2);
     expect(wrappedRows("one two three four", 9)).toBe(3);
     expect(wrappedRows("↑/↓ navigate • Type to filter • Enter to select • ESC to cancel", 54)).toBe(2);
-    // A word longer than the line is broken across rows.
     expect(wrappedRows("x".repeat(25), 10)).toBe(3);
   });
 });
@@ -114,14 +110,12 @@ describe("home screen layout", () => {
 
   it("folds the log to one line when a panel and a table row do not both fit", () => {
     expect(homeLayout(7, 3, auto)).toEqual({ dashboardRows: 6, logRows: 1, logCollapsed: true });
-    // Below an even split's first table row, the folded log still leaves one.
     expect(homeLayout(6, 3, auto)).toEqual({ dashboardRows: 5, logRows: 1, logCollapsed: true });
     expect(homeLayout(5, 1, auto)).toEqual({ dashboardRows: 4, logRows: 1, logCollapsed: true });
     expect(homeLayout(5, 3, auto)).toEqual({ dashboardRows: 4, logRows: 1, logCollapsed: true });
   });
 
   it("never takes the table away as the screen grows", () => {
-    // The smallest screen a table row and a folded log both fit on.
     const smallest = DASHBOARD_CHROME_ROWS + 1 + LOG_COLLAPSED_ROWS;
     for (const repos of [1, 2, 3, 30]) {
       for (const preference of [auto, { collapsed: true, rows: null }, { collapsed: false, rows: LOG_MIN_ROWS }]) {
@@ -165,7 +159,6 @@ describe("home screen layout", () => {
       logRows: 19,
       logCollapsed: false,
     });
-    // A request below the smallest panel still leaves one.
     expect(homeLayout(19, 30, { collapsed: false, rows: 1 }).logRows).toBeGreaterThanOrEqual(1);
   });
 
@@ -233,7 +226,6 @@ describe("responsive modals", () => {
       await settle();
 
       expect(borderWidths(lastFrame())).toEqual([48]);
-      // The right-hand border is drawn, not clipped at the terminal edge.
       expect(
         frameLines(lastFrame())
           .find((line) => line.includes("╭"))
@@ -297,7 +289,6 @@ describe("responsive modals", () => {
       await settle();
 
       expect(borderWidths(lastFrame())).toEqual([38]);
-      // One row per shortcut: a wrapped description would have split this one.
       const syncRow = frameLines(lastFrame()).find((line) => line.includes("Manually trigg"));
       expect(syncRow).toBeDefined();
       expect(frameLines(lastFrame()).filter((line) => line.includes("repositories"))).toHaveLength(0);
@@ -410,7 +401,6 @@ describe("responsive modals", () => {
       expect(listed(lastFrame()).length).toBeGreaterThan(0);
       expect(listed(lastFrame()).length).toBeLessThan(12);
       expect(lastFrame()).toMatch(/repositories 1–\d+ of 12 \(↑\/↓ to scroll\)/);
-      // The total and the confirmation are never what gives way.
       expect(lastFrame()).toContain("Total: 24 trash");
       expect(lastFrame()).toContain("press Enter to delete permanently");
     });

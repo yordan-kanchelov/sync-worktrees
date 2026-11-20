@@ -13,13 +13,6 @@ import { createMockLogger } from "../test-utils";
 
 import type { RepositoryConfig } from "../../types";
 
-// Real git, real trash, real `gc`. Force clean is the only operation in the
-// tool that is meant to be irreversible, and it gets there in three steps that
-// only make sense together: purge the selected trash entries (releasing their
-// pin refs), delete the selected keep refs except the ones a `.diverged/`
-// directory still needs, then collect. Tests that mock the purge can say the
-// counts came out right; only a real object store can say which commits are
-// actually gone afterwards and which survived on purpose.
 describe("Force clean object reclamation (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -41,12 +34,6 @@ describe("Force clean object reclamation (E2E)", () => {
     }
   }
 
-  /**
-   * A commit reachable from nothing, standing in for work a developer made in a
-   * worktree and never pushed. `commit-tree` rather than a branch-and-delete
-   * dance so the only thing that ever points at it is the ref the test puts
-   * there.
-   */
   function makeUnreferencedCommit(message: string): string {
     const tree = bare(["rev-parse", "main^{tree}"]);
     return bare([
@@ -63,7 +50,6 @@ describe("Force clean object reclamation (E2E)", () => {
     ]);
   }
 
-  /** The pre-trash diverge flow's two halves: the backup directory and the keep ref holding its commits. */
   async function makeLegacyDivergedBackup(name: string, message: string): Promise<string> {
     const oid = makeUnreferencedCommit(message);
     const dirPath = path.join(worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME, name);
@@ -99,8 +85,6 @@ describe("Force clean object reclamation (E2E)", () => {
     await seed.addRemote("origin", remote);
     await seed.push("origin", "main");
 
-    // `gone` carries a commit of its own, so once its remote branch is deleted
-    // the trash pin is the only ref in the repository that reaches it.
     await seed.checkoutLocalBranch("gone");
     await fs.writeFile(path.join(seedDir, "gone-only.txt"), "work that only this branch has\n");
     await seed.add(".");
@@ -125,14 +109,7 @@ describe("Force clean object reclamation (E2E)", () => {
       runOnce: true,
       logger: createMockLogger(),
       retry: { maxAttempts: 1, initialDelayMs: 0 },
-      // Legacy adoption would move the `.diverged/` backup below into the trash
-      // and retire its keep ref, which is the other flow entirely. This test is
-      // about the backup force clean finds still sitting there.
       trash: { migrateLegacy: false },
-      // `gc --prune=now`: the default forced run prunes on a one-hour window
-      // measured from each object's mtime, which is covered by the maintenance
-      // E2E. Here the question is only which commits were still reachable when
-      // the collector ran, so nothing should turn on file timestamps.
       maintenance: { aggressive: true },
       __configFileDir: tempDir,
     } as RepositoryConfig;
@@ -155,8 +132,6 @@ describe("Force clean object reclamation (E2E)", () => {
     expect(entries[0].manifest.keepPinOnReap).toBe(true);
     expect(entries[0].manifest.headOid).toBe(goneOid);
 
-    // Two keep refs from the pre-trash diverge flow. Only one still has the
-    // `.diverged/` directory whose recovery instructions point at it.
     const keptOid = await makeLegacyDivergedBackup("kept-backup", "Backup the user can still see");
     const strandedOid = makeUnreferencedCommit("Backup whose directory is long gone");
     bare(["update-ref", "--", `${GIT_CONSTANTS.KEEP_REF_PREFIX}stranded-backup`, strandedOid]);
@@ -181,18 +156,12 @@ describe("Force clean object reclamation (E2E)", () => {
     expect(result.gcSkipped).toBe(false);
     expect(result.gcSucceeded).toBe(true);
 
-    // The trash entry is gone, and so is the pin that was its commits' only
-    // protection — the purge path deliberately mints no replacement keep ref.
     await expect(service.listTrashEntries()).resolves.toMatchObject({ entries: [], invalid: [] });
     expect(bare(["for-each-ref", "--format=%(refname)", GIT_CONSTANTS.TRASH_REF_PREFIX])).toBe("");
     expect(objectExists(goneOid)).toBe(false);
 
-    // The keep ref nothing points at anymore went with it.
     expect(objectExists(strandedOid)).toBe(false);
 
-    // The one whose `.diverged/` directory is still on disk survived both the
-    // ref sweep and the collector: the files and the commits they were made on
-    // are the two halves of one backup.
     await expect(service.listKeepRefs()).resolves.toEqual([`${GIT_CONSTANTS.KEEP_REF_PREFIX}kept-backup`]);
     expect(objectExists(keptOid)).toBe(true);
     await expect(

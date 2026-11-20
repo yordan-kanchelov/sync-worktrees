@@ -7,31 +7,13 @@ export interface ParsedWorktree {
   detached: boolean;
   prunable: boolean;
   locked: boolean;
-  /**
-   * Reason recorded by `git worktree lock --reason`; null for a lock without
-   * a reason. An ordinary reason appears verbatim while one holding a newline,
-   * quote, backslash or other control character comes back double-quoted with
-   * C escapes — which keeps this value single-line and safe to put in a log
-   * message. Newline-terminated output arrives quoted that way by git itself
-   * (`quote_c_style`); NUL-terminated output (`-z`) carries the raw reason, so
-   * the parser applies the same quoting.
-   */
   lockReason: string | null;
 }
 
 const WORKTREE_LIST_ARGS = ["worktree", "list", "--porcelain"];
 
-// Set once a git without `worktree list -z` (added in git 2.36) has refused it,
-// so every later listing in the process goes straight to the newline form.
 let nulListingUnsupported = false;
 
-/**
- * `git worktree list --porcelain` output for parseWorktreeListPorcelain,
- * NUL-terminated when git supports it. The newline form cannot represent a
- * worktree path containing a newline — git prints it raw, splitting one record
- * across two lines — so it is only the fallback for a git older than 2.36,
- * which rejects `-z` with "unknown switch".
- */
 export async function readWorktreeListPorcelain(git: Pick<SimpleGit, "raw">): Promise<string> {
   if (!nulListingUnsupported) {
     try {
@@ -44,7 +26,6 @@ export async function readWorktreeListPorcelain(git: Pick<SimpleGit, "raw">): Pr
   return git.raw(WORKTREE_LIST_ARGS);
 }
 
-/** Test hook: forget a recorded `-z` refusal. */
 export function resetWorktreeListCapabilityForTests(): void {
   nulListingUnsupported = false;
 }
@@ -53,8 +34,6 @@ export function resetWorktreeListCapabilityForTests(): void {
 const NEEDS_QUOTING = /["\\\x00-\x1f\x7f]/g;
 const C_ESCAPES: Record<string, string> = { "\n": "\\n", "\t": "\\t", "\r": "\\r", '"': '\\"', "\\": "\\\\" };
 
-// git's quote_c_style for a value that must stay on one line: verbatim unless
-// it holds a double quote, a backslash or a control character.
 function quoteCStyle(value: string): string {
   const body = value.replace(
     NEEDS_QUOTING,
@@ -63,10 +42,6 @@ function quoteCStyle(value: string): string {
   return body === value ? value : `"${body}"`;
 }
 
-/**
- * Parses `git worktree list --porcelain` output in either form: NUL-terminated
- * (`-z`, recognised by the presence of a NUL) or newline-terminated.
- */
 export function parseWorktreeListPorcelain(output: string): ParsedWorktree[] {
   const nulTerminated = output.includes("\0");
   const worktrees: ParsedWorktree[] = [];

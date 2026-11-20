@@ -119,8 +119,6 @@ export class SyncOutcomeAccumulator {
     };
   }
 
-  // Rolls back for a retry. Facts recorded since the snapshot (created,
-  // removed, updated, preserved) already happened on disk, so they are kept.
   restore(snapshot: { counts: SyncOutcomeCounts; actions: SyncOutcomeAction[] }): void {
     const facts = this.actions.slice(snapshot.actions.length).filter(isFactAction);
     this.counts = cloneCounts(snapshot.counts);

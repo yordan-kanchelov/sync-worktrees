@@ -72,8 +72,6 @@ describe("TrashMigrationService", () => {
     const manifest = entries[0].manifest;
     expect(manifest.reason).toBe("legacy-adopt");
     expect(manifest.source).toBe(".removed");
-    // Retention counts from adoption, not the legacy quarantine time — the
-    // original timestamp is kept only as a forensic field.
     expect(new Date(manifest.deletedAt).getTime()).toBeGreaterThanOrEqual(before);
     expect(new Date(manifest.deletedAt).getTime()).toBeLessThanOrEqual(after);
     expect(manifest.legacyQuarantinedAt).toBe("2026-06-01T10:30:00.500Z");
@@ -82,7 +80,6 @@ describe("TrashMigrationService", () => {
     expect(manifest.headOid).toBeNull();
     expect(manifest.keepPinOnReap).toBe(false);
     await expect(fs.readFile(path.join(entries[0].payloadPath, "file.txt"), "utf-8")).resolves.toBe("quarantined");
-    // The emptied legacy dir is removed so the migration converges.
     await expect(fs.access(path.join(worktreeDir, ".removed"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: "trash_adopt", result: "success" }));
   });
@@ -97,8 +94,6 @@ describe("TrashMigrationService", () => {
 
     await migration.migrateLegacyUnlocked();
 
-    // Backdating deletedAt to the quarantine time would make this entry
-    // expired on arrival and a same-tick reap would delete it with zero grace.
     const reaper = new TrashReaperService(
       config,
       trashService,
@@ -167,8 +162,6 @@ describe("TrashMigrationService", () => {
     const manifest = entries[0].manifest;
     expect(manifest.branch).toBe("feat");
     expect(manifest.source).toBe(".diverged");
-    // Retention counts from adoption, never from the legacy timestamp — a
-    // backdated deletedAt would let the reaper delete the entry the same tick.
     expect(new Date(manifest.deletedAt).getTime()).toBeGreaterThan(Date.now() - 60_000);
     expect(manifest.legacyQuarantinedAt).toBe("2026-06-02T08:00:00.000Z");
     expect(manifest.headOid).toBe("deadbeef");
@@ -200,12 +193,6 @@ describe("TrashMigrationService", () => {
     expect(entries).toHaveLength(0);
   });
 
-  // .diverged-info.json is an unvalidated JSON.parse of a file a user can
-  // edit, and its originalBranch/localCommit become the adopted manifest's
-  // branch/headOid — the two fields readManifest now holds to git's own rules.
-  // Adopting a value readManifest would refuse would move the directory out of
-  // .diverged/ (where its legacy keep ref still protects it) and into an entry
-  // nothing ever lists, restores or reaps again.
   it.each([
     { scenario: "an option-shaped branch", info: { originalBranch: "-m" } },
     { scenario: "a branch with a range expression", info: { originalBranch: "a..b" } },
@@ -234,9 +221,6 @@ describe("TrashMigrationService", () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("no parseable"));
   });
 
-  // The control: the identical fixture without the tampering is adopted, so
-  // the assertions above are about the two edited fields and not about a
-  // migration that never runs.
   it("adopts the same .diverged/ entry when the recorded branch and commit are well formed", async () => {
     const legacyDir = path.join(worktreeDir, ".diverged", "2026-06-02-feat-tampered");
     await fs.mkdir(legacyDir, { recursive: true });
@@ -294,8 +278,6 @@ describe("TrashMigrationService", () => {
       const pinRef = entries[0].manifest.pinRef;
       expect(pinRef).toBeTruthy();
 
-      // Deleted exactly once — not twice, and not left behind for the reaper
-      // to shadow with a second permanent keep/<trashId>.
       expect(deleteRefCalls(LEGACY_KEEP_REF)).toBe(1);
 
       const deleteOrder =
@@ -306,11 +288,8 @@ describe("TrashMigrationService", () => {
         gitStub.updateRef.mock.invocationCallOrder[
           gitStub.updateRef.mock.calls.findIndex((args: unknown[]) => args[0] === pinRef)
         ];
-      // The ref that exists to stop never-pushed commits being collected is
-      // released only once something else is holding them.
       expect(pinOrder).toBeLessThan(deleteOrder);
       expect(gitStub.createBundleFromRef.mock.invocationCallOrder[0]).toBeLessThan(deleteOrder);
-      // ...and the manifest that survives a crash already records both.
       expect(entries[0].manifest.bundleFile).toBe("commits.bundle");
     });
 
@@ -323,7 +302,6 @@ describe("TrashMigrationService", () => {
       const { entries } = await trashService.listEntries();
       expect(entries).toHaveLength(0);
       expect(deleteRefCalls(LEGACY_KEEP_REF)).toBe(0);
-      // The backup — and the ref holding its commits — are both still there.
       await expect(fs.access(path.join(worktreeDir, ".diverged", NAME, "work.txt"))).resolves.toBeUndefined();
     });
 
@@ -351,7 +329,6 @@ describe("TrashMigrationService", () => {
 
       const { entries } = await trashService.listEntries();
       expect(entries).toHaveLength(1);
-      // Nothing outside this entry's own pin ref was ever deleted.
       const pinRef = entries[0].manifest.pinRef;
       for (const [name] of gitStub.deleteRef.mock.calls) expect(name).toBe(pinRef);
       if (typeof keepRef === "string") expect(deleteRefCalls(keepRef)).toBe(0);
@@ -380,7 +357,6 @@ describe("TrashMigrationService", () => {
       expect(deleteRefCalls(LEGACY_KEEP_REF)).toBe(1);
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("could not delete its legacy keep ref"));
       expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("Failed to adopt"));
-      // The ref may still exist, so the payload must keep pointing at it.
       const info = JSON.parse(await fs.readFile(path.join(entries[0].payloadPath, ".diverged-info.json"), "utf-8"));
       expect(info.keepRef).toBe(LEGACY_KEEP_REF);
     });
@@ -393,30 +369,19 @@ describe("TrashMigrationService", () => {
       const { entries } = await trashService.listEntries();
       const id = entries[0].manifest.id;
       const info = JSON.parse(await fs.readFile(path.join(entries[0].payloadPath, ".diverged-info.json"), "utf-8"));
-      // The released ref is no longer advertised as a way back...
       expect(info.keepRef).toBeNull();
-      // ...and the instruction no longer points at a TUI view that lists only
-      // `.diverged/` directories, which this payload has left.
       expect(info.instruction).not.toContain("TUI");
       expect(info.instruction).toContain(`sync-worktrees trash restore ${id}`);
-      // The copy is detached from git, so recovery runs against the bare repo.
       expect(info.instruction).toContain(`git -C /repo/.bare branch feat-recovered ${entries[0].manifest.headOid}`);
       expect(info.instruction).not.toContain("git diff");
       expect(info.instruction).not.toContain("git push");
-      // An adopted backup is keepPinOnReap: the reaper mints a permanent
-      // `keep/<id>` for its never-pushed commits rather than letting expiry
-      // collect them, so only the FILES age out. An instruction that says
-      // discarding needs nothing done would be the same defect as the TUI one
-      // above — a payload describing a flow that does not apply to it.
       expect(info.instruction).not.toContain("nothing to do");
       expect(info.instruction).toContain(`sync-worktrees trash drop-keep-ref ${id}`);
       expect(info.trashId).toBe(id);
-      // Everything else the diverge flow recorded is preserved verbatim.
       expect(info.originalBranch).toBe("feat");
       expect(info.localCommit).toBe("deadbeef");
       expect(info.remoteCommit).toBe("cafe1234");
       expect(info.divergedAt).toBe("2026-06-02T08:00:00.000Z");
-      // The user's own files are untouched.
       await expect(fs.readFile(path.join(entries[0].payloadPath, "work.txt"), "utf-8")).resolves.toBe("diverged work");
     });
   });

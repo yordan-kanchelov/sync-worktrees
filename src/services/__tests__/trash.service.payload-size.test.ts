@@ -14,17 +14,9 @@ import type { GitService } from "../git.service";
 import type { Logger } from "../logger.service";
 import type { RemovalAuditService } from "../removal-audit.service";
 
-// Shared with the module factory below. vitest hoists `vi.mock` above every
-// import in this file, so the factory cannot close over ordinary module-scope
-// bindings — only over a `vi.hoisted` value.
 const probe = vi.hoisted(() => ({
-  // One record per size scan: what was scanned, and whether the worktree the
-  // payload came from was still on disk at that instant. The second field is
-  // what makes these assertions impossible to satisfy vacuously — a scan of a
-  // live worktree necessarily sees its source directory.
   scans: [] as { dirPath: string; sourceOnDisk: boolean }[],
   sourcePath: "",
-  // When set, stands in for the real `du`.
   override: null as null | ((dirPath: string) => Promise<number>),
 }));
 
@@ -101,8 +93,6 @@ describe("TrashService payload sizing", () => {
       reason: "prune",
     });
 
-    // The removal path holds the repository lock from end to end, so the one
-    // thing it must never do is exec `du` over a worktree.
     expect(probe.scans).toEqual([]);
     expect(entry.manifest.sizeBytes).toBeNull();
     expect(await readManifestFromDisk(entry.containerPath)).toMatchObject({ sizeBytes: null });
@@ -117,15 +107,12 @@ describe("TrashService payload sizing", () => {
 
     const { entries } = await service.listEntriesWithSizes();
 
-    // `sourceOnDisk: false` is the load-bearing half: a scan that ran before
-    // the rename would have found the worktree still in place.
     expect(probe.scans).toEqual([{ dirPath: entry.payloadPath, sourceOnDisk: false }]);
     expect(entries[0].manifest.sizeBytes).toBeGreaterThan(0);
     expect(await readManifestFromDisk(entry.containerPath)).toMatchObject({
       sizeBytes: entries[0].manifest.sizeBytes,
     });
 
-    // Persisted, so the next pass is free.
     const again = await service.listEntriesWithSizes();
     expect(probe.scans).toHaveLength(1);
     expect(again.entries[0].manifest.sizeBytes).toBe(entries[0].manifest.sizeBytes);
@@ -139,9 +126,6 @@ describe("TrashService payload sizing", () => {
     });
     probe.override = () => Promise.reject(new Error("du: cannot read directory"));
 
-    // listEntries only returns containers whose manifest passes every schema
-    // check, so an entry appearing here at all is the assertion that the
-    // manifest is valid, not merely present.
     const failed = await service.listEntriesWithSizes();
     expect(failed.invalid).toEqual([]);
     expect(failed.entries.map((listed) => listed.manifest.id)).toEqual([entry.manifest.id]);
@@ -174,8 +158,6 @@ describe("TrashService payload sizing", () => {
       branch: "feature-v",
       reason: "prune",
     });
-    // A restore or a reap — both of which hold the repo lock this sizing pass
-    // deliberately does not — emptying the container mid-scan.
     probe.override = async (dirPath) => {
       await fs.rm(path.dirname(dirPath), { recursive: true, force: true });
       return 4096;
@@ -185,8 +167,6 @@ describe("TrashService payload sizing", () => {
 
     expect(measured.entries[0].manifest.sizeBytes).toBeNull();
     expect(existsSync(entry.containerPath)).toBe(false);
-    // Neither a listed entry nor an unrecognized container the reaper would
-    // warn about forever.
     expect(await service.listEntries()).toEqual({ entries: [], invalid: [] });
   });
 
@@ -197,9 +177,6 @@ describe("TrashService payload sizing", () => {
       reason: "diverged-replace",
     });
     probe.override = async (dirPath) => {
-      // The diverged-replace flow reaching markReplacementCreated under the
-      // repo lock, while this scan runs without it. A size written onto the
-      // manifest this pass listed would erase that.
       const { entries } = await service.listEntries();
       await service.markReplacementCreated(entries[0], new Date("2026-01-02T03:04:05.000Z"));
       return path.basename(dirPath) === "payload" ? 4096 : 0;
@@ -214,9 +191,6 @@ describe("TrashService payload sizing", () => {
     });
   });
 
-  // An unknown size is what the force-clean confirmation shows next to its
-  // byte total and what the reaper's warning threshold has to ignore. Folding
-  // it in as zero would understate both without ever saying so.
   it("counts an unsized entry as an unknown size rather than as zero bytes", async () => {
     await service.trashDirectory({ dirPath: await makeSourceDir("measured"), reason: "orphan" });
     await service.listEntriesWithSizes();
@@ -233,11 +207,6 @@ describe("TrashService payload sizing", () => {
     expect(summary.totalSizeBytes).toBe(measuredBytes);
   });
 
-  // Before the scan moved off the repository lock it ran inside the removal
-  // fan-out, so a large prune sized maxWorktreeRemoval worktrees at a time.
-  // Running them one after another here would multiply the wall clock of that
-  // prune by the same factor — off the lock, but still inside the sync that is
-  // waiting on it.
   it("scans up to maxWorktreeRemoval payloads at once — neither serial nor unbounded", async () => {
     for (const name of ["a", "b", "c", "d", "e", "f"]) {
       await service.trashDirectory({ dirPath: await makeSourceDir(name), reason: "prune" });
@@ -249,18 +218,12 @@ describe("TrashService payload sizing", () => {
     probe.override = async () => {
       inFlight++;
       peak = Math.max(peak, inFlight);
-      // Hold every scan open until all six have been admitted or the limiter
-      // has refused to admit more: a serial implementation parks on the first
-      // and never reaches the release below, so the peak it reports is 1.
       await new Promise<void>((resolve) => release.push(resolve));
       inFlight--;
       return 4096;
     };
 
     const scanning = service.listEntriesWithSizes();
-    // Let the limiter admit everything it is willing to admit while nothing is
-    // allowed to finish: whatever is parked after the event loop has gone
-    // quiet is the cap.
     await vi.waitFor(() => expect(release.length).toBeGreaterThan(0));
     for (let turn = 0; turn < 20; turn++) await new Promise((resolve) => setImmediate(resolve));
     const admittedBeforeAnyCompleted = release.length;

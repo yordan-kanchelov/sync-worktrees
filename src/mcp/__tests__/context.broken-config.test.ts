@@ -11,10 +11,6 @@ import { RepositoryContext } from "../context";
 
 const execFileAsync = promisify(execFile);
 
-// Unbalanced braces: every JS parser rejects this, and the message says so
-// rather than naming a missing field. `node --check` is deliberately not used
-// to assert that anywhere here -- it reports on the file it is handed, not on
-// whatever the module system ends up doing with it.
 const BROKEN_CONFIG = `export default { repositories: [ { name: "app",\n`;
 
 function fixedConfig(bareRepoDir: string, worktreeDir: string): string {
@@ -63,10 +59,6 @@ describe("detectFromPath with a found-but-broken config", () => {
     return notes.find((note) => note.startsWith("Found config at "));
   }
 
-  // The message the loader actually rejected with, recovered from the spy
-  // rather than guessed. Inside vitest the first evaluation of a path goes
-  // through Vite, whose parse error reads nothing like Node's, so hard-coding
-  // one parser's wording here would pin the test to the runner.
   async function lastLoadFailureMessage(): Promise<string> {
     const results = loadConfigFileSpy.mock.results;
     expect(results.length).toBeGreaterThan(0);
@@ -83,8 +75,6 @@ describe("detectFromPath with a found-but-broken config", () => {
     const result = await ctx.detectFromPath(project);
 
     expect(result.configPath).toBeNull();
-    // Whole-string equality: the note carries the loader's own error verbatim,
-    // not a generic "could not load", and names the file it came from.
     const message = await lastLoadFailureMessage();
     expect(message).toContain("Failed to load config file:");
     expect(brokenConfigNote(result.notes)).toBe(
@@ -99,14 +89,11 @@ describe("detectFromPath with a found-but-broken config", () => {
     expect(brokenConfigNote(first.notes)).toBeDefined();
     expect(loadConfigFileSpy).toHaveBeenCalledTimes(1);
 
-    // A plain directory is never entered into the discovery cache, so these are
-    // genuine cache misses: only the failure gate can keep the loader idle.
     const second = await ctx.detectFromPath(project);
     const third = await ctx.detectFromPath(path.join(workspace, "project"));
     expect(ctx.__discoveryCacheSizeForTest()).toBe(0);
     expect(loadConfigFileSpy).toHaveBeenCalledTimes(1);
 
-    // Still reported every time, even though nothing was re-read.
     expect(brokenConfigNote(second.notes)).toBeDefined();
     expect(brokenConfigNote(third.notes)).toBeDefined();
   });
@@ -131,29 +118,17 @@ describe("detectFromPath with a found-but-broken config", () => {
 
   it("re-imports a same-size edit that leaves mtime alone, on the hash by itself", async () => {
     const ctx = new RepositoryContext();
-    // Pinned to a whole second, so mtimeMs is exactly representable on any
-    // filesystem and can be put back identically after the edit. Restoring
-    // `stat.mtime` cannot do that: it is a Date, so it truncates the
-    // sub-millisecond precision ext4 really stores, the restored mtimeMs no
-    // longer equals the recorded one, and the gate releases on its mtime half
-    // without the hash ever being consulted -- which is the half this test
-    // exists to take out of play.
     const pinnedSeconds = 1_700_000_000;
     await fs.utimes(configPath, pinnedSeconds, pinnedSeconds);
     const before = await fs.stat(configPath);
     await ctx.detectFromPath(project);
     expect(loadConfigFileSpy).toHaveBeenCalledTimes(1);
 
-    // One character, same byte count: the shape a stat-only gate misses on a
-    // filesystem whose mtime resolution is coarser than the edit.
     const sameSizeBreakage = BROKEN_CONFIG.replace("{ name", "} name");
     expect(sameSizeBreakage.length).toBe(BROKEN_CONFIG.length);
     await fs.writeFile(configPath, sameSizeBreakage, "utf-8");
     await fs.utimes(configPath, pinnedSeconds, pinnedSeconds);
 
-    // The premise, asserted rather than assumed: a stat-only gate -- mtime and
-    // size alike -- has nothing whatsoever to go on here, so a re-import below
-    // can only have come from the content hash.
     const after = await fs.stat(configPath);
     expect(after.mtimeMs).toBe(before.mtimeMs);
     expect(after.size).toBe(before.size);
@@ -170,15 +145,10 @@ describe("detectFromPath with a found-but-broken config", () => {
     const beforeMtimeMs = (await fs.stat(configPath)).mtimeMs;
     const future = new Date(Date.now() + 10_000);
     await fs.utimes(configPath, future, future);
-    // Guard against coarse-resolution filesystems: the premise of this test is
-    // that fs.stat really does report a different mtime afterwards.
     expect((await fs.stat(configPath)).mtimeMs).toBeGreaterThan(beforeMtimeMs);
 
     const retried = await ctx.detectFromPath(project);
     expect(loadConfigFileSpy).toHaveBeenCalledTimes(2);
-    // This second evaluation is the one T35 routes through a worker thread,
-    // which is a real Node module registry rather than vitest's: the note it
-    // produces carries the parse error Node itself reports.
     expect(brokenConfigNote(retried.notes)).toContain("Unexpected end of input");
   });
 

@@ -8,7 +8,6 @@ import type { ForceCleanPreview, ForceCleanRepositoryPreview, ForceCleanReposito
 
 const settle = (): Promise<unknown> => new Promise((resolve) => setTimeout(resolve, 100));
 
-// The purge needs the word typed and Enter, not a single key.
 async function confirm(stdin: { write: (data: string) => void }): Promise<void> {
   stdin.write("clean");
   await settle();
@@ -52,9 +51,6 @@ describe("ForceCleanModal", () => {
     cleanup();
   });
 
-  // The modal is the consent record: the ids behind the counts it rendered are
-  // what `y` authorizes, no matter how long the user takes to press it or what
-  // a cron sync trashes in between.
   it("confirms with the ids it displayed, not the ones a later preview would return", async () => {
     const rows: ForceCleanRepositoryPreview[] = [{ repoIndex: 0, repoName: "app", preview: preview() }];
     const getPreview = vi.fn<() => Promise<ForceCleanRepositoryPreview[]>>().mockResolvedValue(rows);
@@ -66,8 +62,6 @@ describe("ForceCleanModal", () => {
     await settle();
     expect(lastFrame()).toContain("2 trash");
 
-    // A sync runs while the modal waits for a keypress and trashes another
-    // worktree; every fresh look at the repo would now report three.
     getPreview.mockResolvedValue([
       {
         repoIndex: 0,
@@ -88,8 +82,6 @@ describe("ForceCleanModal", () => {
     ]);
   });
 
-  // A repo whose preview failed shows no counts, so it contributes no
-  // selection — the service then has nothing to purge there.
   it("sends no selection for a repository whose preview failed", async () => {
     const forceClean = vi.fn().mockResolvedValue([]);
     const { stdin } = render(
@@ -123,15 +115,10 @@ describe("ForceCleanModal", () => {
     await confirm(stdin);
     await settle();
 
-    // The box wraps at 78 columns, so match the phrase either side of the seam.
     expect(lastFrame()).toContain("left 1 trash and 2 ref(s)");
     expect(lastFrame()).toContain("added after this preview");
   });
 
-  // "Active worktrees are not synced, changed, or removed" was true about the
-  // files and false about the object store they all share, which is exactly
-  // what the gc rewrites. The confirmation has to say which of the two it
-  // means before it asks for a keypress.
   it("says the gc reaches the object store every worktree shares", async () => {
     const { lastFrame } = render(
       <ForceCleanModal
@@ -143,15 +130,12 @@ describe("ForceCleanModal", () => {
 
     await settle();
     const frame = lastFrame() ?? "";
-    // Wrapping at 78 columns puts line breaks mid-sentence, so match on words.
     expect(frame).toContain("object store");
     expect(frame).toContain("shares");
     expect(frame).toMatch(/worktree\s+files are not synced, changed, or removed/);
     expect(frame).not.toMatch(/worktrees are not synced, changed, or removed/);
   });
 
-  // A single `y` sat right next to `n`, and a held key repeats: neither is a
-  // decision to delete something irreversibly.
   it("does not purge on y, or on Enter before the word is typed", async () => {
     const forceClean = vi.fn().mockResolvedValue([result()]);
     const { stdin, lastFrame } = render(

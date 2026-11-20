@@ -15,12 +15,6 @@ interface CliRun {
   elapsedMs: number;
 }
 
-// git prompts for credentials on /dev/tty whenever a terminal is attached,
-// regardless of stdio pipes. Before every git subprocess ran with
-// GIT_TERMINAL_PROMPT=0, a remote without a usable credential helper made the
-// clone/fetch print "Username for ...:" into the TUI and wait until the 300 s
-// inactivity timeout killed it. Now git fails within a second with its own
-// "terminal prompts disabled" message and the run reports what to configure.
 describe("CLI fails fast when the remote needs credentials git cannot obtain", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   let tempDir: string;
@@ -40,7 +34,6 @@ describe("CLI fails fast when the remote needs credentials git cannot obtain", (
     configPath = path.join(tempDir, "sync-worktrees.config.js");
     await fs.mkdir(home, { recursive: true });
 
-    // Every request needs credentials, like a private HTTPS remote.
     requests.length = 0;
     server = http.createServer((req, res) => {
       requests.push(req.url ?? "");
@@ -71,11 +64,6 @@ describe("CLI fails fast when the remote needs credentials git cannot obtain", (
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  // No credential source may answer for the CLI: a fresh HOME (no global
-  // helper, no ~/.netrc), no system config, no askpass, no GIT_CONFIG_* and no
-  // inherited GIT_TERMINAL_PROMPT — the CLI itself must disable the prompt.
-  // Asynchronous spawn, not spawnSync: the 401 server lives in this process
-  // and has to stay responsive while git talks to it.
   function runCli(): Promise<CliRun> {
     const env: NodeJS.ProcessEnv = { ...process.env };
     for (const key of Object.keys(env)) {
@@ -103,8 +91,6 @@ describe("CLI fails fast when the remote needs credentials git cannot obtain", (
       child.stderr.on("data", (chunk: string) => {
         stderr += chunk;
       });
-      // Backstop only: without the fix and with a terminal attached, git would
-      // wait on its credential prompt until the inactivity timeout.
       const killer = setTimeout(() => child.kill("SIGKILL"), 45_000);
       child.on("error", (error) => {
         clearTimeout(killer);
@@ -131,7 +117,6 @@ describe("CLI fails fast when the remote needs credentials git cannot obtain", (
     expect(run.stderr).toContain("credential helper");
     expect(run.stdout).toContain("0 synced");
     expect(run.stdout).toContain("1 failed");
-    // Nothing was retried and no bare repository was left behind.
     expect(output).not.toContain("Retrying synchronization");
     expect(output).not.toContain("Synchronization finished");
   }, 60_000);

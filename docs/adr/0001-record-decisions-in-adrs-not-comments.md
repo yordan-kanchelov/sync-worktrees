@@ -31,15 +31,18 @@ should be readable without opening every file it touches.
    - `sync-worktrees.config.example.js`: the annotated example config.
 3. **Decisions live in `docs/adr/`.** There is one ADR per subsystem (see the [index](./README.md)), with entries
    grouped by source file and symbol. A new, substantial or reversing decision gets its own numbered ADR.
-4. **Shortcuts become issues.** A known shortcut is tracked as a GitHub issue labelled `comment-debt`, not
+4. **Empty `catch` blocks are allowed** (`no-empty` with `allowEmptyCatch`). A comment used to be the only way to
+   satisfy `no-empty` for an intentional swallow. Now the reason goes in the subsystem ADR, and the swallow itself
+   is audited in a `comment-debt` issue.
+5. **Shortcuts become issues.** A known shortcut is tracked as a GitHub issue labelled `comment-debt`, not
    explained away next to the code.
-5. **Ratchet, not big bang.** Comments that remain are grandfathered per file in `eslint-suppressions.json` (ESLint
+6. **Ratchet, not big bang.** Comments that remain are grandfathered per file in `eslint-suppressions.json` (ESLint
    bulk suppressions):
    - A file may not gain a comment.
    - When a file loses one, `pnpm lint` fails with "suppressions left that do not occur anymore" until the
      baseline is tightened with `--prune-suppressions`.
    - The count only goes down. Loosening the baseline with `--suppress-all` or `--suppress-rule` is not allowed.
-6. **Repeatable.** The `/delete-comment` Claude Code skill (`.claude/skills/delete-comment/`) runs the
+7. **Repeatable.** The `/delete-comment` Claude Code skill (`.claude/skills/delete-comment/`) runs the
    classify → delete → ADR → issue → prune loop again on any path.
 
 ## Consequences

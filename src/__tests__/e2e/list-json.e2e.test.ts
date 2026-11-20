@@ -12,10 +12,6 @@ import { createMockLogger } from "../test-utils";
 import type { ListedRepository } from "../../cli/list";
 import type { RepositoryConfig } from "../../types";
 
-// The built CLI against real git: config discovery from a nested directory and
-// through SYNC_WORKTREES_CONFIG, and `list --json` counting what a real sync
-// left on disk — worktrees first, then a trash entry once a remote branch is
-// pruned.
 describe("sync-worktrees list --json and config discovery (E2E)", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   let tempDir: string;

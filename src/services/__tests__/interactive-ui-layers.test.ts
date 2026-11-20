@@ -22,10 +22,6 @@ const clipboardMocks = vi.hoisted(() => ({ copyToClipboard: vi.fn() }));
 
 vi.mock("../../utils/clipboard", () => ({ copyToClipboard: clipboardMocks.copyToClipboard }));
 
-// The three layers InteractiveUIService is built from, exercised without Ink:
-// none of them imports the interface, and each reads the repositories through
-// its host, so a reload that swaps the generation is seen on the next call.
-
 function makeSyncService(
   name: string,
   overrides: Record<string, unknown> = {},
@@ -101,8 +97,6 @@ describe("RepositoryOperations", () => {
     ]);
   });
 
-  // The home screen's dirty/unpushed column is this check remembered; it must
-  // not be credited to whichever repository a reload moved onto the index.
   it("hands a finished status check to the host, unless a reload moved the index", async () => {
     const status = { isClean: false, hasUnpushedCommits: true };
     const probed = (name: string) =>

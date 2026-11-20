@@ -10,13 +10,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { DryRunReport } from "../../cli/dry-run";
 import type { SyncDryRunPlan, SyncDryRunStep } from "../../services/sync-plan";
 
-// `sync --dry-run` through the built CLI against real git. What it must
-// promise: the plan names what the next sync does — and the sync that follows
-// does exactly that — while the dry run itself leaves every worktree, branch,
-// registration, config and trash entry byte-for-byte as it found them. The one
-// documented write is the fetch, which moves remote-tracking refs (and brings
-// in their objects); a second dry run, with nothing new to fetch, leaves the
-// whole tree identical including those.
 describe("sync --dry-run (E2E)", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   let tempDir: string;
@@ -95,9 +88,6 @@ describe("sync --dry-run (E2E)", () => {
     await seed.checkout("main");
   }
 
-  // Every file under `root` by relative path, as a content hash (symlinks by
-  // their target), plus every directory. `ignore` drops paths the one
-  // documented write — the fetch — may touch.
   async function snapshot(root: string, ignore: (rel: string) => boolean = () => false): Promise<Map<string, string>> {
     const entries = new Map<string, string>();
     async function walk(dir: string): Promise<void> {
@@ -111,8 +101,6 @@ describe("sync --dry-run (E2E)", () => {
           entries.set(rel, "dir");
           await walk(full);
         } else if (dirent.name === "packed-refs") {
-          // A pruning fetch rewrites packed-refs when the ref it drops was
-          // packed, so its remote-tracking lines belong to the fetch too.
           const kept = (await fs.readFile(full, "utf-8"))
             .split("\n")
             .filter((line) => !ignore("refs/remotes/") || !line.includes(" refs/remotes/"));
@@ -131,9 +119,6 @@ describe("sync --dry-run (E2E)", () => {
     return entries;
   }
 
-  // Files the dry run's fetch owns: remote-tracking refs, the objects they
-  // brought, FETCH_HEAD. Everything else in the bare repository — local
-  // branches, config, worktree registrations and their indexes — is compared.
   const fetchOwned = (rel: string): boolean =>
     /(^|\/)refs\/remotes(\/|$)/.test(rel) ||
     /(^|\/)objects(\/|$)/.test(rel) ||
@@ -172,13 +157,11 @@ describe("sync --dry-run (E2E)", () => {
       ),
     );
 
-    // Origin moves on: a new branch, new commits on three, one deleted.
     await commitOnRemote("fresh", "fresh-1.txt");
     await commitOnRemote("behind", "behind-2.txt");
     await commitOnRemote("dirty", "dirty-2.txt");
     await commitOnRemote("diverged", "diverged-remote.txt");
     await simpleGit(remote).raw(["branch", "-D", "gone"]);
-    // Local state: uncommitted work in one worktree, a local commit in another.
     await fs.writeFile(path.join(paths.dirty, "dirty-1.txt"), "edited locally\n");
     const divergedGit = simpleGit(paths.diverged);
     await divergedGit.addConfig("user.name", "Test User");
@@ -186,14 +169,10 @@ describe("sync --dry-run (E2E)", () => {
     await fs.writeFile(path.join(paths.diverged, "local.txt"), "local\n");
     await divergedGit.add(".");
     await divergedGit.commit("local work");
-    // Same content, new mtime: the status checks a dry run makes would
-    // rewrite these worktrees' index with the new stat data unless the dry
-    // run keeps git's optional locks off.
     const later = new Date(Date.now() + 60_000);
     for (const branch of ["behind", "excluded", "gone"]) {
       await fs.utimes(path.join(paths[branch], "README.md"), later, later);
     }
-    // And the config stops wanting one branch.
     await writeConfig(configPath, [{ ...repo, branchExclude: ["excluded"] }]);
 
     const before = await snapshot(
@@ -227,7 +206,6 @@ describe("sync --dry-run (E2E)", () => {
     });
     expect(stepFor(plan, "main")).toMatchObject({ kind: "noop", reason: "already_up_to_date" });
 
-    // Nothing but what the fetch owns has changed.
     const after = await snapshot(
       tempDir,
       (rel) => rel.startsWith("remote") || rel.startsWith("seed") || fetchOwned(rel),
@@ -235,14 +213,11 @@ describe("sync --dry-run (E2E)", () => {
     expect(after).toEqual(before);
     await expect(fs.access(path.join(worktreeDir, ".trash"))).rejects.toThrow();
 
-    // With nothing new to fetch, a second dry run leaves the whole tree —
-    // remote-tracking refs, objects and FETCH_HEAD included — identical.
     const settled = await snapshot(tempDir, (rel) => rel.startsWith("remote") || rel.startsWith("seed"));
     const [again] = dryRunJson(configPath);
     expect(planOf(again).steps).toEqual(plan.steps);
     expect(await snapshot(tempDir, (rel) => rel.startsWith("remote") || rel.startsWith("seed"))).toEqual(settled);
 
-    // The human report says the same.
     const text = run(["--config", configPath, "--dry-run"]);
     expect(text.status).toBe(0);
     expect(text.stdout).toMatch(/\+ create\s+fresh/);
@@ -252,7 +227,6 @@ describe("sync --dry-run (E2E)", () => {
     expect(text.stdout).toMatch(/⏭ skip\s+dirty\s+working tree has local changes/);
     expect(text.stdout).toContain("1 to create, 1 to update, 2 to remove, 1 to replace, 1 skipped");
 
-    // And the sync that follows does what the plan said.
     const sync = run(["--config", configPath, "--run-once"]);
     expect(sync.status).toBe(0);
     await expect(fs.access(paths.gone)).rejects.toThrow();
@@ -263,7 +237,6 @@ describe("sync --dry-run (E2E)", () => {
     await expect(fs.access(path.join(paths.diverged, "local.txt"))).rejects.toThrow();
     expect(await fs.readFile(path.join(paths.dirty, "dirty-1.txt"), "utf-8")).toBe("edited locally\n");
 
-    // A plan after that sync has nothing left but the dirty skip.
     const [settledReport] = dryRunJson(configPath);
     const settledPlan = planOf(settledReport);
     expect(settledPlan.counts).toMatchObject({ create: 0, update: 0, remove: 0, replace: 0, skip: 1 });
@@ -289,7 +262,6 @@ describe("sync --dry-run (E2E)", () => {
     expect(planOf(reports.find((r) => r.name === "clone")).steps).toEqual([
       expect.objectContaining({ kind: "clone", branch: "main", path: path.join(project, "clone") }),
     ]);
-    // Not even the lock directory: the project directory was never created.
     await expect(fs.access(project)).rejects.toThrow();
   }, 60000);
 
@@ -355,7 +327,6 @@ describe("sync --dry-run (E2E)", () => {
     expect(await snapshot(cloneDir, fetchOwned)).toEqual(before);
     await expect(fs.access(path.join(cloneDir, "main-2.txt"))).rejects.toThrow();
 
-    // Local changes: the same skip the sync would record.
     await fs.writeFile(path.join(cloneDir, "README.md"), "edited\n");
     const dirty = planOf(dryRunJson(configPath, ["--filter", "clone"])[0]);
     expect(dirty.steps).toEqual([expect.objectContaining({ kind: "skip", reason: "clone_dirty_tree" })]);
@@ -372,7 +343,6 @@ describe("sync --dry-run (E2E)", () => {
 
     await commitOnRemote("main", "main-2.txt", { from: "origin/main" });
     await commitOnRemote("main", "main-3.txt");
-    // Under `depth` the fetch may move the shallow boundary, as documented.
     const shallowFetchOwned = (rel: string): boolean => fetchOwned(rel) || rel === path.join(".git", "shallow");
     const before = await snapshot(cloneDir, shallowFetchOwned);
 
@@ -386,12 +356,9 @@ describe("sync --dry-run (E2E)", () => {
     expect(message).not.toContain("no deepening attempted");
     expect(await snapshot(cloneDir, shallowFetchOwned)).toEqual(before);
 
-    // The sync the plan warned about: it deepens and fast-forwards.
     expect(run(["--config", configPath, "--run-once"]).status).toBe(0);
     await expect(fs.access(path.join(cloneDir, "main-3.txt"))).resolves.toBeUndefined();
 
-    // A wide refspec is narrowed by the sync first; the plan says so and
-    // leaves the config alone.
     await simpleGit(cloneDir).raw([
       "config",
       "--replace-all",

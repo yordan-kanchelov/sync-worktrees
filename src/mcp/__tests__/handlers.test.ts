@@ -50,9 +50,6 @@ function errno(code: string): NodeJS.ErrnoException {
   return Object.assign(new Error(code), { code });
 }
 
-// create_worktree probes its target path on disk (fs.access via probePathExists).
-// The fake /repo/worktrees tree never exists, so default to ENOENT and let the
-// target-path tests override it once per call.
 const fsMock = vi.hoisted(() => ({ access: vi.fn<any>() }));
 
 vi.mock("fs/promises", async (importOriginal) => {
@@ -67,11 +64,7 @@ vi.mock("../../utils/disk-space", () => ({
   calculateSyncDiskSpace: vi.fn().mockResolvedValue("N/A"),
 }));
 
-// Every path the detect_context enrichment asked the status service about, in
-// call order. One entry per git probe, so a path listed twice in the response
-// shows up twice here unless the handler deduplicated it.
 const statusProbes = vi.hoisted(() => [] as string[]);
-// Paths whose status probe rejects, with the error it rejects with.
 const statusFailures = vi.hoisted(() => new Map<string, Error>());
 
 vi.mock("../../services/worktree-status.service", () => {
@@ -103,7 +96,6 @@ vi.mock("../../services/worktree-status.service", () => {
       };
     }
   }
-  // Handed through to the status probes untouched; nothing here scans refs.
   class FakeRefScanScope {}
   return { WorktreeStatusService: FakeStatusService, RefScanScope: FakeRefScanScope };
 });
@@ -193,8 +185,6 @@ function makeCtx(opts: {
     getDefaultBranch: vi.fn<any>().mockReturnValue("main"),
     getWorktreeMetadata: vi.fn<any>().mockResolvedValue(null),
     getRemoteBranchesWithActivity: vi.fn<any>().mockResolvedValue([]),
-    // The real one also weighs sibling branches and the disk; here every branch
-    // gets its preferred (plain) name under the mock service's worktreeDir.
     resolveNewWorktreePath: vi
       .fn<any>()
       .mockImplementation(async (branch: unknown) =>
@@ -236,9 +226,6 @@ function makeCtx(opts: {
 
   const ctx = {
     detectFromPath: vi.fn<any>().mockResolvedValue(opts.discovered ?? makeDiscovered()),
-    // `=== undefined` rather than `??`: a test that passes `discovered: null` is
-    // asking for the no-detected-context branch, and `??` silently handed it a
-    // full context instead — which is how the fallback-throw below went untested.
     getDiscoveredContext: vi
       .fn<any>()
       .mockReturnValue(opts.discovered === undefined ? makeDiscovered() : opts.discovered),
@@ -272,8 +259,6 @@ function makeCtx(opts: {
 
 function parseResponse(result: any): any {
   const parsed = JSON.parse(result.content[0].text);
-  // Every tool advertises an outputSchema, so a success result must also carry
-  // structuredContent — the SDK turns a result that omits it into an error.
   if (result.isError !== true) {
     expect(result.structuredContent).toEqual(parsed);
   }
@@ -311,13 +296,6 @@ describe("handleListWorktrees", () => {
     expect(git.getWorktrees).toHaveBeenCalled();
   });
 
-  // divergence used to be a `rev-list --left-right --count HEAD...@{upstream}`
-  // of its own, run beside the status probe; it is a field of the status result
-  // now. Nothing else pinned the wiring, so a listing that silently stopped
-  // reporting it -- or reported one thing at the top level and another under
-  // `status` -- passed the whole suite. Both places are the status result's own
-  // answer, and the advertised schema is parsed here rather than eyeballed
-  // because `divergence` is a *required* member of the status object now.
   it("reports each worktree's divergence from its status result, at both places the schema names", async () => {
     const divergence = { ahead: 5, behind: 2 };
     const { ctx } = makeCtx({
@@ -348,8 +326,6 @@ describe("handleListWorktrees", () => {
     expect(listWorktreesOutputSchema.parse(body).worktrees?.[0].divergence).toEqual(divergence);
   });
 
-  // A worktree with no upstream ref to compare against says so, rather than
-  // reporting the 0/0 that means "level with its upstream".
   it("passes a null divergence through as null, not as zero", async () => {
     const { ctx } = makeCtx({
       git: {
@@ -838,9 +814,6 @@ describe("handleCreateWorktree", () => {
   });
 });
 
-// The sync planner prunes every registered worktree outside the FILTERED remote
-// branch list, and a worktree created seconds ago passes every canRemove gate.
-// A create that the next tick undoes is refused up front instead.
 describe("handleCreateWorktree branch-filter guard", () => {
   function makeFilteredCtx(config: Record<string, unknown>, git: Partial<MockGit> = {}): ReturnType<typeof makeCtx> {
     return makeCtx({
@@ -888,9 +861,6 @@ describe("handleCreateWorktree branch-filter guard", () => {
     expect(git.addWorktree).toHaveBeenCalled();
   });
 
-  // resolveSyncBranches puts the default branch back into the inventory whatever
-  // the filters say, for as long as origin still has it, so refusing it here
-  // would refuse a worktree sync never prunes.
   it("allows the default branch even when branchInclude excludes it", async () => {
     const { ctx, git } = makeFilteredCtx({ branchInclude: ["feature/*"] });
 
@@ -975,8 +945,6 @@ describe("handleCreateWorktree branch-filter guard", () => {
     expect(git.getRemoteBranchesWithActivity).not.toHaveBeenCalled();
   });
 
-  // The common case must cost nothing: with no filter configured the guard
-  // returns before it reads the default branch or the remote ref store.
   it("reads no git state at all when no filter is configured", async () => {
     const { ctx, git } = makeCtx({
       git: { branchExists: vi.fn<any>().mockResolvedValue({ local: false, remote: true }) },
@@ -989,8 +957,6 @@ describe("handleCreateWorktree branch-filter guard", () => {
     expect(git.getRemoteBranchesWithActivity).not.toHaveBeenCalled();
   });
 
-  // filterBranchesByName applies a list only on length > 0, so [] is "no filter"
-  // in the runner. The guard reads it through the same function, and must agree.
   it("treats an empty branchInclude/branchExclude as no filter, as the runner does", async () => {
     const { ctx, git } = makeFilteredCtx({ branchInclude: [], branchExclude: [] });
 
@@ -1169,8 +1135,6 @@ describe("handleSync", () => {
       branch: "b",
       path: "/repo/worktrees/b",
     };
-    // The runner collects per-worktree failures via Promise.allSettled and
-    // records them on the outcome instead of rejecting sync().
     service.sync.mockResolvedValue({
       started: true,
       outcome: {
@@ -1184,7 +1148,6 @@ describe("handleSync", () => {
     const result = await invoke(handleSync, ctx, {});
     const body = parseResponse(result);
 
-    // The call itself completed, so this is a structured result, not an error.
     expect(result.isError).not.toBe(true);
     expect(body.success).toBe(false);
     expect(body.failed).toBe(1);
@@ -1274,9 +1237,6 @@ describe("handleSync", () => {
 
   it("returns only skips recorded by the current run, not stale ones from a previous run", async () => {
     const { ctx, service } = makeCtx({});
-    // The real service clears recorded skips at the start of sync() (inside
-    // the lock); the handler no longer clears them itself. Simulate that:
-    // stale skips exist before sync, sync replaces them with the new run's.
     service.getRecordedSkips.mockReturnValue([{ kind: "dirty_tree" }]);
     service.sync.mockImplementation(async () => {
       service.getRecordedSkips.mockReturnValue([
@@ -1325,8 +1285,6 @@ describe("handleSync", () => {
   });
 
   it("returns LOCK_UNAVAILABLE naming the path and errno when the repo lock cannot be taken", async () => {
-    // Not contention and not retryable: the sync never ran. The error must
-    // carry the cause rather than claim a sync is already in progress.
     const { ctx, service } = makeCtx({});
     service.sync.mockResolvedValue({
       started: false,
@@ -1360,20 +1318,15 @@ describe("handleSync", () => {
     return notify.mock.calls.map((call: unknown[]) => (call[0] as any).params);
   }
 
-  // The one rule the protocol puts on a progress token: every notification's
-  // value is above the one before it.
   function expectIncreasing(params: Array<{ progress: number; total?: number }>): void {
     for (let index = 1; index < params.length; index++) {
       expect(params[index].progress).toBeGreaterThan(params[index - 1].progress);
     }
-    // A total is only ever sent when the progress fits inside it.
     for (const param of params) {
       if (param.total !== undefined) expect(param.total).toBeGreaterThanOrEqual(param.progress);
     }
   }
 
-  // Subscribes a listener the way attachProgressReporter does and hands back a
-  // function that pushes one event through it.
   function wireProgress(service: any): (event: ProgressEvent) => void {
     const listeners: Array<(event: unknown) => void> = [];
     service.onProgress = vi.fn<any>().mockImplementation((listener: any) => {
@@ -1416,8 +1369,6 @@ describe("handleSync", () => {
     });
   });
 
-  // The phases carry their own item counts now; a client showing a bar wants
-  // those rather than "the fifth event of this sync".
   it("reports the counts an event carries as progress and total", async () => {
     const { ctx, service } = makeCtx({});
     const emit = wireProgress(service);
@@ -1450,9 +1401,6 @@ describe("handleSync", () => {
     });
   });
 
-  // "The progress value MUST increase with each notification, even if the total
-  // is unknown" (MCP spec, notifications/progress) — while a sync's counts
-  // restart at 1 in every phase and in every stage of a phase.
   it("keeps progress increasing across phases and stages that restart their counts", async () => {
     const { ctx, service } = makeCtx({});
     const emit = wireProgress(service);
@@ -1471,7 +1419,6 @@ describe("handleSync", () => {
           total: 2,
         });
       }
-      // Same phase, second stage: the count starts over at 1.
       emit({ phase: "prune", message: "Pruning stale worktrees: 'g1' (1/1)", processed: 1, total: 1 });
       emit({ phase: "cleanup", message: "Cleanup complete" });
       return { started: true, outcome: syncOutcome() };
@@ -1483,21 +1430,13 @@ describe("handleSync", () => {
     const params = notifiedParams(notify);
     expect(params.map((param) => param.progress)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expectIncreasing(params);
-    // The counted runs keep their own denominators, offset by what came before.
     expect(params[2]).toMatchObject({ progress: 3, total: 5 });
     expect(params[8]).toMatchObject({ progress: 9, total: 9 });
   });
 
-  // The stream git really produces: four transfer stages, each opening on
-  // `0% (0/n)` and closing on a 100% line git prints twice (once plain, once
-  // with ", done."). Counting those as items reported the same progress twice —
-  // and made a three-branch sync of a 1200-object repository end in the
-  // thousands, with the client's bar filling and resetting once per stage.
   it("keeps progress increasing across a real git transfer stream", async () => {
     const { ctx, service } = makeCtx({});
     const emit = wireProgress(service);
-    // Built by the handler the git clients actually run, so the events carry
-    // whatever shape it really produces.
     const transferred: ProgressEvent[] = [];
     const objects = 1200;
     const gitProgress = makeGitProgressHandler(createMockLogger, (event) => transferred.push(event));
@@ -1529,9 +1468,6 @@ describe("handleSync", () => {
 
     const params = notifiedParams(notify);
     expectIncreasing(params);
-    // A transfer event is one tick: its percentage is already in the message,
-    // and its object count is not a count of anything the sync is working
-    // through. 1 fetch + 24 transfer + 1 create = 26 ticks before the items.
     expect(params.map((param) => param.progress)).toEqual(
       [...Array(26).keys()].map((index) => index + 1).concat([27, 28, 29]),
     );
@@ -1539,15 +1475,12 @@ describe("handleSync", () => {
     expect(params.at(-1)).toMatchObject({ progress: 29, total: 29 });
   });
 
-  // A stage that never reaches its total — an attempt that failed part way and
-  // was retried — must not leave the next stage reporting a smaller total.
   it("never reports a total below the one already sent", async () => {
     const { ctx, service } = makeCtx({});
     const emit = wireProgress(service);
     service.sync.mockImplementation(async () => {
       emit({ phase: "update", message: "Checking worktrees for updates: 'a' (1/1000)", processed: 1, total: 1000 });
       emit({ phase: "update", message: "Checking worktrees for updates: 'b' (2/1000)", processed: 2, total: 1000 });
-      // The attempt was abandoned there; the retry plans far fewer items.
       emit({ phase: "update", message: "Checking worktrees for updates: 'a' (1/4)", processed: 1, total: 4 });
       emit({ phase: "update", message: "Checking worktrees for updates: 'b' (2/4)", processed: 2, total: 4 });
       return { started: true, outcome: syncOutcome() };
@@ -1715,13 +1648,6 @@ describe("handleUpdateWorktree", () => {
     expect(body.updated).toBe(true);
   });
 
-  // A configured repository whose bare clone is not on disk yet is cloned
-  // first: the listing this resolves the path against, and the fetch that
-  // follows, both need it. create_worktree's identical guard is pinned by the
-  // real-service suites, but every double that reaches update_worktree reports
-  // isInitialized() === true — including the context-flows suite, which spies
-  // the real service's isInitialized so nothing clones over the network — so
-  // deleting this guard outright used to pass all of them.
   it("initializes a repository that was never cloned, before it reads the listing", async () => {
     const callOrder: string[] = [];
     const { ctx, git, service } = makeCtx({
@@ -1755,13 +1681,6 @@ describe("handleUpdateWorktree", () => {
     expect(service.initializeUnlocked).not.toHaveBeenCalled();
   });
 
-  // The discovery snapshot has no freshness check: a `git checkout -b` inside
-  // a worktree touches only that worktree's own admin HEAD, so the branch the
-  // session recorded at detection time can outlive the checkout it described.
-  // Acting on that name would merge origin/<old branch> into the worktree and,
-  // whenever the new branch has no commits of its own, fast-forward *it* to the
-  // old branch's tip — a silent branch rewrite. The branch is read back from
-  // git before the fetch and the merge.
   it("merges the branch the worktree is on now, not the one the discovery snapshot remembers", async () => {
     const { ctx, git, service } = makeCtx({
       discovered: makeDiscovered({ allWorktrees: [{ path: "/w/main", branch: "main", isCurrent: false }] }),
@@ -1850,10 +1769,6 @@ describe("handleUpdateWorktree", () => {
     expect(git.updateWorktree).not.toHaveBeenCalled();
   });
 
-  // A detached worktree has no branch for a fast-forward to move, and git's
-  // listing says so with a `detached` flag and no branch name. `branch` is the
-  // empty string on such a row, so anything that got past this guard would
-  // fetch and merge `origin/` — a name git reads as a refspec of its own.
   it("refuses a detached worktree by name, and neither fetches nor merges", async () => {
     const { ctx, git } = makeCtx({
       git: {
@@ -1870,17 +1785,11 @@ describe("handleUpdateWorktree", () => {
     expect(body.message).toContain("detached HEAD");
     expect(body.message).toContain("9f1c0de");
     expect(body.message).toContain("/w/feature");
-    // The symptom being replaced: a path git has registered, reported as one
-    // this repository does not have.
     expect(body.message).not.toContain("not a registered worktree");
     expect(git.fetchBranch).not.toHaveBeenCalled();
     expect(git.updateWorktree).not.toHaveBeenCalled();
   });
 
-  // The guard can only fire on an entry the listing returned, and git omits
-  // detached worktrees unless asked for them — so the membership listing has
-  // to ask. Without this the refusal above is unreachable against real git and
-  // the old "not a registered worktree" answer comes back.
   it("asks the membership listing for detached entries", async () => {
     const { ctx, service } = makeCtx({
       git: { getWorktrees: vi.fn<any>().mockResolvedValue([{ path: "/w/feature", branch: "feature" }]) },
@@ -1890,8 +1799,6 @@ describe("handleUpdateWorktree", () => {
     expect(service.getWorktrees).toHaveBeenCalledWith(expect.objectContaining({ includeDetached: true }));
   });
 
-  // `detached` is set only when true, so "absent" is the ordinary case and must
-  // not read as detached.
   it("fast-forwards a worktree whose listing row carries no detached flag", async () => {
     const { ctx, git } = makeCtx({
       git: {
@@ -1924,9 +1831,6 @@ describe("handleGetWorktreeStatus", () => {
     expect(body.isClean).toBe(false);
   });
 
-  // get_worktree_status stopped computing divergence of its own: it rides in on
-  // the `...status` spread. The advertised schema still requires the field, so
-  // parse the body rather than only reading it.
   it("reports divergence from the status result", async () => {
     const divergence = { ahead: 1, behind: 7 };
     const { ctx } = makeCtx({
@@ -1999,8 +1903,6 @@ describe("handleGetWorktreeStatus", () => {
     expect(git.getWorktrees).not.toHaveBeenCalled();
   });
 
-  // Membership comes from git every time, never from the discovery snapshot:
-  // a detached worktree gets the same answer cold and warm.
   it("answers a detached path the same with and without a discovery snapshot", async () => {
     const detachedPath = "/w/loose";
     const gitMock = {
@@ -2041,8 +1943,6 @@ describe("handleGetWorktreeStatus", () => {
     expect(service.getWorktrees).toHaveBeenCalledWith(expect.objectContaining({ includeDetached: true }));
   });
 
-  // A worktree removed behind the session's back (a daemon prune) must not keep
-  // answering from the snapshot with the status service's "missing path" result.
   it("refuses a path the snapshot lists but git no longer does", async () => {
     const { ctx, git } = makeCtx({
       discovered: makeDiscovered({
@@ -2122,10 +2022,6 @@ describe("handleLoadConfig", () => {
   });
 
   it("surfaces the real parse error when detection finds a config that fails to load", async () => {
-    // detectFromPath only records configs that loaded successfully, so a
-    // found-but-broken config is only reachable via the findConfigUpTree
-    // fallback — without it the user would get the unhelpful generic
-    // "configPath required" message instead of the parse error.
     const { ctx } = makeCtx({
       launchCwd: "/workspace/repo/main",
       loadConfigImpl: async () => {
@@ -2240,8 +2136,6 @@ describe("list_worktrees lastSyncAt", () => {
 });
 
 describe("handleListWorktrees isCurrent", () => {
-  // isCurrent follows the launch cwd, not the discovery snapshot, so a mutating
-  // tool's invalidateDiscovered() (or a detect_context elsewhere) cannot flip it.
   it("is identical before and after the discovery snapshot is invalidated", async () => {
     const { ctx } = makeCtx({
       launchCwd: "/repo/main",
@@ -2322,10 +2216,6 @@ describe("handleListWorktrees fallbacks", () => {
     expect(git.getFullWorktreeStatus).toHaveBeenCalledTimes(2);
   });
 
-  // A configured repository that has never been cloned: `git worktree list` runs
-  // against a bare directory that is not there, and nothing was detected on disk
-  // to fall back to. The old message ("service not initialized and no detected
-  // context") named the two things that failed and neither the cause nor the fix.
   it("names the underlying git failure and points at initialize when there is no fallback", async () => {
     const { ctx } = makeCtx({
       discovered: null,
@@ -2361,8 +2251,6 @@ describe("handleListWorktrees fallbacks", () => {
 });
 
 describe("handleCreateWorktree target naming", () => {
-  // Choosing between the plain and the hashed directory name is GitService's
-  // job (resolveNewWorktreePath); the handler must create exactly there.
   it("creates the worktree at the path GitService resolves for the branch", async () => {
     const hashed = new PathResolutionService().sanitizeBranchName("feature/x");
     const { ctx, git } = makeCtx({
@@ -2380,7 +2268,6 @@ describe("handleCreateWorktree target naming", () => {
 });
 
 describe("handleCreateWorktree target path guard", () => {
-  // The path the mocked resolveNewWorktreePath hands the handler for the branch.
   const targetPath = new PathResolutionService().getBranchWorktreePath("/repo/worktrees", "feature/x");
 
   it("refuses when the target path exists on disk but is not a registered worktree", async () => {
@@ -2415,8 +2302,6 @@ describe("handleCreateWorktree target path guard", () => {
     const body = parseResponse(result);
 
     expect(body.code).toBe("TARGET_EXISTS");
-    // Refusing after createBranch would leave an unpushed local branch behind
-    // that a retry (after cleanup) then checks out without ever pushing.
     expect(git.createBranch).not.toHaveBeenCalled();
     expect(git.addWorktree).not.toHaveBeenCalled();
     expect(git.pushBranch).not.toHaveBeenCalled();
@@ -2472,11 +2357,6 @@ describe("handleCreateWorktree target path guard", () => {
   });
 });
 
-// A retry after a client timeout must be distinguishable from the first call.
-// Before `worktreeExisted`, the second create_worktree for the same branch
-// answered {success:true, created:false, pushed:false, worktreePath} — byte for
-// byte what "checked an existing remote branch out into a brand new worktree"
-// answers — so an agent could not tell a no-op from a fresh checkout.
 describe("handleCreateWorktree worktreeExisted", () => {
   const targetPath = new PathResolutionService().getBranchWorktreePath("/repo/worktrees", "feature/x");
 
@@ -2502,7 +2382,6 @@ describe("handleCreateWorktree worktreeExisted", () => {
     expect(body.worktreeExisted).toBe(true);
     expect(body.created).toBe(false);
     expect(createWorktreeOutputSchema.parse(body).worktreeExisted).toBe(true);
-    // A no-op create still must not push or branch behind the caller's back.
     expect(git.createBranch).not.toHaveBeenCalled();
     expect(git.pushBranch).not.toHaveBeenCalled();
   });
@@ -2519,9 +2398,6 @@ describe("handleCreateWorktree worktreeExisted", () => {
     expect(createWorktreeOutputSchema.parse(body).worktreeExisted).toBe(false);
   });
 
-  // `created` and `worktreeExisted` answer different questions: a brand new
-  // branch is `created: true` with nothing at the path, so neither field alone
-  // tells the agent what it is holding.
   it("reports worktreeExisted=false when the branch itself was created", async () => {
     const { ctx } = makeCreateCtx([], { local: false, remote: false });
 
@@ -2532,8 +2408,6 @@ describe("handleCreateWorktree worktreeExisted", () => {
     expect(body.worktreeExisted).toBe(false);
   });
 
-  // The schema requires the field, so the partial-success return must carry it
-  // too or the SDK turns the whole result into an error.
   it("carries worktreeExisted on the push-failure result", async () => {
     const { ctx } = makeCtx({
       git: {
@@ -2561,8 +2435,6 @@ describe("handleCreateWorktree worktreeExisted", () => {
     expect(body.worktreeExisted).toBe(true);
   });
 
-  // A registration for a *different* branch at the same sanitized path is the
-  // collision error, not a worktreeExisted:true success.
   it("still errors on a path collision rather than reporting worktreeExisted", async () => {
     const { ctx } = makeCreateCtx([{ path: targetPath, branch: "feature-x" }]);
 
@@ -2706,7 +2578,6 @@ describe("handleDetectContext includeStatus", () => {
     expect(body.allWorktrees[0].label).toBe("current");
     expect(body.allWorktrees[1].label).toBe("clean");
     expect(body.allWorktrees[0].staleHint).toBe(false);
-    // Straight off the status result, not a second rev-list of its own.
     expect(body.allWorktrees[1].divergence).toEqual({ ahead: 3, behind: 4 });
   });
 
@@ -2740,10 +2611,6 @@ describe("handleDetectContext includeStatus", () => {
     }
   });
 
-  // allWorktrees and allWorktreesByRepo[<current repo>] are two separate
-  // `worktree list --porcelain` reads of the same repository, so every worktree
-  // of the current repo is in both. Enriching each list independently probed
-  // all of them twice -- 8 git processes per worktree, spent twice.
   it("probes each worktree once when both lists name it", async () => {
     statusProbes.length = 0;
     const listed = [
@@ -2754,8 +2621,6 @@ describe("handleDetectContext includeStatus", () => {
       detectFromPath: vi.fn<any>().mockResolvedValue(makeDiscovered({ allWorktrees: listed })),
       getConfiguredRepositorySummaries: vi.fn<any>().mockResolvedValue([]),
       getAllConfiguredWorktreeDetails: vi.fn<any>().mockResolvedValue({
-        // Distinct objects carrying the same paths, exactly as the two reads
-        // produce them.
         worktreesByRepo: { test: listed.map((wt) => ({ ...wt })) },
         errorsByRepo: {},
       }),
@@ -2765,7 +2630,6 @@ describe("handleDetectContext includeStatus", () => {
     const body = parseResponse(result);
 
     expect([...statusProbes].sort()).toEqual(["/repo/feat", "/repo/main"]);
-    // Both lists still report the enrichment, and report the same thing.
     expect(body.allWorktrees.map((wt: any) => [wt.label, wt.divergence])).toEqual([
       ["current", { ahead: 3, behind: 4 }],
       ["clean", { ahead: 3, behind: 4 }],

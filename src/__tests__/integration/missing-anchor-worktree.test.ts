@@ -13,15 +13,6 @@ import type { Logger } from "../../services/logger.service";
 import type { RepositoryConfig, SyncOutcome } from "../../types";
 import type { Mock } from "vitest";
 
-// Real git, no mocks. The default branch's worktree is the directory every
-// remote-facing command runs in (fetch, the branch listings, the tip probes),
-// and the planner never plans a create for that branch. A long-lived process
-// (daemon, TUI, MCP server) whose `worktrees/main` was deleted out-of-band —
-// `rm -rf`, an unmounted volume — therefore failed *every* later sync with
-// `spawn git ENOENT`, which reads as "git is not installed": the heal lives in
-// GitService.initialize(), sync() only initializes while isInitialized() is
-// false, and that flips true on the first run and never back. Only a restart
-// recovered. The sync now re-checks and rebuilds the anchor on every attempt.
 describe("Default-branch worktree deleted out-of-band (E2E)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -38,8 +29,6 @@ describe("Default-branch worktree deleted out-of-band (E2E)", () => {
     seedDir = path.join(tempDir, "seed");
     worktreeDir = path.join(tempDir, "worktrees");
     bareRepoDir = path.join(tempDir, ".bare", "app");
-    // The default branch's worktree sits at its plain name (GitService), every
-    // other branch at the sanitized+hashed one (PathResolutionService).
     mainPath = path.join(worktreeDir, "main");
     featPath = pathResolution.getBranchWorktreePath(worktreeDir, "feat");
 
@@ -78,8 +67,6 @@ describe("Default-branch worktree deleted out-of-band (E2E)", () => {
       cronSchedule: "0 * * * *",
       runOnce: true,
       logger,
-      // A failing attempt must not be retried three times over three seconds
-      // before the test can look at it.
       retry: { maxAttempts: 1, initialDelayMs: 0 },
       __configFileDir: tempDir,
     };
@@ -109,11 +96,8 @@ describe("Default-branch worktree deleted out-of-band (E2E)", () => {
     expect(await registeredWorktrees()).toContain(mainPath);
     expect(await registeredWorktrees()).toContain(featPath);
 
-    // The user (or a volume unmount) removes the default branch's worktree.
     await fs.rm(mainPath, { recursive: true, force: true });
 
-    // Same service instance, next tick: this used to reject with
-    // "spawn git ENOENT", and so did every tick after it.
     const second = await syncOnce(service);
 
     expect(second.counts.failed).toBe(0);
@@ -121,23 +105,19 @@ describe("Default-branch worktree deleted out-of-band (E2E)", () => {
     expect(second.actions.some((action) => "reason" in action && action.reason === "sync_failed")).toBe(false);
     expect(second.actions).toContainEqual({ kind: "created", branch: "main", path: mainPath });
 
-    // main is back on disk, registered with the bare repo, and at origin's tip.
     await expect(fs.access(path.join(mainPath, "README.md"))).resolves.toBeUndefined();
     expect(await registeredWorktrees()).toContain(mainPath);
     expect(await headOf(mainPath)).toBe(await originTip("main"));
 
-    // The other worktree was never touched.
     expect(await registeredWorktrees()).toContain(featPath);
     await expect(fs.readFile(path.join(featPath, "feat.txt"), "utf8")).resolves.toBe("feat work");
 
-    // The log says which directory went missing, rather than blaming git.
     const logged = [
       ...(logger.warn as Mock).mock.calls.map((call) => String(call[0])),
       ...(logger.info as Mock).mock.calls.map((call) => String(call[0])),
     ];
     expect(logged.some((line) => line.includes(mainPath) && line.includes("missing"))).toBe(true);
 
-    // And the process stays healthy afterwards.
     const third = await syncOnce(service);
     expect(third.counts.failed).toBe(0);
     expect(third.actions.filter((action) => action.kind === "created")).toEqual([]);

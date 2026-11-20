@@ -15,13 +15,6 @@ import type { RepositoryContext } from "../context";
 import type { RepositoryConfig } from "../../types";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
-// Real git, no mocks. `idempotentHint: true` is an assertion about what a
-// second identical call does to the repository, so it is measured here rather
-// than described: every case below calls create_worktree twice with the same
-// arguments and pins both the response the agent reads and the state git holds
-// afterwards. The second response must be distinguishable from the first — that
-// is the whole bug — and the second call must add nothing: no extra worktree,
-// no extra branch ref, no second push, and not a scratched-over checkout.
 describe("create_worktree called twice with the same arguments (real git)", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -92,8 +85,6 @@ describe("create_worktree called twice with the same arguments (real git)", () =
       .catch(() => false);
   }
 
-  // A pre-receive hook that always rejects is the only reliable way to make a
-  // real push fail without touching the network or the filesystem's modes.
   async function makeRemoteRejectPushes(): Promise<void> {
     const hook = path.join(remote, "hooks", "pre-receive");
     await fs.writeFile(hook, "#!/bin/sh\nexit 1\n");
@@ -134,8 +125,6 @@ describe("create_worktree called twice with the same arguments (real git)", () =
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  // The acceptance case: checking out an existing remote branch, then retrying
-  // after a client timeout. Before the fix both responses were the same bytes.
   it("distinguishes the retry from the first checkout, and leaves the checkout alone", async () => {
     const target = pathResolution.getBranchWorktreePath(worktreeDir, "feature/x");
 
@@ -144,8 +133,6 @@ describe("create_worktree called twice with the same arguments (real git)", () =
     expect(first.created).toBe(false);
     expect(first.worktreeExisted).toBe(false);
 
-    // Work the agent (or the user) does in the checkout between the two calls.
-    // A "fresh checkout" would not have it; a no-op leaves it in place.
     const scratch = path.join(target, "in-progress.txt");
     await fs.writeFile(scratch, "uncommitted work");
 
@@ -155,8 +142,6 @@ describe("create_worktree called twice with the same arguments (real git)", () =
     const second = await create({ branchName: "feature/x" });
 
     expect(second.worktreeExisted).toBe(true);
-    // Everything else is byte-identical, which is exactly why the new field is
-    // the only thing that can carry the difference.
     expect(second.success).toBe(true);
     expect(second.created).toBe(false);
     expect(second.pushed).toBe(false);
@@ -169,8 +154,6 @@ describe("create_worktree called twice with the same arguments (real git)", () =
     expect(await remoteRefs()).toBe(refsBefore);
   });
 
-  // The push case idempotentHint has to survive: the first call pushes a brand
-  // new branch, and the retry must not push again (nor re-create the branch).
   it("does not push a second time when the first call created and pushed the branch", async () => {
     const first = await create({ branchName: "exp", baseBranch: "main" });
     expect(first.created).toBe(true);
@@ -185,8 +168,6 @@ describe("create_worktree called twice with the same arguments (real git)", () =
 
     expect(second.success).toBe(true);
     expect(second.worktreeExisted).toBe(true);
-    // `created` is false the second time round, and the push is gated on it —
-    // so the branch is pushed exactly once however many times this is called.
     expect(second.created).toBe(false);
     expect(second.pushed).toBe(false);
     expect(await remoteRefs()).toBe(refsBefore);
@@ -205,18 +186,11 @@ describe("create_worktree called twice with the same arguments (real git)", () =
     expect(second.worktreeExisted).toBe(true);
     expect(second.created).toBe(false);
     expect(second.pushed).toBe(false);
-    // Still exactly as local-only as the first call left it, with the same
-    // warning: the retry neither pushed it nor stopped warning about it.
     expect(second.warning).toContain("next sync");
     expect(await remoteRefs()).not.toContain("refs/heads/exp");
     expect(await localBranches()).toContain("exp");
   });
 
-  // Documented, not endorsed: after a push that failed, the retry reports
-  // success and does NOT reattempt the push, because `created` is false the
-  // second time. `worktreeExisted: true` is the only thing in the response that
-  // says so — without it, `success: true, pushed: false` reads like a checkout
-  // of an existing remote branch that simply had nothing to push.
   it("reports the retry after a failed push as an existing worktree, and does not retry the push", async () => {
     await makeRemoteRejectPushes();
 
@@ -237,8 +211,6 @@ describe("create_worktree called twice with the same arguments (real git)", () =
     expect(await remoteRefs()).not.toContain("refs/heads/exp");
   });
 
-  // A filtered branch refuses identically however many times it is called: the
-  // verdict is a function of the config and the branch, not of call history.
   it("refuses a filtered branch the same way on every call", async () => {
     service = new WorktreeSyncService({ ...makeConfig(), branchInclude: ["main"] });
     await service.initialize();
@@ -253,10 +225,6 @@ describe("create_worktree called twice with the same arguments (real git)", () =
     expect(await exists(pathResolution.getBranchWorktreePath(worktreeDir, "feature/x"))).toBe(false);
   });
 
-  // State convergence rather than strict no-op: something else removed the
-  // worktree between the two calls, so the second one rebuilds it and says
-  // worktreeExisted:false. The end state matches the first call's, and no
-  // second worktree is registered — which is what the hint promises.
   it("rebuilds and reports a fresh checkout when the worktree was removed in between", async () => {
     const target = pathResolution.getBranchWorktreePath(worktreeDir, "feature/x");
 
@@ -272,14 +240,6 @@ describe("create_worktree called twice with the same arguments (real git)", () =
     expect((await registeredWorktrees()).filter((p) => p === target)).toHaveLength(1);
   });
 
-  // The limit of the field, pinned so it cannot drift from what the schema
-  // promises. `worktreeExisted` is read off the pre-call listing, and a
-  // registration whose directory was destroyed out-of-band (rm -rf, a wiped
-  // volume) is still in that listing as prunable — while addWorktree finds the
-  // directory gone, clears the stale registration and rebuilds the checkout.
-  // So `true` means "a registration was already here", not "your work survived":
-  // the response cannot be read as a promise about the contents, which is why
-  // the schema's describe names this case instead of claiming a no-op.
   it("reports worktreeExisted=true for a stale registration whose checkout it rebuilt", async () => {
     const target = pathResolution.getBranchWorktreePath(worktreeDir, "feature/x");
 
@@ -287,8 +247,6 @@ describe("create_worktree called twice with the same arguments (real git)", () =
     const scratch = path.join(target, "in-progress.txt");
     await fs.writeFile(scratch, "uncommitted work");
 
-    // The directory goes, the registration stays — which `worktree remove` does
-    // not do, and which the case above therefore does not reach.
     await fs.rm(target, { recursive: true, force: true });
     expect(await registeredWorktrees()).toContain(target);
 
@@ -297,7 +255,6 @@ describe("create_worktree called twice with the same arguments (real git)", () =
     expect(second.success).toBe(true);
     expect(second.worktreeExisted).toBe(true);
     expect(await exists(target)).toBe(true);
-    // Rebuilt, not preserved: the uncommitted file did not survive.
     expect(await exists(scratch)).toBe(false);
     expect((await registeredWorktrees()).filter((p) => p === target)).toHaveLength(1);
   });

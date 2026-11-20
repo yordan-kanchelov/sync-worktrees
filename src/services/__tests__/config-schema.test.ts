@@ -20,14 +20,6 @@ import type {
 } from "../../types";
 import type { z } from "zod";
 
-// ---------------------------------------------------------------------------
-// Type-level half: the schema and the handwritten types describe the same
-// config. The handwritten types stay the source of the public surface — its
-// clone/worktree discriminated unions are not something `z.infer` produces —
-// so these assertions are what keeps the two from drifting. A field added to
-// one and not the other fails `pnpm typecheck`.
-// ---------------------------------------------------------------------------
-
 type Expect<T extends true> = T;
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 
@@ -35,9 +27,7 @@ type RepositoryOutput = z.output<typeof repositorySchema>;
 type DefaultsOutput = z.output<typeof defaultsSchema>;
 type ConfigFileOutput = z.output<typeof configFileSchema>;
 
-/** Declared so they are known keys, but never validated: the loader computes or ignores them. */
 type InternalKeys = "logger" | "__configFileDir" | "__configuredRepoDirs";
-/** Whole-file settings: booleans under `defaults`, rejected on a repository entry. */
 type WholeFileKeys = "runOnce" | "syncOnStart";
 
 type ValueShape<T, K extends keyof T> = { [P in K]-?: Exclude<T[P], undefined> };
@@ -55,7 +45,6 @@ type _DefaultsValuesMatch = Expect<
   Equal<ValueShape<DefaultsOutput, DefaultsValueKeys>, ValueShape<Config, DefaultsValueKeys>>
 >;
 
-// Each nested block on its own, so a mismatch names the block.
 type _RetryMatches = Expect<Equal<Exclude<RepositoryOutput["retry"], undefined>, RetryConfig>>;
 type _ParallelismMatches = Expect<Equal<Exclude<RepositoryOutput["parallelism"], undefined>, ParallelismConfig>>;
 type _HooksMatch = Expect<Equal<Exclude<RepositoryOutput["hooks"], undefined>, HooksConfig>>;
@@ -65,12 +54,7 @@ type _SparseCheckoutMatches = Expect<
 type _MaintenanceMatches = Expect<Equal<Exclude<RepositoryOutput["maintenance"], undefined>, MaintenanceConfig>>;
 type _TrashMatches = Expect<Equal<Exclude<RepositoryOutput["trash"], undefined>, TrashConfig>>;
 
-// Every config the public type admits is one the schema's input type admits.
 type _PublicConfigIsSchemaInput = Expect<SyncWorktreesConfig extends z.input<typeof configFileSchema> ? true : false>;
-
-// ---------------------------------------------------------------------------
-// Runtime half
-// ---------------------------------------------------------------------------
 
 const URL = "https://github.com/example/web.git";
 
@@ -92,7 +76,6 @@ function issuesOf(value: unknown): ConfigValidationIssue[] {
   }
 }
 
-/** The one issue a config raises, as `field: reason`. */
 function onlyIssue(value: unknown): string {
   const issues = issuesOf(value);
   expect(issues).toHaveLength(1);
@@ -509,7 +492,6 @@ describe("validateConfigFile: rules across fields", () => {
         `repositories[0].${field}: not supported when mode is 'clone'`,
       );
       if (field === "bareRepoDir") {
-        // Nothing inherits defaults.bareRepoDir, so there is nothing to reject.
         expect(issuesOf(config({ defaults: { bareRepoDir: "/tmp/bare" } }, { mode: "clone" }))).toEqual([]);
         return;
       }
@@ -639,8 +621,6 @@ describe("validateConfigFile: reporting", () => {
   });
 
   it("checks the rules across fields only once every field is valid", () => {
-    // The mode conflict is real, but reporting it next to a type error in the
-    // same file would reason about a config that is not the one written.
     const issues = issuesOf(config({}, { mode: "clone", branchInclude: ["main"], debug: "yes" }));
 
     expect(issues.map((issue) => issue.field)).toEqual(["repositories[0].debug"]);

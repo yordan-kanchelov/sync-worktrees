@@ -11,9 +11,6 @@ import { formatErrorResponse } from "../utils";
 
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
-// Real git. git lists worktrees by canonical path, while agents pass $PWD,
-// which keeps symlinks (every path under /tmp and /var on macOS). Here the
-// whole workspace, config included, is reached through `link -> real`.
 describe("MCP tools on paths reached through a symlink (real git)", () => {
   let tempDir: string;
   let real: string;

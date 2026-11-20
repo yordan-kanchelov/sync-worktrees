@@ -8,10 +8,6 @@ import { FileCopyService } from "../file-copy.service";
 
 import type * as GlobModule from "glob";
 
-// glob 13 answers a missing, unreadable or non-directory `cwd` with an empty
-// list rather than a rejection, so the failure path cannot be reached through
-// the filesystem -- the expansion is stubbed instead. The point of the test is
-// the contract: a pattern that could not be expanded is reported, not dropped.
 vi.mock("glob", async (importOriginal) => {
   const actual = await importOriginal<typeof GlobModule>();
   return { ...actual, glob: vi.fn() };

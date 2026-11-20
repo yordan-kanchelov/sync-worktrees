@@ -41,7 +41,7 @@ for (const [file, comments] of byFile) {
     let end = c.end;
     const before = text.slice(0, start);
     const after = text.slice(end);
-    const jsx = /\{\s*$/.exec(before) && /^\s*\}/.exec(after);
+    const jsx = c.text.startsWith("/*") && /(^|\n)[ \t]*\{[ \t]*$/.test(before) && /^[ \t]*\}[ \t]*(\n|$)/.test(after);
     if (jsx) {
       start = before.lastIndexOf("{");
       end += after.indexOf("}") + 1;

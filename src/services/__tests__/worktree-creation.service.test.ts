@@ -58,10 +58,6 @@ describe("WorktreeCreationService (through GitService)", () => {
       await gitService.initialize();
     });
 
-    // A bare clone copies every remote branch into refs/heads/* and the fetch
-    // refspec never updates those copies, so a local ref with no worktree is a
-    // stale snapshot. When it is only behind origin/<branch>, the worktree is
-    // created from it as before and then fast-forwarded to origin's tip.
     it("should fast-forward a local branch that is only behind to origin's tip when it exists locally", async () => {
       mockShowRef({ local: true, remote: true, localOnlyCommits: 0 });
 
@@ -72,10 +68,8 @@ describe("WorktreeCreationService (through GitService)", () => {
         env: vi.fn<any>().mockReturnThis(),
       };
 
-      // Store original implementation
       const originalImplementation = (simpleGit as unknown as Mock).getMockImplementation();
 
-      // Mock simpleGit to return worktreeGitMock for the worktree path, but mockGit for other paths
       (simpleGit as unknown as Mock).mockImplementation((path?: any) => {
         if (path && path.includes("feature-1")) {
           return worktreeGitMock;
@@ -94,7 +88,6 @@ describe("WorktreeCreationService (through GitService)", () => {
       expect(worktreeGitMock.branch).toHaveBeenCalledWith(["--set-upstream-to", "origin/feature-1", "feature-1"]);
       expect(worktreeGitMock.raw).toHaveBeenCalledWith(["merge", "--ff-only", "origin/feature-1"]);
 
-      // Probed before the add; fast-forwarded once the upstream is set.
       const callOrder = (fn: Mock, matches: (args: string[]) => boolean): number =>
         fn.mock.invocationCallOrder[fn.mock.calls.findIndex((call) => matches(call[0] as unknown as string[]))];
       const revListOrder = callOrder(mockGit.raw as Mock, (args) => args[0] === "rev-list");
@@ -103,16 +96,11 @@ describe("WorktreeCreationService (through GitService)", () => {
       expect(revListOrder).toBeLessThan(addOrder);
       expect(worktreeGitMock.branch.mock.invocationCallOrder[0]).toBeLessThan(mergeOrder);
 
-      // Restore original implementation
       if (originalImplementation) {
         (simpleGit as unknown as Mock).mockImplementation(originalImplementation);
       }
     });
 
-    // Commits not on origin/<branch> cannot be told apart from a copy whose
-    // history was rebased away on the remote, and only never-pushed work would
-    // be lost by a reset: the local tip is kept as before, with the upstream
-    // set, and the log says why it was not moved.
     it("should keep the local tip when the local branch has commits not on origin", async () => {
       mockShowRef({ local: true, remote: true, localOnlyCommits: 2 });
 
@@ -160,8 +148,6 @@ describe("WorktreeCreationService (through GitService)", () => {
       );
     });
 
-    // A failed fast-forward is not a failed create: the worktree exists at the
-    // local tip, which the next sync's update phase fast-forwards.
     it("should keep the worktree and warn when the fast-forward fails", async () => {
       mockShowRef({ local: true, remote: true, localOnlyCommits: 0 });
 
@@ -192,7 +178,6 @@ describe("WorktreeCreationService (through GitService)", () => {
       );
     });
 
-    // The runner compares this against origin/<branch> after each create.
     it("reports the created worktree's HEAD, and an already-registered path as no creation", async () => {
       mockShowRef({ local: false, remote: true });
       const worktreeGitMock = {
@@ -272,9 +257,6 @@ describe("WorktreeCreationService (through GitService)", () => {
       expect(rawCalls[rawCalls.length - 1]).toEqual([["worktree", "add", "/test/worktrees/feature-1", "feature-1"]]);
     });
 
-    // The plain add of the fallback sets no upstream. origin/<branch> is looked
-    // up again afterwards: `remoteAfterAdd` is what that lookup finds (the
-    // first lookup must say it exists, or the tracking add is never tried).
     const mockFallbackAdd = (opts: { remoteAfterAdd: boolean }): void => {
       let trackingAddCalled = false;
       (mockGit.raw as Mock).mockImplementation((args: unknown) => {
@@ -319,16 +301,16 @@ describe("WorktreeCreationService (through GitService)", () => {
 
     it("should clean up orphaned directory before creating worktree", async () => {
       (fs.access as Mock<any>)
-        .mockResolvedValueOnce(undefined) // directory exists
-        .mockResolvedValueOnce(undefined) // still there when clearing
-        .mockRejectedValueOnce(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" })); // no .git inside
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       mockGit.raw.mockReset();
       mockGit.raw
-        .mockResolvedValueOnce("") // worktree list - empty (directory is not a valid worktree)
-        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads/feature-1 missing
-        .mockResolvedValueOnce("") // refs/remotes/origin/feature-1 exists
-        .mockResolvedValueOnce(""); // worktree add command
+        .mockResolvedValueOnce("")
+        .mockRejectedValueOnce(new Error("show-ref: not found"))
+        .mockResolvedValueOnce("")
+        .mockResolvedValueOnce("");
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
@@ -347,47 +329,43 @@ describe("WorktreeCreationService (through GitService)", () => {
     });
 
     it("should skip if directory is already a valid worktree", async () => {
-      // Mock - directory exists when checking in addWorktree
       (fs.access as Mock<any>).mockResolvedValueOnce(undefined);
 
-      // Reset mockGit.raw and set up responses
       mockGit.raw.mockReset();
       mockGit.raw.mockResolvedValueOnce(
         "worktree /test/worktrees/feature-1\n" + "HEAD abc123\n" + "branch refs/heads/feature-1\n\n",
-      ); // worktree list - shows the worktree exists
+      );
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
       expect(fs.access).toHaveBeenCalledWith("/test/worktrees/feature-1");
       expect(fs.rm).not.toHaveBeenCalled();
-      // Should have called worktree list but not worktree add
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "list", "--porcelain", "-z"]);
-      expect(mockGit.raw).toHaveBeenCalledTimes(1); // Only the list call, no add call
+      expect(mockGit.raw).toHaveBeenCalledTimes(1);
     });
 
     it("should clean up orphaned directory in fallback path when tracking fails", async () => {
       (fs.access as Mock<any>)
-        .mockRejectedValueOnce(new Error("Not found")) // First check - directory doesn't exist
-        .mockResolvedValueOnce(undefined) // Second check in fallback - directory exists
-        .mockResolvedValueOnce(undefined) // still there when clearing
-        .mockRejectedValueOnce(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" })); // no .git inside
+        .mockRejectedValueOnce(new Error("Not found"))
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       mockGit.raw.mockReset();
       mockGit.raw
-        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
-        .mockResolvedValueOnce("") // refs/remotes/origin exists
-        .mockRejectedValueOnce(new Error("no such remote ref")) // tracking add fails
-        .mockRejectedValueOnce(new Error("show-ref: not found")) // rollback probe: no branch was left behind
-        .mockResolvedValueOnce("") // worktree list - empty (directory is not a valid worktree)
-        .mockResolvedValueOnce("") // fallback worktree add succeeds
-        .mockResolvedValueOnce("") // show-ref remotes (upstream lookup after the plain add)
-        .mockResolvedValueOnce(""); // branch --set-upstream-to
+        .mockRejectedValueOnce(new Error("show-ref: not found"))
+        .mockResolvedValueOnce("")
+        .mockRejectedValueOnce(new Error("no such remote ref"))
+        .mockRejectedValueOnce(new Error("show-ref: not found"))
+        .mockResolvedValueOnce("")
+        .mockResolvedValueOnce("")
+        .mockResolvedValueOnce("")
+        .mockResolvedValueOnce("");
 
       await gitService.addWorktree("feature-1", "/test/worktrees/feature-1");
 
       expect(fs.rm).not.toHaveBeenCalled();
       expect(fs.rename).toHaveBeenCalledWith("/test/worktrees/feature-1", expect.stringContaining(".removed"));
-      // The plain add runs only once the directory in its way has been moved aside.
       const rawCalls = (mockGit.raw as Mock).mock.calls.map((call: unknown[]) => call[0]);
       const fallbackAdd = rawCalls.findIndex(
         (args) =>
@@ -399,9 +377,6 @@ describe("WorktreeCreationService (through GitService)", () => {
       );
     });
 
-    // The whole point of this recovery is a registration whose directory is
-    // gone. Handing that missing path to the trasher fails with ENOENT and turns
-    // a self-healing case into a worktree that can never be rebuilt.
     it("recreates a worktree for a stale registration whose directory is already gone", async () => {
       const worktreePath = "/test/worktrees/feature-1";
       const trasher = vi.fn<any>().mockRejectedValue(new Error("ENOENT: no such file or directory"));
@@ -411,15 +386,15 @@ describe("WorktreeCreationService (through GitService)", () => {
 
       mockGit.raw.mockReset();
       mockGit.raw
-        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
-        .mockResolvedValueOnce("") // refs/remotes/origin exists
+        .mockRejectedValueOnce(new Error("show-ref: not found"))
+        .mockResolvedValueOnce("")
         .mockRejectedValueOnce(new Error("fatal: 'feature-1' is already registered worktree"))
         .mockResolvedValueOnce(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\nprunable\n\n`)
-        .mockResolvedValueOnce("") // targeted registration removal succeeds
-        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing on retry
-        .mockResolvedValueOnce("") // refs/remotes/origin exists on retry
-        .mockResolvedValueOnce("") // retry add succeeds
-        .mockResolvedValueOnce(""); // LFS ls-files
+        .mockResolvedValueOnce("")
+        .mockRejectedValueOnce(new Error("show-ref: not found"))
+        .mockResolvedValueOnce("")
+        .mockResolvedValueOnce("")
+        .mockResolvedValueOnce("");
 
       await expect(gitService.addWorktree("feature-1", worktreePath)).resolves.toEqual({
         status: "created",
@@ -434,21 +409,21 @@ describe("WorktreeCreationService (through GitService)", () => {
       const worktreePath = "/test/worktrees/feature-1";
 
       (fs.access as Mock<any>)
-        .mockRejectedValueOnce(new Error("Not found")) // Directory doesn't exist initially
-        .mockResolvedValueOnce(undefined) // a leftover directory now sits at the target
-        .mockRejectedValueOnce(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" })); // no .git inside stale dir
+        .mockRejectedValueOnce(new Error("Not found"))
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(Object.assign(new Error("ENOENT: not found"), { code: "ENOENT" }));
 
       mockGit.raw.mockReset();
       mockGit.raw
-        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
-        .mockResolvedValueOnce("") // refs/remotes/origin exists
-        .mockRejectedValueOnce(new Error("fatal: 'feature-1' is already registered worktree")) // Initial add fails
-        .mockResolvedValueOnce(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\nprunable\n\n`) // Worktree list shows registered but prunable
-        .mockRejectedValueOnce(new Error("registration locked")) // Targeted removal fails
-        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing on retry
-        .mockResolvedValueOnce("") // refs/remotes/origin exists on retry
-        .mockResolvedValueOnce("") // Retry add succeeds
-        .mockResolvedValueOnce(""); // LFS ls-files
+        .mockRejectedValueOnce(new Error("show-ref: not found"))
+        .mockResolvedValueOnce("")
+        .mockRejectedValueOnce(new Error("fatal: 'feature-1' is already registered worktree"))
+        .mockResolvedValueOnce(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\nprunable\n\n`)
+        .mockRejectedValueOnce(new Error("registration locked"))
+        .mockRejectedValueOnce(new Error("show-ref: not found"))
+        .mockResolvedValueOnce("")
+        .mockResolvedValueOnce("")
+        .mockResolvedValueOnce("");
 
       await gitService.addWorktree("feature-1", worktreePath);
 
@@ -473,14 +448,14 @@ describe("WorktreeCreationService (through GitService)", () => {
     it("should handle concurrent creation when worktree is registered AND not prunable", async () => {
       const worktreePath = "/test/worktrees/feature-1";
 
-      (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found")); // Directory doesn't exist initially
+      (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found"));
 
       mockGit.raw.mockReset();
       mockGit.raw
-        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
-        .mockResolvedValueOnce("") // refs/remotes/origin exists
-        .mockRejectedValueOnce(new Error("fatal: 'feature-1' is already registered worktree")) // Initial add fails
-        .mockResolvedValueOnce(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\n\n`); // Registered, NOT prunable
+        .mockRejectedValueOnce(new Error("show-ref: not found"))
+        .mockResolvedValueOnce("")
+        .mockRejectedValueOnce(new Error("fatal: 'feature-1' is already registered worktree"))
+        .mockResolvedValueOnce(`worktree ${worktreePath}\nHEAD abc123\nbranch refs/heads/feature-1\n\n`);
 
       await gitService.addWorktree("feature-1", worktreePath);
 
@@ -489,9 +464,6 @@ describe("WorktreeCreationService (through GitService)", () => {
       expect(fs.rm).not.toHaveBeenCalled();
     });
 
-    // Detached is reported apart from a plain "already registered" so the
-    // runner can record the skip it is instead of counting a creation that
-    // never happened, on this and every later tick.
     it("treats a detached registration at the target path as occupied", async () => {
       const worktreePath = "/test/worktrees/feature-1";
       (fs.access as Mock<any>).mockResolvedValue(undefined);
@@ -556,8 +528,6 @@ describe("WorktreeCreationService (through GitService)", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", "/test/worktrees/feature-1"]);
     });
 
-    // Metadata is keyed by directory name: a record there for another branch
-    // is refused by saveMetadata, and the worktree must not go on without one.
     it("rolls back when the metadata record under its name belongs to another branch", async () => {
       mockShowRef({ local: false, remote: true });
       mockMetadataService.createInitialMetadataFromPath.mockResolvedValueOnce(false);
@@ -568,7 +538,6 @@ describe("WorktreeCreationService (through GitService)", () => {
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", "/test/worktrees/feature-1"]);
     });
 
-    // Every raw call addWorktree spawned that was a `worktree <sub>` command.
     const worktreeCommands = (sub: string): string[][] =>
       (mockGit.raw as Mock).mock.calls
         .map((call: unknown[]) => call[0])
@@ -587,7 +556,6 @@ describe("WorktreeCreationService (through GitService)", () => {
         "Metadata creation failed for 'feature-1': Metadata creation failed for feature-1. This worktree cannot be auto-managed.",
       );
       expect(worktreeCommands("add")).toHaveLength(1);
-      // The add created refs/heads/feature-1 (--track -b), so rollback deletes it too.
       expect(mockGit.raw).toHaveBeenCalledWith(["branch", "-D", "--", "feature-1"]);
     });
 
@@ -615,7 +583,6 @@ describe("WorktreeCreationService (through GitService)", () => {
       await expect(gitService.addWorktree("feature-1", worktreePath)).rejects.toBeInstanceOf(WorktreeMetadataError);
 
       expect(trackingAdds).toBe(2);
-      // One removal clears the stale registration, the second rolls back the retry.
       expect(worktreeCommands("remove")).toHaveLength(2);
       expect(worktreeCommands("add").filter((args) => !args.includes("--track"))).toHaveLength(0);
     });
@@ -640,7 +607,6 @@ describe("WorktreeCreationService (through GitService)", () => {
 
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "add", worktreePath, "feature-1"]);
       expect(mockGit.raw).toHaveBeenCalledWith(["worktree", "remove", "--force", worktreePath]);
-      // The plain add reused an existing branch, so rollback must leave it alone.
       expect(mockGit.raw).not.toHaveBeenCalledWith(["branch", "-D", "--", "feature-1"]);
     });
   });
@@ -657,11 +623,11 @@ describe("WorktreeCreationService (through GitService)", () => {
 
       mockGit.raw.mockReset();
       mockGit.raw
-        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
-        .mockResolvedValueOnce("") // refs/remotes/origin exists
-        .mockRejectedValueOnce(new Error("no such remote ref")) // tracking add fails
-        .mockRejectedValueOnce(new Error("show-ref: not found")) // rollback probe: no branch was left behind
-        .mockRejectedValueOnce(new Error("simple add also failed")); // fallback add fails
+        .mockRejectedValueOnce(new Error("show-ref: not found"))
+        .mockResolvedValueOnce("")
+        .mockRejectedValueOnce(new Error("no such remote ref"))
+        .mockRejectedValueOnce(new Error("show-ref: not found"))
+        .mockRejectedValueOnce(new Error("simple add also failed"));
 
       await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
         "simple add also failed",
@@ -673,24 +639,24 @@ describe("WorktreeCreationService (through GitService)", () => {
 
       mockGit.raw.mockReset();
       mockGit.raw
-        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
-        .mockResolvedValueOnce("") // refs/remotes/origin exists
-        .mockRejectedValueOnce(new Error("disk full")); // tracking add fails non-recoverably
+        .mockRejectedValueOnce(new Error("show-ref: not found"))
+        .mockResolvedValueOnce("")
+        .mockRejectedValueOnce(new Error("disk full"));
 
       await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow("disk full");
     });
 
     it("should throw metadata error even when worktree cleanup also fails", async () => {
-      (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found")); // target directory absent
+      (fs.access as Mock<any>).mockRejectedValueOnce(new Error("Not found"));
       mockMetadataService.createInitialMetadataFromPath.mockRejectedValueOnce(new Error("Failed to write metadata"));
 
       mockGit.raw.mockReset();
       mockGit.raw
-        .mockRejectedValueOnce(new Error("show-ref: not found")) // refs/heads missing
-        .mockResolvedValueOnce("") // refs/remotes/origin exists
-        .mockResolvedValueOnce("") // tracking add succeeds
-        .mockResolvedValueOnce("") // LFS ls-files verification (no LFS files)
-        .mockRejectedValueOnce(new Error("remove also failed")); // cleanup removal fails
+        .mockRejectedValueOnce(new Error("show-ref: not found"))
+        .mockResolvedValueOnce("")
+        .mockResolvedValueOnce("")
+        .mockResolvedValueOnce("")
+        .mockRejectedValueOnce(new Error("remove also failed"));
 
       await expect(gitService.addWorktree("feature-1", "/test/worktrees/feature-1")).rejects.toThrow(
         "Metadata creation failed",

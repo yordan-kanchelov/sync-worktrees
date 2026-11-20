@@ -12,10 +12,6 @@ interface CliRun {
   stderr: string;
 }
 
-// `git remote get-url origin` applies `url.<base>.insteadOf`, while the
-// stored `remote.origin.url` is the configured repoUrl. Comparing the
-// rewritten URL against repoUrl reported a mismatch on every run after the
-// first: worktree mode failed, clone mode skipped forever.
 describe("origin check with an insteadOf rewrite in the user's git config", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   const repoUrl = "https://git.example.invalid/org/app.git";

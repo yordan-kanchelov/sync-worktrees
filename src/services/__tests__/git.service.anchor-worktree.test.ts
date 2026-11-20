@@ -14,19 +14,11 @@ import type { Logger } from "../logger.service";
 import type * as fileExists from "../../utils/file-exists";
 import type { Mock } from "vitest";
 
-// probePathExists keeps its real behaviour here; only the "unknown" result —
-// a probe that failed for a reason other than the path being gone, which a
-// suite that may run as root cannot produce from the filesystem — is forced
-// through the spy.
 vi.mock("../../utils/file-exists", async (importOriginal) => {
   const actual = await importOriginal<typeof fileExists>();
   return { ...actual, probePathExists: vi.fn(actual.probePathExists) };
 });
 
-// Real git, no mocks. The default branch's worktree anchors every
-// remote-facing command, so a long-lived process has to re-check it before
-// each sync: initialize()'s heal runs once and isInitialized() never goes back
-// to false, which left `rm -rf worktrees/main` failing every later fetch.
 describe("GitService.ensureAnchorWorktree", () => {
   let tempDir: string;
   let remote: string;
@@ -93,7 +85,6 @@ describe("GitService.ensureAnchorWorktree", () => {
     await expect(fs.access(path.join(mainPath, ".git"))).resolves.toBeUndefined();
     expect(await registeredWorktrees()).toContain(mainPath);
     expect(loggedLines("warn").some((line) => line.includes(mainPath) && line.includes("missing"))).toBe(true);
-    // The rebuilt worktree anchors fetches again.
     await expect(gitService.fetchAll()).resolves.toBeUndefined();
   });
 
@@ -103,7 +94,6 @@ describe("GitService.ensureAnchorWorktree", () => {
     await expect(gitService.ensureAnchorWorktree()).rejects.toThrow(
       `Cannot determine whether the main worktree at '${mainPath}' still exists`,
     );
-    // Nothing was rebuilt or unregistered on an unverifiable probe.
     expect(await registeredWorktrees()).toContain(mainPath);
   });
 

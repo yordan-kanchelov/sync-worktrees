@@ -17,11 +17,8 @@ export interface WorktreeStatusViewProps {
   getDivergedDirectoriesForRepo?: (index: number) => Promise<DivergedDirectoryInfo[]>;
   deleteDivergedDirectory?: (repoIndex: number, name: string) => Promise<void>;
   onClose: () => void;
-  /** Rows the view may use; defaults to the terminal height. */
   availableRows?: number;
-  /** Open straight on this repository instead of asking which one (the switcher's `w`). */
   initialRepoIndex?: number;
-  /** With `initialRepoIndex`: filter to this branch and expand its entry once loaded. */
   initialBranch?: string;
 }
 
@@ -33,11 +30,8 @@ type ListItem =
   | { type: "separator" }
   | { type: "diverged"; entry: DivergedDirectoryInfo };
 
-// An expanded entry's detail lines, kept as data so the list can budget the
-// rows they take before it decides how many entries fit.
 type DetailLine = { text: string; color?: React.ComponentProps<typeof Text>["color"]; dim?: boolean };
 
-// Indent of the detail panel under its row.
 const DETAIL_INDENT = 4;
 
 const worktreeDetailLines = (entry: WorktreeStatusEntry): DetailLine[] => {
@@ -213,8 +207,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const [projectFilter, setProjectFilter] = useState("");
   const [selectedRepoIndex, setSelectedRepoIndex] = useState(startsOnRepo);
   const startBranch = startsOnRepo >= 0 && startsOnRepo === initialRepoIndex ? initialBranch : undefined;
-  // Consumed by the first load only; ESC back to the repository choice and a
-  // second pick behave as they always have.
   const initialBranchRef = useRef<string | undefined>(startBranch);
 
   const [entries, setEntries] = useState<WorktreeStatusEntry[]>([]);
@@ -223,16 +215,7 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const [entryFilter, setEntryFilter] = useState(startBranch ?? "");
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
-  // What ends the "not loaded yet" state is a load that finished, not a
-  // non-empty list: a repo with no worktrees (clone mode before the first sync)
-  // and one whose every status probe rejected both leave the list at [], and
-  // keying the effect on `entries.length === 0` re-fired the loader on every
-  // commit for as long as the modal stayed open -- a git spawn and a readdir of
-  // .diverged per round trip, forever. Keyed by repository index so picking
-  // another project still loads exactly once, and reset when ESC goes back to
-  // that choice.
   const loadedForRepoRef = useRef<number | null>(null);
-  // Bumped per load and on ESC; a load whose number is stale is dropped.
   const loadGenRef = useRef(0);
   const [repoDiskUsage, setRepoDiskUsage] = useState<Record<number, RepositoryDiskUsageState>>({});
   const requestedDiskUsageRef = useRef<Set<number>>(new Set());
@@ -240,8 +223,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
-  // A failed delete stays on the list it was pressed in; the ERROR step would
-  // throw the whole view away for one directory that could not be removed.
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [error, setError] = useState<string | null>(null);
@@ -264,10 +245,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     return divergedEntries.filter((entry) => entry.originalBranch.toLowerCase().includes(lowerFilter));
   }, [divergedEntries, entryFilter]);
 
-  // One predicate for all three readers -- the count, the row's `!` and the
-  // detail line. On truthiness an `error: ""` was counted above the list and
-  // then rendered as an ordinary status row, so the count and the rows
-  // disagreed about the same entry.
   const unprobedCount = useMemo(() => entries.filter((entry) => entry.error !== undefined).length, [entries]);
 
   const combinedList = useMemo((): ListItem[] => {
@@ -302,8 +279,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         setDivergedEntries(divergedDirs);
         const branch = initialBranchRef.current;
         initialBranchRef.current = undefined;
-        // The filtered list puts worktrees first, so an index into the
-        // matching worktrees is also the entry's index in the combined list.
         const target =
           branch === undefined
             ? -1
@@ -323,12 +298,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     [getWorktreeStatusForRepo, getDivergedDirectoriesForRepo],
   );
 
-  // Unmount, not "this effect run". The effect below re-runs whenever the
-  // caller hands in a new `repositories` array (the App keeps one per open
-  // modal, but nothing here should depend on that). A per-run cancelled flag
-  // would discard the in-flight du result, while the re-run skipped the index
-  // it had already recorded in requestedDiskUsageRef -- so nothing would ever
-  // replace `calculating...` until the modal was closed and reopened.
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -362,9 +331,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     }
   }, [repositories, getRepositoryDiskUsage]);
 
-  // One loader call per selected repository, from one place. The ref, not the
-  // identity of `loadStatus`, is what keeps it to one: a caller that hands in a
-  // fresh `getWorktreeStatusForRepo` on every render must not re-run the load.
   useEffect(() => {
     if (step !== "VIEW_STATUS" || selectedRepoIndex < 0) return;
     if (loadedForRepoRef.current === selectedRepoIndex) return;
@@ -372,8 +338,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
     void loadStatus(selectedRepoIndex);
   }, [step, selectedRepoIndex, loadStatus]);
 
-  // The stored index can name the separator or a row past the end (no
-  // worktrees, a diverged-only filter, a delete): snap to a selectable row.
   const snapToSelectable = useCallback(
     (index: number): number =>
       selectableIndices.find((i) => i >= index) ?? selectableIndices[selectableIndices.length - 1] ?? 0,
@@ -400,15 +364,8 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   const isDivergedSelected = selectedItem?.type === "diverged";
 
   useInput((input, key) => {
-    // Filters here append any printable `input`, and Ink hands mouse reports
-    // through as one. Without this a scroll lands in the filter box as garbage.
     if (isMouseSequence(input)) return;
 
-    // The confirmation stays up until the delete resolves, so without this the
-    // repeat of an impatient `y` fires another removal for the same directory
-    // (each queuing on the repo lock), and `n`/ESC hands the list back while a
-    // delete is still running — leaving the next confirmation showing
-    // "Deleting..." for an entry nothing is deleting.
     if (deleting) return;
 
     if (confirmDelete !== null) {
@@ -475,8 +432,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         const selectedRepo = filteredProjects[selectedProjectIndex];
         if (selectedRepo) {
           setSelectedRepoIndex(selectedRepo.index);
-          // The effect owns the call; this only keeps the first frame of the
-          // next step from claiming there are no worktrees before it runs.
           setLoading(true);
           setStep("VIEW_STATUS");
         }
@@ -495,9 +450,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
       } else if (key.return && combinedList.length > 0) {
         setExpandedEntry((prev) => (prev === selectedEntryIndex ? null : selectedEntryIndex));
       } else if (key.ctrl && input === "d") {
-        // Ctrl-D, not a bare `d`: the list is also a type-to-filter box, and a
-        // printable key that deletes whenever a diverged row happens to be
-        // selected made `d` impossible to type into the filter.
         if (isDivergedSelected && deleteDivergedDirectory) {
           setDeleteError(null);
           setConfirmDelete(selectedEntryIndex);
@@ -535,8 +487,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
 
   const getTotalSteps = () => (repositories.length === 1 ? 1 : 2);
 
-  // Rows the step's list may take: what the modal has, less its chrome, the
-  // step's own lines above the list and a footer that wraps on a narrow box.
   const listRoom = (linesAboveList: number): number => {
     const footer = footerText();
     const footerExtra = footer ? wrappedRows(footer, layout.innerWidth) - 1 : 0;
@@ -557,7 +507,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
   );
 
   const renderProjectSelection = () => {
-    // "Select repository:", the filter, and the gaps after each.
     const visibleCount = listRowsFor(listRoom(4), filteredProjects.length);
     const { start: startIdx, end: endIdx } = listWindow(selectedProjectIndex, filteredProjects.length, visibleCount);
 
@@ -633,10 +582,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
       return <Text color="red">No worktrees found</Text>;
     }
 
-    // The repository line and its margin, the filter, the probe warning, and
-    // the gap before the list. Inside the list, the diverged separator's
-    // margin and an expanded entry's detail panel take rows no entry is
-    // counted for.
     const linesAbove = (selectedRepo ? 2 : 0) + 1 + (unprobedCount > 0 ? 1 : 0) + 1;
     const expandedItem = expandedEntry !== null ? combinedList[expandedEntry] : undefined;
     const expandedRows =
@@ -645,7 +590,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
         : expandedItem?.type === "diverged"
           ? detailRows(divergedDetailLines(expandedItem.entry))
           : 0;
-    // A failed delete's message sits under the list, with its margin.
     const deleteErrorRows = deleteError ? 1 + wrappedRows(deleteError, layout.innerWidth) : 0;
     const extraRows = (filteredDiverged.length > 0 ? 1 : 0) + expandedRows + deleteErrorRows;
     const visibleCount = listRowsFor(listRoom(linesAbove) - extraRows, combinedList.length);
@@ -707,7 +651,6 @@ const WorktreeStatusView: React.FC<WorktreeStatusViewProps> = ({
                           <Text color="red">! status unknown</Text>
                         ) : (
                           <>
-                            {/* A narrow box squeezes the branch and summary, never a flag. */}
                             <Box flexShrink={0}>{getStatusFlags(item.entry.status)}</Box>
                             {summary && (
                               <Text dimColor wrap="truncate-end">

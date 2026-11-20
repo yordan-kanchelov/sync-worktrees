@@ -5,9 +5,6 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Only the terminal renderer is stubbed. Everything the wizard calls below it —
-// InteractiveUIService, WorktreeSyncService, GitService, simple-git and git
-// itself — is the real thing, against a real local bare remote.
 vi.mock("ink", () => ({
   render: vi.fn(() => ({ unmount: vi.fn(), waitUntilExit: vi.fn(() => new Promise<void>(() => {})) })),
 }));
@@ -18,15 +15,6 @@ import { createMockLogger } from "../test-utils";
 
 import type { RepositoryConfig } from "../../types";
 
-// A branch the age/name filters hide has a remote-tracking ref but no local
-// head in the bare repository, so the collision check `git branch` performs
-// sees nothing. The plain `git push origin <name>:<name> -u` that followed then
-// FAST-FORWARDED the branch that was already on origin whenever its tip was an
-// ancestor of the base — moving a branch nobody asked to move, and with it any
-// open PR or CI run pinned to that ref, while the wizard reported success.
-//
-// Nothing here can be shown with a mocked git: the claim is that a remote ref
-// does not move, so the remote has to be real.
 describe("Branch wizard against a branch only the remote still has (E2E)", () => {
   let tempDir: string;
   let remote: string;
@@ -84,9 +72,6 @@ describe("Branch wizard against a branch only the remote still has (E2E)", () =>
     git(seedDir, "config", "user.name", "Test User");
     git(seedDir, "config", "user.email", "test@example.com");
 
-    // One 45-day-old commit, which `hotfix` is left pointing at: an ancestor of
-    // everything main gains afterwards, which is exactly the shape a plain push
-    // fast-forwards.
     await fs.writeFile(path.join(seedDir, "README.md"), "# app\n");
     commit("old work", 45);
     git(seedDir, "branch", "-M", "main");
@@ -94,7 +79,6 @@ describe("Branch wizard against a branch only the remote still has (E2E)", () =>
     git(seedDir, "remote", "add", "origin", remote);
     git(seedDir, "push", "-q", "origin", "main", "hotfix");
 
-    // main moves on, today.
     await fs.writeFile(path.join(seedDir, "today.txt"), "today\n");
     commit("recent work", 0);
     git(seedDir, "push", "-q", "origin", "main");
@@ -124,8 +108,6 @@ describe("Branch wizard against a branch only the remote still has (E2E)", () =>
       ...overrides,
     }) as RepositoryConfig;
 
-  // The synced service behind the last buildUI(), for the tests that need to
-  // reach past the wizard to one defence on its own.
   let syncService: WorktreeSyncService;
 
   const buildUI = async (config: RepositoryConfig = makeConfig()): Promise<InteractiveUIService> => {
@@ -140,17 +122,12 @@ describe("Branch wizard against a branch only the remote still has (E2E)", () =>
   it("suffixes instead of moving a remote branch that branchMaxAge filtered out", async () => {
     const ui = await buildUI();
     try {
-      // The premise: origin still has `hotfix`, the wizard's picker still lists
-      // it (so it displays "will create: hotfix-1"), and the age filter left no
-      // local head for `git branch` to collide with.
       expect(remoteBranches()).toContain("hotfix");
       expect(await ui.operations.getBranchesForRepo(0)).toContain("hotfix");
       expect(localHeadExists("hotfix")).toBe(false);
 
       const created = await ui.operations.createAndPushBranch(0, "main", "hotfix");
 
-      // The branch that was already on origin is untouched — this is the whole
-      // claim, and the reason the remote here is real.
       expect(remoteTip("hotfix")).toBe(hotfixTip);
 
       expect(created.success).toBe(true);
@@ -158,8 +135,6 @@ describe("Branch wizard against a branch only the remote still has (E2E)", () =>
       expect(remoteBranches()).toContain("hotfix-1");
       expect(remoteTip("hotfix-1")).toBe(remoteTip("main"));
 
-      // The lease is carried on a fully-qualified refspec, so `-u` still has to
-      // set the upstream it always did — a mocked push cannot show that.
       expect(git(bareRepoDir, "config", "branch.hotfix-1.remote")).toBe("origin");
       expect(git(bareRepoDir, "config", "branch.hotfix-1.merge")).toBe("refs/heads/hotfix-1");
     } finally {
@@ -180,8 +155,6 @@ describe("Branch wizard against a branch only the remote still has (E2E)", () =>
 
       expect(created.success).toBe(false);
       expect(created.error).toMatch(/push/i);
-      // The retry the user makes with the same name must not be diverted to
-      // `feature/x-1` by this attempt's own leftover.
       expect(localHeadExists("feature/x")).toBe(false);
       expect(remoteBranches()).not.toContain("feature/x");
     } finally {
@@ -189,35 +162,20 @@ describe("Branch wizard against a branch only the remote still has (E2E)", () =>
     }
   });
 
-  // The two defences are independent, and both tests above are satisfied by
-  // EITHER of them: the probe suffixes before the push is ever reached, so the
-  // push never gets the chance to demonstrate anything. The lease is the one
-  // that has to hold when the probe cannot — offline, where the probe's
-  // failure is deliberately not fatal, or a ref that appears between the probe
-  // and the push — and on its own it was pinned by nothing but an argv
-  // comparison against a mock. So this drives it with the probe out of the
-  // picture entirely: the local branch is made with raw git exactly as
-  // `createBranch` would have made it, and handed straight to `pushBranch`.
   it("refuses to advance a remote branch when the push is the only thing standing in the way", async () => {
     const ui = await buildUI();
     try {
       const gitService = syncService.getGitService();
 
-      // `hotfix` at main's tip, its remote tip an ancestor of it: the exact
-      // shape a plain `git push origin hotfix:hotfix -u` fast-forwards.
       git(bareRepoDir, "branch", "--no-track", "hotfix", "origin/main");
       expect(localHeadExists("hotfix")).toBe(true);
       expect(isAncestor(hotfixTip, git(bareRepoDir, "rev-parse", "refs/heads/hotfix"))).toBe(true);
 
       await expect(gitService.pushBranch("hotfix")).rejects.toThrow(/stale info/);
 
-      // Byte-identical: the ref that was already on origin did not move.
       expect(remoteTip("hotfix")).toBe(hotfixTip);
-      // And the rejection did not set an upstream for a push that never landed.
       expect(() => git(bareRepoDir, "config", "branch.hotfix.merge")).toThrow();
 
-      // The control: the same push of a name origin does not have still works,
-      // so what the lease refuses above is the existing ref and not the push.
       git(bareRepoDir, "branch", "--no-track", "brand-new", "origin/main");
       await expect(gitService.pushBranch("brand-new")).resolves.toBeUndefined();
       expect(remoteTip("brand-new")).toBe(remoteTip("main"));

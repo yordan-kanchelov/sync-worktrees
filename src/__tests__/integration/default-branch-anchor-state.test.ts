@@ -12,10 +12,6 @@ import type { Logger } from "../../services/logger.service";
 import type { RepositoryConfig, SyncOutcome } from "../../types";
 import type { Mock } from "vitest";
 
-// Real git, no mocks. The default branch's worktree is matched by path, and
-// the planner never plans the default branch, so a checkout at that path that
-// is detached or on another branch used to be adopted silently: the sync
-// reported a clean run while the default branch's worktree fell behind.
 describe("Default-branch worktree not on the default branch (E2E)", () => {
   let tempDir: string;
   let remote: string;
@@ -103,10 +99,8 @@ describe("Default-branch worktree not on the default branch (E2E)", () => {
       expect.objectContaining({ kind: "skipped", reason: "default_branch_detached", branch: "main", path: mainPath }),
     );
     expect(warnings(logger).some((line) => line.includes(mainPath) && line.includes("detached"))).toBe(true);
-    // Left alone: the user's checkout is not moved.
     expect(await headOf(mainPath)).toBe(detachedHead);
 
-    // A fresh process (initialize() adopts the anchor) reports it too.
     const fresh = await syncOnce(new WorktreeSyncService(makeConfig(createMockLogger())));
     expect(fresh.actions).toContainEqual(
       expect.objectContaining({ kind: "skipped", reason: "default_branch_detached", branch: "main", path: mainPath }),
@@ -118,8 +112,6 @@ describe("Default-branch worktree not on the default branch (E2E)", () => {
     const service = new WorktreeSyncService(makeConfig(logger));
     await syncOnce(service);
 
-    // A local branch origin does not have: an ordinary worktree on it would be
-    // a prune candidate, but this one is where every fetch runs.
     await simpleGit(mainPath).raw(["switch", "-c", "local-only"]);
     await pushToMain();
 
@@ -133,7 +125,6 @@ describe("Default-branch worktree not on the default branch (E2E)", () => {
     await expect(fs.access(path.join(mainPath, "README.md"))).resolves.toBeUndefined();
     expect((await simpleGit(mainPath).raw(["branch", "--show-current"])).trim()).toBe("local-only");
 
-    // A dry run plans the same skip and no removal of the anchor.
     const dryRun = await new WorktreeSyncService(makeConfig(createMockLogger())).planSync();
     if (!dryRun.started) throw new Error("dry run did not start");
     expect(dryRun.plan.steps).toContainEqual(
@@ -141,7 +132,6 @@ describe("Default-branch worktree not on the default branch (E2E)", () => {
     );
     expect(dryRun.plan.steps.filter((step) => step.kind === "remove")).toEqual([]);
 
-    // And the next sync still runs from it.
     const third = await syncOnce(service);
     expect(third.counts.failed).toBe(0);
     expect(third.actions).toContainEqual(

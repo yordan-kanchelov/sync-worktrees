@@ -236,7 +236,6 @@ describe("PathResolutionService", () => {
         await fs.symlink(outsideDir, symlinkInsideBase, "dir");
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
-        // Environments without symlink privileges return EPERM/EACCES/UNKNOWN/ENOSYS.
         if (code === "EPERM" || code === "EACCES" || code === "UNKNOWN" || code === "ENOSYS") {
           symlinkSupported = false;
           return;
@@ -263,9 +262,6 @@ describe("PathResolutionService", () => {
     });
   });
 
-  // The async variant is the one the sync runner partitions with, so it has to
-  // answer exactly what the synchronous variant answers — a divergence here is
-  // a hole in the boundary that decides which directories the tool may touch.
   describe("isPathInsideResolvedBaseDir parity with isPathInsideBaseDir", () => {
     let tmpRoot: string;
     let baseDir: string;
@@ -300,8 +296,6 @@ describe("PathResolutionService", () => {
         { label: "the base itself", target: baseDir, base: baseDir },
         { label: "an existing child", target: inBase("real"), base: baseDir },
         { label: "an existing grandchild", target: inBase("real", "nested"), base: baseDir },
-        // The worktree a create action is about to make does not exist yet, so
-        // the walk up over missing components is the common case, not an edge.
         { label: "a path that does not exist yet", target: inBase("real", "nested", "not", "created"), base: baseDir },
         { label: "a whole missing subtree", target: inBase("brand", "new", "worktree"), base: baseDir },
         { label: "a sibling of the base", target: path.join(tmpRoot, "outside", "secret"), base: baseDir },
@@ -351,9 +345,6 @@ describe("PathResolutionService", () => {
         expect({ label, inside: actual }).toEqual({ label, inside: expected });
         verdicts.add(expected);
       }
-      // Agreement is only worth anything if the matrix admits some paths and
-      // refuses others; an all-false run would pass against a check that never
-      // says yes.
       expect([...verdicts].sort()).toEqual([false, true]);
     });
   });

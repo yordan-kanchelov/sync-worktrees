@@ -12,7 +12,6 @@ function clock(start = 1_000_000): { now: () => number; advance: (ms: number) =>
   };
 }
 
-/** Answers at once; records which directories were walked, in order. */
 function recorder(sizes: number[] = []): {
   measure: (dirPath: string) => Promise<number>;
   calls: string[];
@@ -27,7 +26,6 @@ function recorder(sizes: number[] = []): {
   };
 }
 
-/** Answers only when released, so overlap can be observed from inside. */
 function gatedRecorder(): {
   measure: (dirPath: string) => Promise<number>;
   calls: string[];
@@ -61,8 +59,6 @@ function gatedRecorder(): {
   };
 }
 
-/** One gate per walk, each answering with its own figure, so a stale walk is
- *  distinguishable from the walk that overtook it. */
 function gatedSizes(sizes: number[]): {
   measure: (dirPath: string) => Promise<number>;
   calls: string[];
@@ -115,11 +111,6 @@ describe("DiskUsageCache", () => {
   });
 
   it("stops serving a measurement after a minute", async () => {
-    // Against the shipped TTL, not the symbol the class is built from: a test
-    // that advances by DISK_USAGE_CACHE_TTL_MS re-walks whatever that constant
-    // is, so it cannot tell a minute from forever. The changeset promises the
-    // view's repeat opens are served from cache "for up to a minute"; this is
-    // that minute.
     const time = clock();
     const probe = recorder([100, 250]);
     const cache = new DiskUsageCache(4, undefined, probe.measure, time.now);
@@ -221,8 +212,6 @@ describe("DiskUsageCache", () => {
     const view = cache.size("/a");
     await settle();
 
-    // Opening the view mid-cycle costs no extra `du`: what the header is
-    // already walking is at worst as stale as the moment the view was opened.
     expect(probe.calls).toEqual(["/a"]);
     await probe.release();
     expect(await Promise.all([header, view])).toEqual([100, 100]);
@@ -233,20 +222,14 @@ describe("DiskUsageCache", () => {
     const probe = gatedSizes([900, 400]);
     const cache = new DiskUsageCache(4, DISK_USAGE_CACHE_TTL_MS, probe.measure, time.now);
 
-    // The status view opens and its walk reaches the filesystem.
     const view = cache.size("/a");
     await settle();
     expect(probe.calls).toEqual(["/a"]);
 
-    // The directory shrinks, and only then is the header's refresh asked for.
-    // Joining here is what made the header report a pre-mutation size and then
-    // stamp it fresh for the whole TTL -- measured 5/5 on a 93,003-path tree,
-    // overstating by 64 MB after a shrink that had already returned.
     const header = cache.refresh("/a");
     await settle();
     expect(probe.calls).toEqual(["/a", "/a"]);
 
-    // The stale walk finishes last, so it must not be the one that is recorded.
     await probe.release(1);
     await probe.release(0);
 

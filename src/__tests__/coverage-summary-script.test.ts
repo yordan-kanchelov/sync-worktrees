@@ -5,8 +5,6 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-// scripts/coverage-summary.mjs turns vitest's json-summary into the Markdown
-// table that pr.yml appends to the job summary.
 const SCRIPT = path.resolve(__dirname, "../../scripts/coverage-summary.mjs");
 
 function run(file: string): string {

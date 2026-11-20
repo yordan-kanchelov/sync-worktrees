@@ -19,8 +19,6 @@ describe("fuzzyMatch", () => {
   });
 
   it("prefers the word over scattered letters", () => {
-    // `main` inside `my-app › main`: the `m` of `my` is the first occurrence,
-    // but the best match is the whole word at the end.
     const match = fuzzyMatch("main", "my-app › main");
     expect(match?.positions).toEqual([9, 10, 11, 12]);
   });
@@ -46,7 +44,6 @@ describe("fuzzyFilter", () => {
   it("ranks consecutive and word-start matches above scattered ones", () => {
     const ranked = fuzzyFilter(labels, "main", (l) => l).map((r) => r.item);
     expect(ranked.slice(0, 2).sort()).toEqual(["api › main", "web › main"]);
-    // `m-a-i-l` then `...` scatters `main` across a longer label.
     expect(ranked).not.toContain("api › feature/login");
   });
 

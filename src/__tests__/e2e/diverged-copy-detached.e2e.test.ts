@@ -6,10 +6,6 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-// A diverged worktree moved aside (to trash, or to .diverged/ with trash off)
-// must not stay linked to the admin dir its replacement re-registers: git run
-// inside the copy would act on the live branch. The recovery text must not
-// send the user there either, and restoring the copy must give a clean tree.
 describe("Diverged copy is detached from the live worktree (E2E)", () => {
   let tempDir: string;
   let remote: string;
@@ -72,7 +68,6 @@ describe("Diverged copy is detached from the live worktree (E2E)", () => {
   async function assertDetached(copyPath: string, localCommit: string, liveCommit: string): Promise<void> {
     await expect(fs.readFile(path.join(copyPath, "local-only.txt"), "utf8")).resolves.toBe("never pushed");
     expect(() => gitIn(copyPath, ["rev-parse", "--git-dir"])).toThrow();
-    // The live worktree and the preserved commit are untouched.
     expect(gitIn(featurePath, ["rev-parse", "HEAD"])).toBe(liveCommit);
     expect(gitIn(bareRepoDir, ["cat-file", "-t", localCommit])).toBe("commit");
   }
@@ -135,7 +130,6 @@ describe("Diverged copy is detached from the live worktree (E2E)", () => {
     await expect(fs.access(path.join(payloadPath, ".diverged-info.json"))).rejects.toThrow();
     expect(output).toContain(`sync-worktrees trash restore ${id}`);
 
-    // Make room for the restore: drop the replacement and its branch.
     gitIn(bareRepoDir, ["worktree", "remove", "--force", featurePath]);
     gitIn(bareRepoDir, ["branch", "-D", "feature"]);
     cli(["trash", "restore", id]);

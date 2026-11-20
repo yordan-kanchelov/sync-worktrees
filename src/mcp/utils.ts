@@ -7,13 +7,6 @@ import type { CallToolResult, ServerContext } from "@modelcontextprotocol/server
 
 export type HandlerContext = ServerContext;
 
-/**
- * Scrubs credential-bearing URLs from every string in a response payload.
- * Repository URLs (`repoUrl`, sibling and configured-repository summaries)
- * are redacted at their source too; this catches the free text that carries
- * git's own output — per-repository `error` fields, `notes`, skip messages,
- * outcome failures — without each handler having to remember to.
- */
 function redactSecretsInPayload<T>(value: T): T {
   if (typeof value === "string") {
     return redactSecretsInText(value) as T;
@@ -34,12 +27,6 @@ function redactSecretsInPayload<T>(value: T): T {
   return value;
 }
 
-/**
- * Every tool advertises an `outputSchema`, so each result must carry a
- * `structuredContent` matching it (SEP-2106) — the SDK rejects a result that
- * omits it. The JSON text block is kept alongside for clients that only read
- * `content`.
- */
 export function formatToolResponse(data: object): CallToolResult {
   const payload = redactSecretsInPayload(data);
   return {
@@ -65,9 +52,6 @@ export function formatErrorResponse(error: unknown): CallToolResult {
     message = error.message;
   }
 
-  // git quotes the remote URL in its failures ("could not read from remote
-  // repository", "unable to access '<url>'"), so the message — and the stack,
-  // which starts with it — must be scrubbed before an MCP client sees them.
   const body: Record<string, unknown> = {
     error: true,
     code,
@@ -101,10 +85,6 @@ export class SyncInProgressError extends SyncWorktreesError {
   }
 }
 
-// The cross-process repo lock could not be prepared or taken (ENOTDIR, EACCES,
-// EROFS, ENOSPC, ...). Unlike SYNC_IN_PROGRESS nothing else is working on the
-// repository — the operation simply did not run, and retrying will not help
-// until the state directory is fixed.
 export class RepoLockUnavailableError extends SyncWorktreesError {
   constructor(repoName: string, detail: Pick<RepoLockUnavailable, "path" | "code" | "error">) {
     super(`Operation not run for '${repoName}': ${formatRepoLockUnavailable(detail)}`, "LOCK_UNAVAILABLE");
@@ -120,10 +100,6 @@ export class WorktreeTargetExistsError extends SyncWorktreesError {
   }
 }
 
-// A registered worktree with no branch checked out. Distinct from
-// TARGET_EXISTS (nothing is registered there) and from "not a registered
-// worktree": the path is this repository's, it is simply not something a
-// fast-forward can be aimed at, because there is no branch to move.
 export class WorktreeDetachedError extends SyncWorktreesError {
   constructor(worktreePath: string, head?: string) {
     super(
@@ -133,7 +109,6 @@ export class WorktreeDetachedError extends SyncWorktreesError {
   }
 }
 
-// A registration whose checkout directory is gone: nothing to run git in.
 export class WorktreeMissingError extends SyncWorktreesError {
   constructor(worktreePath: string, locked: boolean) {
     super(

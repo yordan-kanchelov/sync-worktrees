@@ -123,8 +123,6 @@ describe("BranchCreatedActionsService.copyFiles", () => {
     });
 
     it("clone mode: keeps a sibling checkout's file out of the new clone", async () => {
-      // The documented quick-start layout: the config file's directory is the
-      // parent of every clone-mode checkout.
       await fs.mkdir(path.join(tempDir, "api"), { recursive: true });
       await fs.mkdir(path.join(tempDir, "web"), { recursive: true });
       await fs.writeFile(path.join(tempDir, ".env.local"), "shared");
@@ -147,9 +145,6 @@ describe("BranchCreatedActionsService.copyFiles", () => {
     });
 
     it("clone mode: keeps a sibling checkout out when its configured directory is a symlink", async () => {
-      // `worktreeDir: <config dir>/api` where that name is a symlink onto
-      // another disk, plus a `current -> api` alias next to it. A single-star
-      // pattern resolves through both.
       await fs.mkdir(path.join(tempDir, "disk2", "api"), { recursive: true });
       await fs.mkdir(path.join(tempDir, "ws", "web"), { recursive: true });
       await fs.writeFile(path.join(tempDir, "disk2", "api", ".env.local"), "API_SECRET=1");
@@ -176,10 +171,6 @@ describe("BranchCreatedActionsService.copyFiles", () => {
     });
 
     it("clone mode: keeps a sibling checkout out when an ordinary alias names its parent", async () => {
-      // Checkouts under a `repos/` directory with a `current -> repos`
-      // convenience symlink beside them. The alias resolves to the parent
-      // rather than to a checkout, so `current/api` is an ordinary directory
-      // under a name the config file never spelled.
       await fs.mkdir(path.join(tempDir, "repos", "api"), { recursive: true });
       await fs.mkdir(path.join(tempDir, "repos", "web"), { recursive: true });
       await fs.writeFile(path.join(tempDir, ".env.local"), "shared");
@@ -204,9 +195,6 @@ describe("BranchCreatedActionsService.copyFiles", () => {
     });
 
     it("worktree mode: still copies from a symlinked directory inside the source worktree", async () => {
-      // The source worktree sits inside this repository's own worktreeDir,
-      // which the exclusion list names — so the walk must not read that entry
-      // as "everything under the source is foreign".
       const source = path.join(tempDir, "trees", "main-abc");
       await fs.mkdir(path.join(source, "deep", "nested"), { recursive: true });
       await fs.writeFile(path.join(source, ".env.local"), "shared");
@@ -232,9 +220,6 @@ describe("BranchCreatedActionsService.copyFiles", () => {
     });
 
     it("worktree mode: keeps a nested repository's checkout out of the new worktree", async () => {
-      // detectPathCollisions allows (and warns about) a worktreeDir nested
-      // inside another repository's worktreeDir, which is the one shape that
-      // puts a foreign checkout under a worktree-mode copy source.
       const source = path.join(tempDir, "api", "main");
       await fs.mkdir(path.join(source, "vendor", "tools"), { recursive: true });
       await fs.writeFile(path.join(source, ".env.local"), "shared");
@@ -277,9 +262,6 @@ describe("BranchCreatedActionsService.runHooks", () => {
     await service.cleanup();
   });
 
-  // Driven through the real HookExecutionService and real child processes: the
-  // log line is the deliverable, so nothing here stands in for the thing that
-  // produces it.
   const runAndWaitFor = async (commands: string[], expected: number): Promise<void> => {
     new BranchCreatedActionsService().runHooks({
       config: makeConfig({ hooks: { onBranchCreated: commands, timeoutMs: 0 } }),

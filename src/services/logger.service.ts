@@ -10,23 +10,11 @@ export type LogOutputFn = (message: string, level: LogLevel) => void;
 export interface LoggerOptions {
   repoName?: string;
   debug?: boolean;
-  /** Strip ANSI sequences (e.g. from hook output). Defaults to on when stdout
-   * is not a terminal or `NO_COLOR` is set; see {@link colorsEnabled}. */
   disableColors?: boolean;
   outputFn?: LogOutputFn;
-  /**
-   * `--quiet`: drop info, debug and table output so only warnings and errors
-   * get through. For one-shot runs under cron, where every stdout line is mail.
-   */
   quiet?: boolean;
 }
 
-/**
- * Every line leaves through {@link redactSecretsInText}: repository URLs with
- * embedded credentials (`https://user:token@host/...`) are common in CI and
- * show up in clone/fetch messages, git's own error text and the run banner,
- * so the logger scrubs them centrally instead of trusting each call site.
- */
 export class Logger {
   private repoName?: string;
   private debugEnabled: boolean;
@@ -92,10 +80,6 @@ export class Logger {
     if (this.outputFn) {
       this.outputFn(formattedMessage, "error");
     } else if (error) {
-      // console.error(message, error) would hand the raw value to util.inspect,
-      // whose output (message, stack, simple-git's `task.commands`, ...) can
-      // carry a credential-bearing URL. Inspect it here so it can be scrubbed.
-      // A git or typed failure is one line unless debug asks for everything.
       const summary = this.debugEnabled ? null : summarizeExpectedError(error);
       const detail = summary ?? (typeof error === "string" ? error : inspect(error));
       console.error(this.scrub(`${this.prefix()}${message} ${detail}`));

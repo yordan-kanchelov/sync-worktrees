@@ -11,9 +11,6 @@ interface CliRun {
   output: string;
 }
 
-// `--run-once` used to call initialize() and then sync(): initialize fetched in
-// the bare repository outside the retry policy, then the sync fetched again.
-// One fetch per run now, and an unreachable remote gets every retry attempt.
 describe("run-once fetch count and retry (E2E)", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
   const realGit = execSync("command -v git", { shell: "/bin/sh" }).toString().trim();

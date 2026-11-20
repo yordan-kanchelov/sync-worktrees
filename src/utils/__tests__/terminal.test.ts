@@ -22,7 +22,6 @@ describe("colorsEnabled", () => {
 
   it("turns colour off for a non-empty NO_COLOR, even on a terminal", () => {
     expect(colorsEnabled({ NO_COLOR: "1" }, tty)).toBe(false);
-    // An empty value means unset (https://no-color.org).
     expect(colorsEnabled({ NO_COLOR: "" }, tty)).toBe(true);
   });
 

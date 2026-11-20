@@ -5,7 +5,6 @@ import { MIN_LIST_ROWS, isListDown, isListUp, useModalLayout } from "./layout";
 
 export interface HelpModalProps {
   onClose: () => void;
-  /** Rows the help screen may use; defaults to the terminal height. */
   availableRows?: number;
 }
 
@@ -42,10 +41,6 @@ const SECTIONS: HelpSection[] = [
       { keys: ["x"], description: "Force clean trash, recovery refs, and Git objects" },
       { keys: ["r"], description: "Reload configuration and re-sync all repos" },
       { keys: ["?", "h"], description: "Toggle this help screen" },
-      // `q` alone. Esc is this interface's "back out of what is open" key --
-      // it closes this screen, cancels a wizard and steps a wizard back -- so
-      // binding it to an exit as well would make one Esc too many, or a key
-      // repeat, tear down the daemon and the hooks it still has running.
       { keys: ["q"], description: "Gracefully quit; asks if busy" },
       { keys: ["l", "+", "-"], description: "Collapse / grow / shrink the log under the table" },
     ],
@@ -73,9 +68,6 @@ const helpLines = (withBlanks: boolean): HelpLine[] =>
 const ROOMY_LINES = helpLines(true);
 const COMPACT_LINES = helpLines(false);
 
-// Rows spent outside the lines: the border (2), the title and its margin (2)
-// and the footer and its margin (2); the roomy layout adds its outer margins
-// (4) and `paddingY` (2).
 const COMPACT_CHROME_ROWS = 6;
 const ROOMY_CHROME_ROWS = 12;
 
@@ -85,21 +77,15 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose, availableRows }) => {
   const layout = useModalLayout(72, availableRows);
   const [scrollOffset, setScrollOffset] = useState(0);
 
-  // The whole sheet with room to breathe when the terminal has the rows;
-  // otherwise without the spacing, and scrolled when even that does not fit.
   const roomy = layout.rows >= ROOMY_CHROME_ROWS + ROOMY_LINES.length;
   const lines = roomy ? ROOMY_LINES : COMPACT_LINES;
   const room = layout.rows - (roomy ? ROOMY_CHROME_ROWS : COMPACT_CHROME_ROWS);
   const scrollable = lines.length > room;
-  // The `↑ more` / `↓ more` rows are reserved as soon as the sheet scrolls, so
-  // the window does not change size under the reader.
   const visibleCount = scrollable ? Math.max(MIN_LIST_ROWS, room - 2) : lines.length;
   const maxOffset = Math.max(0, lines.length - visibleCount);
   const offset = Math.min(scrollOffset, maxOffset);
 
   useInput((input, key) => {
-    // Mouse reports arrive as a single `input` string; ignore them here so a
-    // scroll never registers as a keystroke.
     if (isMouseSequence(input)) return;
 
     if (input === "?" || input === "h" || key.escape) {

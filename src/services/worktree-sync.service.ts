@@ -61,8 +61,6 @@ export type {
 
 export type ExclusiveRepoOperationResult<T> = { started: true; value: T } | RepoOperationNotStarted;
 
-// Why an operation did not start, for callers that turn that into an error.
-// Only `lock_unavailable` names a cause; the other two are contention.
 function describeNotStarted(result: RepoOperationNotStarted): string {
   switch (result.reason) {
     case "in_progress":
@@ -78,10 +76,6 @@ export class WorktreeSyncService {
   private gitService: GitService;
   private cloneSyncService: CloneSyncService | null = null;
   private logger: Logger;
-  // In-process FIFO serializer for all bare-repo-mutating operations (sync, init,
-  // interactive create). One per repo. wait:true callers queue behind an in-flight op;
-  // wait:false callers fail fast. The cross-process file lock (RepoOperationLock) is
-  // acquired inside the mutex body for multi-process safety.
   private repoMutex = pLimit(1);
   private progressEmitter = new ProgressEmitter();
   private repoOperationLock: RepoOperationLock;
@@ -160,9 +154,6 @@ export class WorktreeSyncService {
 
   async getWorktrees(options: { includeDetached?: boolean } = {}): Promise<RegisteredWorktree[]> {
     if (this.cloneSyncService) {
-      // A clone-mode repository is one checkout, and its own listing always
-      // reports it whether or not HEAD is on a branch, so there is nothing for
-      // `includeDetached` to widen here.
       return this.cloneSyncService.getWorktrees();
     }
     return this.gitService.getWorktrees(options);
@@ -182,9 +173,6 @@ export class WorktreeSyncService {
     await this.cloneSyncService.checkoutBranch(branchName);
   }
 
-  // Clone mode's answer to GitService.createBranch + pushBranch, which have no
-  // bare repository to run in here. The TUI's branch wizard calls this and then
-  // checkoutBranch(branchName) to switch to it.
   async createAndPushBranch(baseBranch: string, branchName: string): Promise<void> {
     if (!this.cloneSyncService) {
       throw new ConfigError("createAndPushBranch is only available for clone-mode repositories", "CLONE_MODE_REQUIRED");
@@ -214,9 +202,6 @@ export class WorktreeSyncService {
         await this.gitService.initialize();
       }
     } catch (error) {
-      // Every consumer (run-once, cron, the TUI, the MCP server) reports the
-      // rejection's message, so a credential / ssh failure gets its remedy
-      // hint attached here, once, on the way out.
       throw withGitAuthHint(error);
     }
     this.emitProgress({ phase: "initialize", message: "Repository initialized" });
@@ -244,16 +229,6 @@ export class WorktreeSyncService {
     return this.gitService.getDefaultBranch();
   }
 
-  // Restore must hold the repo lock: the reaper, prune, and gc all mutate the
-  // same trash entries and refs at the tail of a sync. wait:true queues behind
-  // an in-flight sync instead of failing fast — restores are explicit user
-  // actions, not periodic work.
-  //
-  // `lockWaitMs` is the same argument carried across the process boundary. The
-  // in-process mutex has always queued here, but the cross-process lock did
-  // not, so a restore run while a daemon was mid-sync failed immediately for a
-  // reason that resolves itself in a minute. Callers that can afford to wait
-  // pass a bounded budget; the default stays fail-fast.
   async restoreFromTrash(id: string, options: { lockWaitMs?: number } = {}): Promise<TrashManifest> {
     const result = await this.runExclusiveRepoOperation(() => this.trashService.restore(id), {
       wait: true,
@@ -265,23 +240,6 @@ export class WorktreeSyncService {
     return result.value;
   }
 
-  // Deletes ONE named trash entry ahead of its expiry, through the reap path
-  // rather than around it. Two properties matter and both come from reusing
-  // TrashReaperService.purgeEntryUnlocked instead of unlinking the container
-  // here:
-  //
-  //  - A `keepPinOnReap` entry gets its permanent `refs/sync-worktrees/keep/<id>`
-  //    ref minted BEFORE anything is deleted, and the whole purge is abandoned
-  //    if that fails. Those entries exist because their commits were on no
-  //    remote when the worktree was pruned, so the payload and the pin can be
-  //    the only copy in existence; deleting them without the anchor destroys
-  //    work. The result names any ref it minted so the caller can print it.
-  //  - The payload is renamed aside before it is removed and the attempt is in
-  //    the audit log before either, exactly as an expiry reap would be.
-  //
-  // The entry is looked up inside the lock, so "no trash entry with id" is
-  // decided against the same listing the purge acts on rather than against one
-  // read before the wait.
   async purgeTrashEntry(id: string, options: { lockWaitMs?: number } = {}): Promise<TrashPurgeResult> {
     if (this.cloneSyncService) {
       throw new TrashOperationError("purge", "trash operations are only available for worktree-mode repositories");
@@ -311,12 +269,6 @@ export class WorktreeSyncService {
     return this.gitService.listRefs(GIT_CONSTANTS.KEEP_REF_PREFIX);
   }
 
-  // The confirmation this feeds is the only screen that shows trash bytes, and
-  // this method runs outside the repo mutex — the TUI awaits it, spinner up,
-  // before it draws anything — so it is where an unmeasured payload gets its
-  // `du`. That keeps the scan off the lock without making the number lazier
-  // than the person reading it: an entry trashed seconds ago is measured on
-  // the first open, not shown as "unknown" until some later one.
   async getForceCleanPreview(): Promise<ForceCleanPreview> {
     return this.buildForceCleanPreview(true);
   }
@@ -349,14 +301,6 @@ export class WorktreeSyncService {
     };
   }
 
-  // `selection` is what the confirmation actually showed: the entry ids and ref
-  // names behind the counts, not the counts themselves. The preview runs
-  // outside the repo mutex and this runs inside it, an unbounded human pause
-  // later, so a sync in between can (and does) add trash entries and keep refs.
-  // Purging "everything present now" would destroy those without ever naming
-  // them — some hold the only copy of never-pushed commits, and the `gc` at
-  // the end makes that final. Anything not in the selection is left in place
-  // and reported.
   async forceClean(selection: ForceCleanSelection): Promise<ForceCleanResult> {
     await this.requireForceCleanTarget();
     const selectedKeepRefs = new Set(selection.keepRefNames);
@@ -367,20 +311,12 @@ export class WorktreeSyncService {
           : await this.trashReaper.purgeAllUnlocked(selection.trashEntryIds);
         const errors = [...reap.errors];
         const keepRefs = this.cloneSyncService ? [] : await this.listKeepRefs();
-        // A `.diverged/<name>` directory and `keep/<name>` are the two halves of
-        // one preserved worktree — the files, and the commits they were made on.
-        // Dropping the ref and then running the gc would leave the
-        // directory intact but its own recovery instructions dead, so refs whose
-        // directory is still there are retained and reported instead.
         const reservedNames = this.cloneSyncService ? new Set<string>() : await this.getDivergedDirectoryNames();
         let keepRefsDeleted = 0;
         let keepRefsRetained = 0;
         let skippedNewKeepRefs = 0;
 
         for (const ref of keepRefs) {
-          // Intersecting the live listing with the selection also covers the
-          // other direction: a selected ref that is gone by now never shows up
-          // here, so nothing is attempted for it.
           if (!selectedKeepRefs.has(ref)) {
             skippedNewKeepRefs++;
             continue;
@@ -403,41 +339,19 @@ export class WorktreeSyncService {
           }
         }
 
-        // The purge above only deletes directories and refs, which git itself
-        // serializes. The gc rewrites the object store every checkout shares,
-        // so it is the one step a person's own `git commit` in a worktree can
-        // collide with. Look for commands in flight and operations left
-        // half-finished, and skip the gc rather than run it into them.
-        //
-        // This is point-in-time, not exclusion: nothing stops a commit starting
-        // the instant after the probe returns clean, and the repository lock
-        // does not cover other people's git processes. It buys refusal on the
-        // states that last — a conflicted merge, an interactive rebase, a held
-        // `index.lock` — not a guarantee. The objects the deleted refs were
-        // holding stay until the next maintenance run, which is the cheap half
-        // of the trade: the trash directories are already gone.
         const busy = await probeInFlightGitOperations(this.getObjectStoreGitDir());
         const gcSkipped = busy.length > 0;
         let gcSucceeded = false;
         if (gcSkipped) {
-          // The word "skipped" is load-bearing: this string is rendered next to
-          // a `GC skipped` row, and calling it a failure there would recreate
-          // the failed/skipped confusion this whole path exists to remove.
           errors.push(`git gc skipped, git is busy in: ${formatGitBusySignals(busy)}`);
           this.logger.warn(`🧹 Skipping force-clean gc: ${formatGitBusySignals(busy)}`);
         } else {
           gcSucceeded = await this.maintenanceService.runNowUnlocked();
           if (!gcSucceeded) errors.push("git gc failed");
         }
-        // The survivors' ids are dropped: a result names counts, never a set to
-        // act on — see ForceCleanResult. Unlike the preview this recount runs
-        // inside the exclusive operation, so it must not measure: it reports
-        // what the survivors' manifests already say.
         const { trashEntryIds: _ids, keepRefNames: _refs, ...after } = await this.buildForceCleanPreview(false);
         return {
           ...after,
-          // The reaper's own count, not a before/after difference: a re-scan
-          // cannot tell a deletion from an entry that failed and stayed put.
           trashDeleted: reap.deleted,
           keepRefsDeleted,
           keepRefsRetained,
@@ -454,15 +368,6 @@ export class WorktreeSyncService {
     return result.value;
   }
 
-  // Does a `.diverged/` directory still depend on this keep ref?
-  //
-  // Current entries name the ref after the directory, so a direct hit settles
-  // it. Entries written before this ref layout used
-  // `diverged-<timestamp>-<sanitized branch>` and recorded nothing in their
-  // metadata, so the only link left is the sanitized branch name that both the
-  // ref and the directory carry. Matching on that keeps an upgrade from
-  // purging the commits behind a copy still sitting on disk; the cost of a
-  // false positive is a retained ref, the cost of a miss is the commits.
   private isKeepRefReserved(refName: string, divergedNames: Set<string>): boolean {
     if (divergedNames.has(refName)) return true;
 
@@ -475,11 +380,6 @@ export class WorktreeSyncService {
     return false;
   }
 
-  // Entry names under `.diverged/`, which are exactly the keep-ref names the
-  // non-trash diverge flow mints. Any name counts, files and symlinks included
-  // (same reasoning as the reaper's pin sweep): retaining a ref costs disk,
-  // dropping one can cost commits. An unreadable directory means the same —
-  // refuse to delete rather than guess.
   private async getDivergedDirectoryNames(): Promise<Set<string>> {
     const divergedRoot = path.join(this.config.worktreeDir, GIT_CONSTANTS.DIVERGED_DIR_NAME);
     try {
@@ -492,8 +392,6 @@ export class WorktreeSyncService {
     }
   }
 
-  // The git dir whose object store force clean's gc rewrites: the clone's own
-  // in clone mode, the bare repository every worktree is linked to otherwise.
   private getObjectStoreGitDir(): string {
     return this.cloneSyncService
       ? path.join(this.config.worktreeDir, PATH_CONSTANTS.GIT_DIR)
@@ -511,23 +409,6 @@ export class WorktreeSyncService {
     }
   }
 
-  // Drops many keep refs behind one confirmation, which is the only practical
-  // way out from under a repository that has accumulated hundreds: the
-  // single-ref path costs a typed confirmation each, and force clean is the
-  // only batch alternative but also takes the whole trash and runs a gc.
-  //
-  // `names` is what the confirmation actually listed, not "every ref present
-  // now" — same reasoning as forceClean. The listing is taken outside the repo
-  // mutex and this runs inside it, a human pause later, so a sync in between
-  // can mint keep refs for entries it has just reaped. Those hold commits
-  // nobody has been shown, and are left in place.
-  //
-  // Per-ref best effort, deliberately not one `update-ref --stdin` batch: that
-  // is a single transaction, so one ref another git process has locked aborts
-  // every other deletion in the call (measured on git 2.43.0 — a stray `.lock`
-  // left all ten refs of a ten-ref batch in place). Turning "999 dropped, 1
-  // locked" into "0 dropped" is the wrong trade for a command a person runs to
-  // clear a backlog.
   async deleteKeepRefs(names: readonly string[]): Promise<KeepRefDropResult> {
     for (const name of names) this.assertKeepRefName(name);
     const selected = new Set(names.map((name) => `${GIT_CONSTANTS.KEEP_REF_PREFIX}${name}`));
@@ -538,25 +419,17 @@ export class WorktreeSyncService {
       },
       { wait: true },
     );
-    // TrashError, not a bare Error: the CLI reports "the daemon holds the lock"
-    // as one line and exit code 1, and tells the two apart by type.
     if (!result.started)
       throw new TrashError(`Cannot delete keep refs: ${describeNotStarted(result)}`, "KEEP_REF_DROP");
     return result.value;
   }
 
-  // A keep ref name reaches `refs/sync-worktrees/keep/<name>` as a path
-  // segment, so anything that could climb out of the namespace or read as an
-  // option is refused before it gets near git.
   private assertKeepRefName(name: string): void {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error(`Invalid keep ref name '${name}'`);
   }
 
   private async dropKeepRefsUnlocked(selected: Set<string>): Promise<KeepRefDropResult & { missing: string[] }> {
     const dropped: KeepRefDropResult & { missing: string[] } = { deleted: 0, retained: [], errors: [], missing: [] };
-    // Intersecting the live listing with the selection covers both
-    // directions: a ref minted since the listing is never in `selected`, and
-    // a selected ref already gone never shows up here.
     const listed = new Set(await this.listKeepRefs());
     const present = [...selected].filter((ref) => listed.has(ref));
     dropped.missing = [...selected].filter((ref) => !listed.has(ref));
@@ -582,7 +455,6 @@ export class WorktreeSyncService {
     return dropped;
   }
 
-  // Same checks as the batch: `update-ref -d` exits 0 for a missing ref.
   async deleteKeepRef(name: string): Promise<void> {
     this.assertKeepRefName(name);
     const ref = `${GIT_CONSTANTS.KEEP_REF_PREFIX}${name}`;
@@ -650,11 +522,6 @@ export class WorktreeSyncService {
     this.trashMigration.updateLogger(logger);
   }
 
-  // Runs git gc when due, inside the already-held repo lock (mirrors
-  // initializeUnlocked — must NOT re-acquire runExclusiveRepoOperation or it
-  // would self-deadlock/skip). Skipped under the unit-test shortcut so unit
-  // suites don't shell out to real git; GitMaintenanceService is covered by
-  // its own tests.
   private async runMaintenanceIfDueUnlocked(): Promise<void> {
     if (isUnitTestShortcutEnabled()) {
       return;
@@ -662,10 +529,6 @@ export class WorktreeSyncService {
     await this.maintenanceService.runIfDueUnlocked();
   }
 
-  // Tail of every sync attempt, failed ones included (see the call site) —
-  // unlike runMaintenanceIfDueUnlocked, which is success-only. Inside the held
-  // lock, never fails the sync. Runs before gc so freshly reaped pin refs can
-  // be collected in the same maintenance window.
   private async runTrashMaintenanceUnlocked(): Promise<void> {
     if (isUnitTestShortcutEnabled()) {
       return;
@@ -675,11 +538,6 @@ export class WorktreeSyncService {
     }
     try {
       await this.trashMigration.migrateLegacyUnlocked();
-      // The reaper releases a permanent recovery ref only on evidence that the
-      // commits sit on a remote, and that evidence is only as current as the
-      // remote-tracking refs. This runs in the sync's `finally`, failed attempts
-      // included, so the runner — not the caller — says whether this attempt's
-      // pruning fetch actually completed.
       await this.trashReaper.reapExpiredUnlocked(new Date(), {
         remoteRefsFresh: this.worktreeModeSyncRunner.didPruneAllRemoteRefs(),
       });
@@ -696,11 +554,6 @@ export class WorktreeSyncService {
     operation: () => Promise<T>,
     options: { wait?: boolean; lockWaitMs?: number } = {},
   ): Promise<ExclusiveRepoOperationResult<T>> {
-    // Fail-fast callers (sync, init, MCP) bail when any repo op is active or queued.
-    // wait:true callers (interactive create) skip this check and queue on the mutex,
-    // running once the in-flight op releases. The count check and the repoMutex()
-    // enqueue below execute synchronously with no await between them, so on the
-    // single JS thread a second fail-fast caller always observes the first.
     if (!options.wait && this.repoMutex.activeCount + this.repoMutex.pendingCount > 0) {
       this.logger.warn("⚠️  Another repository operation is already in progress, skipping...");
       return { started: false, reason: "in_progress" };
@@ -713,9 +566,6 @@ export class WorktreeSyncService {
           this.logger.warn("⚠️  Another process holds the sync lock for this repo, skipping...");
           return { started: false, reason: "locked" };
         }
-        // Not contention: the lock could not be prepared or taken at all, so
-        // the operation did not run. That is a failure of this run with a
-        // cause worth naming, never a skip that blames another process.
         this.logger.error(`❌ Operation not run: ${formatRepoLockUnavailable(lock)}`);
         return { started: false, reason: "lock_unavailable", path: lock.path, code: lock.code, error: lock.error };
       }
@@ -732,7 +582,6 @@ export class WorktreeSyncService {
     });
   }
 
-  // Interactive variant: queues behind any in-flight sync/op instead of failing fast.
   async runQueuedRepoOperation<T>(operation: () => Promise<T>): Promise<ExclusiveRepoOperationResult<T>> {
     return this.runExclusiveRepoOperation(operation, { wait: true });
   }
@@ -742,25 +591,11 @@ export class WorktreeSyncService {
   }
 
   async sync(options: { signal?: AbortSignal } = {}): Promise<SyncResult> {
-    // Set as the first statement inside the exclusive operation so the `finally`
-    // below can tell "the operation ran" from "it never started". The result
-    // object cannot answer that on the failure path: a sync that trashes a
-    // worktree and then throws on a later phase rejects out of here without
-    // ever producing one, and those entries would stay unmeasured until some
-    // later tick happened to succeed.
     let operationRan = false;
     try {
       const result = await this.runExclusiveRepoOperation<SyncOutcome>(async () => {
         operationRan = true;
-        // Cleared here — once the sync actually starts — rather than by callers:
-        // a losing concurrent caller clearing the shared accumulator would
-        // silently truncate the winner's skips payload.
         this.clearRecordedSkips();
-        // A pendingInitSkip minted by an earlier standalone initialize() must
-        // not leak into this operation: its skip record was just wiped above,
-        // and consuming the stale token would suppress the re-detection in
-        // runSyncAttempt — the sync would then report clean with zero actions.
-        // The in-operation init below re-arms the token when it still applies.
         this.clearPendingInitSkip();
         const totalTimer = new Timer();
         const phaseTimer = new PhaseTimer();
@@ -771,14 +606,11 @@ export class WorktreeSyncService {
         const syncContext = this.retryPolicy.createContext();
         const retryOptions = { ...this.retryPolicy.createOptions(syncContext), signal: options.signal };
         let durationMs: number | undefined;
-        // An init that failed never printed "Starting", so it prints no "finished".
         let syncStarted = false;
 
         try {
           let clonedThisOperation = false;
           if (!this.isInitialized()) {
-            // Under the same retry policy as the sync attempt: init fetches or
-            // clones, so a briefly unreachable remote is retried here too.
             const initBaseline = outcome.snapshot();
             await retry(() => this.initializeUnlocked(outcome), {
               ...retryOptions,
@@ -787,23 +619,6 @@ export class WorktreeSyncService {
                 retryOptions.onRetry?.(error, attempt, context);
               },
             });
-            // `outcome` was constructed a few lines up and nothing else has
-            // written to it, so a `created` action in it can only be the clone
-            // this init just made — not an adopted existing clone, which records
-            // nothing, and not a worktree-mode init, which is handed no
-            // accumulator at all. That clone came from `origin` at the tracked
-            // branch, so the sync attempt below would fetch a ref it already has
-            // and scan a working tree git checked out moments ago. The check is
-            // deliberately scoped to an init that ran *inside this operation*:
-            // a standalone `initialize()` (the TUI reload, the MCP
-            // `initialize` tool) can be followed by a sync at any distance, and
-            // a flag carried across that boundary cannot tell a sync a second
-            // later from one an hour later — a sync that silently does nothing
-            // is a worse defect than the tick this saves. What that leaves on
-            // the table is small: since CloneSyncService classifies before it
-            // reads the working tree, a post-clone tick ends `up_to_date`
-            // without a status scan, so what those callers still pay for is one
-            // no-op fetch.
             clonedThisOperation = this.cloneSyncService !== null && outcome.getCounts().created > 0;
           }
 
@@ -826,8 +641,6 @@ export class WorktreeSyncService {
                 "Clone was created by this run; it is at the tracked remote tip, so no fetch is needed.",
               );
             } else {
-              // Same timer the worktree-mode runner is given, so `debug` prints
-              // one table in one format whichever mode the repository is in.
               await retry(() => cloneSync.runSyncAttempt(outcome, phaseTimer), retryOptionsWithOutcomeReset);
             }
           } else {
@@ -837,10 +650,7 @@ export class WorktreeSyncService {
             );
           }
         } catch (rawError) {
-          // A credential / ssh failure carries its remedy hint from here on:
-          // the outcome, this log line and the rejection every consumer reports.
           const error = withGitAuthHint(rawError);
-          // Sparse failures are caught and never what ends the tick.
           if (!outcome.hasFailureOutside("sparse-checkout")) {
             outcome.recordFailed("repo", getErrorMessage(error), { reason: "sync_failed" });
           }
@@ -858,9 +668,6 @@ export class WorktreeSyncService {
             this.logger.table(formatTimingTable(durationMs, phaseResults, repoName));
           }
 
-          // Trash maintenance runs even when the sync failed: it only acts on
-          // local expiry state, and a persistently failing fetch must not let
-          // .trash/ grow without bound. gc stays success-only below.
           await this.runTrashMaintenanceUnlocked();
         }
 
@@ -871,42 +678,16 @@ export class WorktreeSyncService {
 
       return result.started ? { started: true, outcome: result.value } : result;
     } finally {
-      // Past the closing brace above the repo lock is released and the mutex
-      // slot is free, which is the whole reason this line is here and not in
-      // the trash maintenance inside. Sizing trash payloads execs `du` over
-      // entire worktrees; it is informational (TrashService.listEntriesWithSizes)
-      // and it is the one piece of trash bookkeeping slow enough that running
-      // it under the lock would make every MCP call fail fast and every TUI
-      // action queue for its duration. In a `finally` because a sync that
-      // trashes a worktree and then throws on a later phase has left behind
-      // exactly the unmeasured entries this exists to measure. Still awaited,
-      // not detached: it finishes inside the sync it belongs to, before the
-      // next tick or the reaper can run — and it never throws, so it cannot
-      // mask the sync failure it is unwinding through.
       if (operationRan) await this.measureTrashSizesOffLock();
     }
   }
 
-  // `sync --dry-run`: what sync() would do, computed and not done. Runs on its
-  // own read-only GitService (optional locks off, so even `git status` leaves
-  // every index alone) and its own runner, so nothing here can mark this
-  // service initialized or leave state behind for a later real sync.
-  //
-  // The one write is the fetch, the same one a sync starts with: it updates
-  // remote-tracking refs and brings in objects, so the plan is made against
-  // origin as it is now rather than as the last sync saw it. It is taken
-  // under the repository lock like a sync, so a dry run never interleaves
-  // with a running sync. A repository that is not on disk yet is planned
-  // without the lock and without touching the disk: its plan is the clone.
   async planSync(): Promise<SyncPlanResult> {
     const mode = this.cloneSyncService ? "clone" : "worktree";
     const repoName = (this.config as { name?: string }).name;
     const plan = new SyncDryRunPlanBuilder({ mode, ...(repoName !== undefined && { repoName }) });
     const gitService = new GitService(this.config, this.logger, undefined, { readOnly: true });
 
-    // Probed before the lock, in both modes: taking it creates directories (the
-    // lock directory next to worktreeDir, the bare repository's directory),
-    // which a dry run of a repository not cloned yet must not do.
     if (this.cloneSyncService) {
       const cloneSync = new CloneSyncService(this.config, gitService, this.logger, { readOnly: true });
       if ((await probePathExists(path.join(this.config.worktreeDir, PATH_CONSTANTS.GIT_DIR))) === "missing") {
@@ -948,17 +729,6 @@ export class WorktreeSyncService {
     plan.note("The repository has not been cloned yet, so the branches it would get worktrees for are not listed.");
   }
 
-  // NOT one of the *Unlocked helpers — those run inside a held lock, this one
-  // must run outside it. Failures are logged and dropped: a size nobody has
-  // yet is not a reason to fail a sync that has already finished, and the next
-  // tick (or the force-clean preview) measures the entry instead.
-  //
-  // What that leaves is one tick of lag in the reaper's warnSizeBytes warning,
-  // which is raised inside the lock a few lines earlier: entries trashed by
-  // this tick are still unmeasured when it computes its total, so they count
-  // from the next tick on. The warning is an advisory about days of
-  // accumulation, and the lag only ever under-states it — it cannot raise a
-  // false alarm.
   private async measureTrashSizesOffLock(): Promise<void> {
     if (this.cloneSyncService) return;
     try {

@@ -14,8 +14,6 @@ import type { Mock, Mocked } from "vitest";
 vi.mock("fs/promises");
 vi.mock("simple-git");
 
-// The `for-each-ref` ref scan's output: each local branch with the full ref it
-// tracks ("" for none), then each remote-tracking ref as "<remote>/<branch>".
 function refScanOutput(upstreams: Record<string, string>, remoteBranches: string[]): string {
   return [
     ...Object.entries(upstreams).map(([branch, upstream]) => `refs/heads/${branch}\0${upstream}\0`),
@@ -24,7 +22,6 @@ function refScanOutput(upstreams: Record<string, string>, remoteBranches: string
   ].join("\n");
 }
 
-// `count` stashes made on main, the branch the default mocks check out.
 function stashesOnMain(count: number): any {
   return {
     total: count,
@@ -39,14 +36,8 @@ function stashesOnMain(count: number): any {
 describe("WorktreeStatusService", () => {
   let service: WorktreeStatusService;
   let mockGit: Mocked<SimpleGit>;
-  // What simple-git parses off the `## <branch>...<upstream> [ahead N, behind
-  // M]` header of `git status -b`, merged into whatever a test's status mock
-  // returns: the snapshot takes the checked-out branch from here.
   let header: { current: string | null; detached: boolean; tracking: string | null; ahead: number; behind: number };
-  // The repository-wide ref scan, kept apart from `raw` so the per-worktree
-  // subcommand assertions below see only per-worktree commands.
   let mockForEachRef: Mock<(args: string[]) => Promise<string>>;
-  // `symbolic-ref -q HEAD`, which hasStashedChanges reads the branch from.
   let mockSymbolicRef: Mock<(args: string[]) => Promise<string>>;
 
   beforeEach(() => {
@@ -84,16 +75,12 @@ describe("WorktreeStatusService", () => {
     });
   });
 
-  // The revision every `rev-list --count <rev> --not --remotes` probe was
-  // spawned with. Git resolves a bare name through refs/tags/<name> before
-  // refs/heads/<name>, so the probe must never name the branch that way.
   const unpushedProbeRevisions = (): string[] =>
     (mockGit.raw as Mock).mock.calls
       .map((call: any[]) => (Array.isArray(call[0]) ? (call[0] as string[]) : (call as string[])))
       .filter((args: string[]) => args[0] === "rev-list" && args.includes("--remotes"))
       .map((args: string[]) => args[2]);
 
-  // Every `git.raw` subcommand the service spawned, in call order.
   const gitSubcommands = (): string[] =>
     (mockGit.raw as Mock).mock.calls
       .map((call: any[]) => (Array.isArray(call[0]) ? (call[0] as string[]) : (call as string[])))
@@ -119,12 +106,6 @@ describe("WorktreeStatusService", () => {
       );
     });
 
-    // This gate only decides whether to fast-forward, which never touches a
-    // submodule's working tree. Forcing --ignore-submodules=none here would
-    // override a repo's own `submodule.<name>.ignore` — the standard way to keep
-    // vendored build output from dirtying the superproject — and silently stop
-    // that branch from ever updating again. Removal gating is where the
-    // override belongs, and getFullWorktreeStatus keeps it.
     it("honours the repository's own submodule ignore settings", async () => {
       await service.checkWorktreeStatus("/test/worktree");
 
@@ -154,12 +135,6 @@ describe("WorktreeStatusService", () => {
       expect(result).toBe(false);
     });
 
-    // `git status --porcelain -u` never lists an ignored path: the `??` lines
-    // simple-git parses into `not_added` are by definition the paths no exclude
-    // rule matched, and `--ignored` (which nothing here passes) reports ignored
-    // paths on separate `!!` lines that land in `status.ignored`. The service
-    // used to re-check `not_added` with `git check-ignore -- <every path>`,
-    // a spawn that could never remove anything.
     it("takes status.not_added as the untracked-not-ignored list, without a second git command", async () => {
       mockGit.status.mockResolvedValue({
         modified: [],
@@ -287,8 +262,6 @@ describe("WorktreeStatusService", () => {
       expect(result.reasons).toEqual(["stashed changes"]);
     });
 
-    // The other half: what status does report as untracked is a real change,
-    // listed verbatim, and still costs no extra git command.
     it("should report status.not_added verbatim as the untracked changes", async () => {
       mockGit.status.mockResolvedValue({
         modified: [],
@@ -318,9 +291,6 @@ describe("WorktreeStatusService", () => {
       expect(gitSubcommands()).not.toContain("check-ignore");
     });
 
-    // A few names let a skip reason tell a stray file from real work; past
-    // that, counts keep the reason one readable line. A path git lists twice
-    // (staged as added, then modified) is one change, not two.
     it("should count rather than name the paths once there are more than three", async () => {
       mockGit.status.mockResolvedValue({
         modified: ["src/a.ts", "src/new.ts"],
@@ -345,11 +315,6 @@ describe("WorktreeStatusService", () => {
       expect(result.reasons).toEqual(["uncommitted changes (3 tracked, 1 untracked)"]);
     });
 
-    // `git worktree add` never initializes submodules, so `git submodule status`
-    // prints "-<oid> <path>" for every submodule of every worktree this tool
-    // creates. Counting that "not initialized" marker as a modification made
-    // canRemove permanently false for such repos: the branch was never pruned,
-    // sparse narrowing was skipped and the TUI flagged ⊞ forever.
     describe("submodule status prefixes", () => {
       const setupCleanWorktree = (submoduleStatus: string): void => {
         mockGit.status.mockResolvedValue({
@@ -418,8 +383,6 @@ describe("WorktreeStatusService", () => {
         expect(result.details?.modifiedSubmodules).toEqual(["libs/sub"]);
       });
 
-      // The details list used to capture the object id, because the old regex
-      // grabbed the first \S+ run after the prefix.
       it("reports submodule paths — including paths with spaces — not object ids", async () => {
         setupCleanWorktree(
           [
@@ -437,13 +400,8 @@ describe("WorktreeStatusService", () => {
     });
   });
 
-  // upstreamGone and the any-remote unpushed probe come from the same snapshot
-  // getFullWorktreeStatus reads for every other field. The branch comes off
-  // the status header; what it tracks and whether that ref exists come off
-  // the repository's ref scan.
   describe("getFullWorktreeStatus upstream and unpushed probes", () => {
     const setupWorktree = (opts: {
-      // The full ref branch "feature" tracks, "" for none.
       upstream: string;
       remoteBranches: string[];
       localBranches?: string[];
@@ -483,10 +441,6 @@ describe("WorktreeStatusService", () => {
       expect(status.reasons).toContain("upstream gone");
     });
 
-    // FU-T101-2: a pruned upstream makes `rev-parse <b>@{upstream}` exit 128,
-    // so the name the flag needs never arrived. The scan names the configured
-    // upstream whether or not its ref exists, and `git status` prints `[gone]`
-    // with 0/0 there -- which must not read as "in sync".
     it("reports a pruned upstream as gone with no divergence, not as level", async () => {
       setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/main"], ahead: 0 });
 
@@ -519,8 +473,6 @@ describe("WorktreeStatusService", () => {
       expect(status.divergence).toBeNull();
     });
 
-    // FU-T101-1: `branch.feature.remote = .` tracks refs/heads/main, which no
-    // remote-tracking list will ever contain.
     it("does not report a branch tracking an existing local branch as gone", async () => {
       setupWorktree({
         upstream: "refs/heads/main",
@@ -545,8 +497,6 @@ describe("WorktreeStatusService", () => {
       expect(status.divergence).toBeNull();
     });
 
-    // No remote-tracking refs at all may be a failed fetch rather than a
-    // deletion: fail closed rather than labelling every worktree stale.
     it("does not call a remote upstream gone when the scan saw no remote-tracking refs", async () => {
       setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: [] });
 
@@ -577,8 +527,6 @@ describe("WorktreeStatusService", () => {
       expect(status.divergence).toBeNull();
     });
 
-    // The branch, whether HEAD is detached and what the branch tracks are all
-    // known without a process of their own.
     it("spawns no `git branch`, `branch -r` or `rev-parse @{upstream}` per worktree", async () => {
       setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/feature"] });
 
@@ -590,8 +538,6 @@ describe("WorktreeStatusService", () => {
       expect(mockForEachRef).toHaveBeenCalledTimes(1);
     });
 
-    // A failed status leaves the branch unknown: not detached (which would
-    // waive the unpushed gate) and with no branch to probe, so unpushed.
     it("fails closed on unpushed commits when status cannot be read", async () => {
       setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/feature"] });
       mockGit.status.mockRejectedValue(new Error("fatal: index file corrupt"));
@@ -606,10 +552,6 @@ describe("WorktreeStatusService", () => {
       consoleSpy.mockRestore();
     });
 
-    // `git status -b` prints `## HEAD (no branch)` for a paused rebase or
-    // bisect too, so it reads as detached. Its HEAD carries the branch's own
-    // commits, so the unpushed gate is not waived the way it is for a plain
-    // detached HEAD: the HEAD-based probes still run.
     describe.each(["rebase-merge", "BISECT_LOG"])("detached HEAD with %s in progress", (operationFile) => {
       const setupPausedOperation = (localOnlyCommits: number): void => {
         setupWorktree({ upstream: "refs/remotes/origin/feature", remoteBranches: ["origin/feature"], detached: true });
@@ -726,8 +668,6 @@ describe("WorktreeStatusService", () => {
       consoleSpy.mockRestore();
     });
 
-    // refs/stash is shared by every worktree of the repository, so the list
-    // holds other worktrees' stashes too; only this worktree's count.
     describe("attribution to the worktree", () => {
       const listing = (...entries: Array<{ parents?: string; subject: string }>): any => ({
         total: entries.length,
@@ -800,8 +740,6 @@ describe("WorktreeStatusService", () => {
         expect(revListCalls()).toEqual([]);
       });
 
-      // A paused rebase or bisect detaches HEAD while the stashes made before
-      // it name the branch being worked on: count every named stash.
       it("counts every named stash when HEAD is detached by a rebase in progress", async () => {
         mockSymbolicRef.mockResolvedValue("");
         (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
@@ -847,10 +785,6 @@ describe("WorktreeStatusService", () => {
         expect(result.details?.stashCount).toBe(1);
       });
 
-      // `git status -b` reports a rebase as `## HEAD (no branch)`: detached.
-      // The stashes made before it name the branch being rebased, so while an
-      // operation is in progress the branch reads as unknown, not as a plain
-      // detached HEAD that owns no named stash.
       it("counts named stashes during a rebase, whose HEAD reads as detached", async () => {
         header = { current: "HEAD", detached: true, tracking: null, ahead: 0, behind: 0 };
         (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => false });
@@ -1019,9 +953,6 @@ describe("WorktreeStatusService", () => {
     });
   });
 
-  // Removal-safety regression tests: a worktree with an unpushed
-  // commit was removed by the age-based prune. Every ambiguous probe result
-  // must read as "cannot verify => cannot remove".
   describe("fail-closed removal safety", () => {
     const errnoError = (code: string): NodeJS.ErrnoException =>
       Object.assign(new Error(`${code}: probe failed`), { code });
@@ -1113,9 +1044,6 @@ describe("WorktreeStatusService", () => {
     });
   });
 
-  // Squash-merge + remote branch deletion: commits read as "unpushed" via
-  // rev-list, but metadata recorded the upstream tip while the ref existed.
-  // HEAD being an ancestor of that tip proves every local commit was pushed.
   describe("fullyPushedUpstreamDeleted", () => {
     const recordedTip = { ref: "origin/feature", oid: "squashtip123", recordedAt: "2026-06-01T00:00:00.000Z" };
 
@@ -1208,7 +1136,6 @@ describe("WorktreeStatusService", () => {
 
       expect(status.fullyPushedUpstreamDeleted).toBe(false);
       expect(status.canRemove).toBe(false);
-      // The proof is only consulted once the ref is gone, so it is not asked for.
       expect(mockGit.raw).not.toHaveBeenCalledWith(["rev-list", "--count", "squashtip123..HEAD"]);
     });
 
@@ -1233,12 +1160,6 @@ describe("WorktreeStatusService", () => {
     });
   });
 
-  // simple-git's .env() replaces the child environment wholesale. The LFS-skip
-  // client used for every status probe must therefore carry the (sanitized)
-  // process environment with it: without HOME / XDG_CONFIG_HOME git never reads
-  // the global excludes file, so a `.DS_Store` ignored there reports as an
-  // untracked change and the worktree is neither updated nor pruned; without
-  // PATH the spawn can fail outright.
   describe("skipLfs git environment", () => {
     const previous = {
       HOME: process.env.HOME,
@@ -1299,11 +1220,7 @@ describe("WorktreeStatusService", () => {
     });
   });
 
-  // refs/heads and refs/remotes live in the common git dir, so every worktree
-  // of a repository would list the same refs. A scope shares one scan per
-  // repository, keyed by the common dir each worktree's `.git` file leads to.
   describe("RefScanScope", () => {
-    // /test/<repo>/<name> is a linked worktree of the bare repo /test/<repo>/.bare.
     const linkedWorktreeFs = (): void => {
       (fs.stat as Mock<any>).mockResolvedValue({ isFile: () => true });
       (fs.readFile as Mock<any>).mockImplementation(async (file: any) => {
@@ -1328,7 +1245,6 @@ describe("WorktreeStatusService", () => {
       );
 
       expect(mockForEachRef).toHaveBeenCalledTimes(1);
-      // The shared scan is the one each worktree was judged by.
       expect(results.map((result) => result.divergence)).toEqual(Array(4).fill({ ahead: 0, behind: 0 }));
     });
 
@@ -1345,8 +1261,6 @@ describe("WorktreeStatusService", () => {
       expect(mockForEachRef).toHaveBeenCalledTimes(2);
     });
 
-    // Without a scope nothing is shared: a check that must see the refs as
-    // they are now -- the re-check right before a removal -- scans afresh.
     it("scans per snapshot without a scope", async () => {
       linkedWorktreeFs();
 

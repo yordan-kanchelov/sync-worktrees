@@ -11,18 +11,6 @@ import { createMockLogger } from "../test-utils";
 
 import type { RepositoryConfig } from "../../types";
 
-// Real git, real processes, counted. The update phase used to spend a
-// `git status` walk of the whole working tree plus a merge-base pair and a
-// rev-list on every registered worktree, every tick, only to conclude that
-// nothing had changed — so the git processes per sync grew with the number of
-// worktrees and a few hundred of them held the repository lock long enough for
-// the next scheduled tick to be skipped. It now compares the HEAD oid git
-// prints in its own registration listing against origin's tip from one
-// for-each-ref, and a worktree already at that tip costs no process at all.
-//
-// Counting is done with a `git` shim first on PATH: every simple-git client is
-// built with the parent environment (see sanitizeGitEnv), so a shim installed
-// before the service is constructed sees every spawn the sync makes.
 describe("Update phase spawn budget (E2E)", () => {
   let tempDir: string;
   let remote: string;
@@ -79,10 +67,6 @@ describe("Update phase spawn budget (E2E)", () => {
     await seed.checkout("main");
   }
 
-  // Puts a counting `git` first on PATH. Every spawn appends one line to
-  // shimLog, whose path is baked into the script rather than read from the
-  // environment: simple-git snapshots the environment when it builds a client,
-  // so a variable set later would never reach the child.
   async function installGitShim(): Promise<void> {
     const shimDir = path.join(tempDir, "shim");
     await fs.mkdir(shimDir, { recursive: true });
@@ -111,8 +95,6 @@ describe("Update phase spawn budget (E2E)", () => {
       runOnce: true,
       updateExistingWorktrees: true,
       logger: createMockLogger(),
-      // `git gc` is throttled by a persisted timestamp, so leaving it on would
-      // put a one-off process in whichever tick happened to run first.
       maintenance: { enabled: false },
     };
   }
@@ -123,7 +105,6 @@ describe("Update phase spawn budget (E2E)", () => {
 
     const service = new WorktreeSyncService(makeConfig());
     await service.initialize();
-    // Creates the worktrees for the branches published so far.
     await service.sync();
 
     const small = await countedSpawns(async () => {
@@ -132,7 +113,6 @@ describe("Update phase spawn budget (E2E)", () => {
     const smallOutcome = service.getLastOutcome();
     expect(smallOutcome?.counts).toEqual(expect.objectContaining({ noop: 3, updated: 0, failed: 0, skipped: 0 }));
 
-    // Six more branches, so the next steady tick has four times the worktrees.
     await publishBranches(6, "second");
     await service.sync();
 
@@ -142,21 +122,15 @@ describe("Update phase spawn budget (E2E)", () => {
     const largeOutcome = service.getLastOutcome();
     expect(largeOutcome?.counts).toEqual(expect.objectContaining({ noop: 9, updated: 0, failed: 0, skipped: 0 }));
 
-    // The whole point: three worktrees and nine cost the same. Four processes:
-    // the fetch, the remote-branch listing, the worktree registration listing
-    // and the tip listing the update phase compares against.
     expect(large.length).toBe(small.length);
     expect(large.length).toBeLessThanOrEqual(5);
 
-    // And none of what used to run per worktree runs at all.
     const perWorktreeCommands = large.filter((command) =>
       /^(status|rev-list|merge-base|rev-parse|branch|stash|submodule)\b/.test(command),
     );
     expect(perWorktreeCommands).toEqual([]);
   });
 
-  // The fast path must not cost accuracy: the one branch whose tip moved is
-  // still found, fast-forwarded and reported, while its neighbours stay noops.
   it("still fast-forwards the one worktree whose remote tip moved", async () => {
     await publishBranches(3, "b");
     await installGitShim();
@@ -187,8 +161,6 @@ describe("Update phase spawn budget (E2E)", () => {
     expect(worktreePath).toBeDefined();
     expect((await simpleGit(worktreePath!).revparse(["HEAD"])).trim()).toBe(movedTip);
 
-    // Exactly one worktree was looked at: one status walk and one ahead/behind
-    // count, not one per registered worktree.
     expect(spawns.filter((command) => command.startsWith("status"))).toHaveLength(1);
     expect(spawns.filter((command) => command.startsWith("rev-list --left-right"))).toHaveLength(1);
   });

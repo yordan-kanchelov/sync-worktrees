@@ -17,15 +17,6 @@ interface CliRun {
   stderr: string;
 }
 
-// Real git, real clone-mode checkout. Two promises the clone-mode sparse
-// re-apply did not keep (#T68):
-//
-//   - README's narrowing-safety paragraph says a sparse update that drops a
-//     path out of the cone first checks the worktree is clean. Worktree mode
-//     always did; clone mode narrowed regardless and left git to print its own
-//     "were left despite sparse patterns" warning.
-//   - A sparse config git rejects warned once per tick and exited 0, so the
-//     outcome held no failure and nothing watching the run ever learned.
 describe("Clone-mode sparse-checkout re-apply", () => {
   const binPath = path.join(__dirname, "../../../bin/sync-worktrees.js");
 
@@ -104,8 +95,6 @@ describe("Clone-mode sparse-checkout re-apply", () => {
       .filter((line) => line.length > 0);
   }
 
-  // A commit the clone can only reach by fast-forwarding, used to show the
-  // sparse step never blocks the merge the sync exists for.
   async function pushCommit(file = "pkg/a.txt"): Promise<string> {
     const pushDir = path.join(tempDir, "push");
     await fs.rm(pushDir, { recursive: true, force: true });
@@ -126,7 +115,6 @@ describe("Clone-mode sparse-checkout re-apply", () => {
     expect(first.status, first.stdout + first.stderr).toBe(0);
     expect(await sparsePatterns()).toEqual(["other", "pkg"]);
 
-    // A local edit inside the directory the next config drops out of the cone.
     const edited = path.join(worktreeDir, "other", "b.txt");
     await fs.writeFile(edited, "local edit\n");
     await writeConfig(["pkg"]);
@@ -135,11 +123,9 @@ describe("Clone-mode sparse-checkout re-apply", () => {
     const secondOutput = second.stdout + second.stderr;
     expect(second.status, secondOutput).toBe(0);
     expect(secondOutput).toContain("Skipping sparse-checkout narrowing for 'app'");
-    // The bug: 'other' used to be gone from the pattern list after this run.
     expect(await sparsePatterns()).toEqual(["other", "pkg"]);
     await expect(fs.readFile(edited, "utf8")).resolves.toBe("local edit\n");
 
-    // Only deferred: the same narrowing lands on the first clean tick.
     await simpleGit(worktreeDir).raw(["checkout", "--", "other/b.txt"]);
     const third = runCli();
     const thirdOutput = third.stdout + third.stderr;
@@ -155,23 +141,16 @@ describe("Clone-mode sparse-checkout re-apply", () => {
     expect(first.status, first.stdout + first.stderr).toBe(0);
     expect(await sparsePatterns()).toEqual(["pkg"]);
 
-    // A cone entry git refuses at apply time and a config load cannot: whether
-    // 'pkg/a.txt' is a directory is a fact about the index, not about the
-    // pattern, so the loader's cone-rule check passes it through and git dies
-    // on it ("is not a directory"). `sparse-checkout set` fails and the pattern
-    // list on disk is left exactly as it was.
     const tip = await pushCommit();
     await writeConfig(["pkg/a.txt"]);
 
     const second = runCli();
     const secondOutput = second.stdout + second.stderr;
-    // The bug: this used to be a lone warning, 1 synced, 0 failed, exit 0.
     expect(second.status, secondOutput).toBe(1);
     expect(secondOutput).toContain("Failed to reapply sparse-checkout for 'app'");
     expect(second.stdout).toContain("1 failed");
     expect(await sparsePatterns()).toEqual(["pkg"]);
 
-    // Not fatal: the fast-forward still happened.
     expect((await simpleGit(worktreeDir).revparse(["HEAD"])).trim()).toBe(tip);
   }, 60_000);
 
@@ -205,7 +184,6 @@ describe("Clone-mode sparse-checkout re-apply", () => {
       return (await simpleGit(worktreeDir).revparse(["HEAD"])).trim();
     }
 
-    // Worktree mode and a clone-mode dry run both report the re-apply.
     it("records a sparse re-apply as an update", async () => {
       await syncOnce(makeConfig(["pkg"]));
       const outcome = await syncOnce(makeConfig(["other", "pkg"]));
@@ -235,7 +213,6 @@ describe("Clone-mode sparse-checkout re-apply", () => {
       expect(skipped.counts).toMatchObject({ updated: 0, failed: 0 });
       expect(await head()).toBe(before);
 
-      // Opting out fast-forwards, as does the next change inside the cone.
       const forced = await syncOnce(makeConfig(["pkg"], false));
       expect(forced.actions).toContainEqual(expect.objectContaining({ kind: "updated", reason: "fast_forward" }));
       expect(await head()).not.toBe(before);

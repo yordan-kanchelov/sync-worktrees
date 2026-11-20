@@ -4,19 +4,8 @@ import { Box, Text, useInput } from "ink";
 import { parseWheelEvent } from "../utils/mouse";
 import type { LogEntry } from "./App";
 
-// One notch of the wheel moves this many lines. Matches what most terminals
-// send per detent, so a flick covers ground without overshooting.
 const WHEEL_LINES = 3;
 
-// Following the tail and sitting at a chosen offset are one piece of state, not
-// two: every position implies whether new entries should pull the view along.
-// Keeping them separate meant writing both from one keystroke, and computing the
-// second from inside the first's updater — updaters have to be pure, and React
-// is free to re-run them.
-//
-// `offset` is only meaningful while parked. In follow mode the render derives the
-// offset from the current maxOffset, so a resize or a burst of new entries can
-// never leave the view pointing past the end.
 export type ScrollState = { follow: boolean; offset: number };
 
 export type ScrollAction =
@@ -31,7 +20,6 @@ function scrollReducer(state: ScrollState, action: ScrollAction): ScrollState {
     case "by": {
       const from = state.follow ? action.maxOffset : Math.min(state.offset, action.maxOffset);
       const next = Math.min(action.maxOffset, Math.max(0, from + action.delta));
-      // Landing on the last line re-arms following: the reader chose to come back.
       return { follow: next >= action.maxOffset, offset: next };
     }
   }
@@ -39,7 +27,6 @@ function scrollReducer(state: ScrollState, action: ScrollAction): ScrollState {
 
 export type LogScroll = [ScrollState, Dispatch<ScrollAction>];
 
-/** Held by the App so the position outlives the panel being unmounted under a modal. */
 export function useLogScroll(): LogScroll {
   return useReducer(scrollReducer, { follow: true, offset: 0 });
 }
@@ -56,27 +43,11 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, scroll: [scroll, disp
 
   const borderLines = 2;
   const headerLine = 1;
-  // The `↑ N more` / `↓ N more` rows are rows too. They used to render on top
-  // of a budget that had already been spent, so a panel asked for `height`
-  // rows drew height+1 in follow mode and height+2 parked; the App frame then
-  // outgrew the terminal, Ink fell back to clearing and repainting the whole
-  // screen on every render, and the top row scrolled off.
-  //
-  // Both rows are reserved as soon as the log is longer than the panel, rather
-  // than each one as it happens to show: a viewport whose size depended on the
-  // scroll position would move maxOffset under the reader, and one wheel up
-  // followed by one wheel down would no longer land back on the tail.
   const contentLines = Math.max(1, height - borderLines - headerLine);
-  // At the smallest height the App will hand out there is one row left over
-  // after the header and a single log line, and two indicator rows drawn into
-  // it land on top of the header: `📋 Logs (40 entries)` came back as
-  // `↑ 33 more aboveries)`. Below that, the two counts share one row.
   const indicatorLines = logs.length > contentLines ? Math.min(2, Math.max(0, contentLines - 1)) : 0;
   const visibleLines = Math.max(1, contentLines - indicatorLines);
   const maxOffset = Math.max(0, logs.length - visibleLines);
 
-  // Derived, never stored: following always renders the tail, and a parked
-  // offset is clamped to whatever the panel can currently show.
   const scrollOffset = scroll.follow ? maxOffset : Math.min(scroll.offset, maxOffset);
   const autoScroll = scroll.follow;
 
@@ -98,9 +69,6 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, scroll: [scroll, disp
   };
 
   useInput((input, key) => {
-    // Vim motions and arrows suit some people; the wheel is for everyone
-    // else. Ink delivers the whole mouse report as one `input` string, so it
-    // is parsed here rather than through a separate stdin listener.
     const wheel = parseWheelEvent(input);
     if (wheel === "up") {
       scrollBy(-WHEEL_LINES);
@@ -127,7 +95,6 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, scroll: [scroll, disp
       cancelPendingG();
     } else if (input === "g") {
       if (pendingG) {
-        // gg - go to top
         dispatch({ type: "top" });
         cancelPendingG();
       } else {
@@ -162,13 +129,8 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, scroll: [scroll, disp
 
   const emptyLines = Math.max(0, visibleLines - visibleLogs.length);
 
-  // Fixed height and clipped: the budget above keeps the ordinary frame inside
-  // it, and this bounds what it cannot predict -- an entry that still carries a
-  // newline, a message Ink wraps -- so the frame can never outgrow the row the
-  // App reserved for it.
   return (
     <Box borderStyle="single" flexDirection="column" flexGrow={1} height={height} overflow="hidden" paddingX={1}>
-      {/* One row at any width: the heading truncates rather than wraps into the lines below it. */}
       <Box justifyContent="space-between" gap={1} height={1} flexShrink={0}>
         <Text bold wrap="truncate-end">
           📋 Logs {logs.length > 0 && <Text dimColor>({logs.length} entries)</Text>}
@@ -204,11 +166,6 @@ const LogPanel: React.FC<LogPanelProps> = ({ logs, height, scroll: [scroll, disp
   );
 };
 
-/**
- * The log folded to one line: its count and the latest entry, so an error
- * still shows up while the repository table has the screen. `expandKey` is
- * `l` when the user folded it, `+` when it was folded for want of room.
- */
 export const CollapsedLogLine: React.FC<{ logs: LogEntry[]; expandKey: string }> = React.memo(({ logs, expandKey }) => {
   const latest = logs[logs.length - 1];
   const color = latest?.level === "error" ? "red" : latest?.level === "warn" ? "yellow" : undefined;
@@ -231,13 +188,6 @@ export const CollapsedLogLine: React.FC<{ logs: LogEntry[]; expandKey: string }>
 });
 CollapsedLogLine.displayName = "CollapsedLogLine";
 
-// Memoised: status and progress events re-render the App without touching the
-// log. The comparator is load-bearing. A bare `React.memo` of a function
-// component becomes a "simple memo" fiber, and React 19.2 only refreshes
-// `useEffectEvent` handlers -- which Ink's `useInput` is built on -- for plain
-// function components, so every key here would run the previous render's
-// handler (`gg` stopped working). With a comparator React keeps this component
-// an ordinary function fiber under the memo boundary.
 const samePanelProps = (prev: LogPanelProps, next: LogPanelProps): boolean =>
   prev.logs === next.logs && prev.height === next.height && prev.scroll[0] === next.scroll[0];
 

@@ -6,10 +6,6 @@ import * as path from "path";
 import simpleGit from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-// A worktree directory deleted out-of-band (rm -rf, a failed backup restore, a
-// wiped external volume) leaves git's registration behind. Sync must notice the
-// registration is stale and rebuild the worktree instead of treating the branch
-// as already present.
 describe("Stale worktree registration E2E test", () => {
   let tempDir: string;
   let bareRepo: string;
@@ -84,7 +80,6 @@ describe("Stale worktree registration E2E test", () => {
     const featurePath = path.join(worktreeDir, featureDir!);
     await expect(fs.readFile(path.join(featurePath, "feature-1.txt"), "utf8")).resolves.toBe("Content for feature-1");
 
-    // The user deletes the checkout by hand. Git still has the registration.
     await fs.rm(featurePath, { recursive: true, force: true });
     const bareGit = simpleGit(bareRepoDir);
     const listing = await bareGit.raw(["worktree", "list", "--porcelain"]);

@@ -12,9 +12,6 @@ import { GitService } from "../git.service";
 import type { Logger } from "../logger.service";
 import type { Mock } from "vitest";
 
-// Real git. git lists worktrees by their canonical path; a caller spelling the
-// same directory through a symlink must still see it as registered, not as an
-// orphaned directory to move aside and recreate.
 describe("addWorktree through a symlinked spelling of a live worktree", async () => {
   const canSymlink = await symlinksSupported();
   let tempDir: string;

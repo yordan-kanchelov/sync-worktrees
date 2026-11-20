@@ -24,17 +24,6 @@ import type { Logger } from "../../logger.service";
 import type { SimpleGit } from "simple-git";
 import type { Mock, Mocked } from "vitest";
 
-// Shared set-up for the unit tests that drive GitService — and through it
-// the focused services it delegates to — against a mocked simple-git and
-// fs/promises. Each test file still declares its own module mocks (they are
-// hoisted per file):
-//
-//   vi.mock("fs/promises");
-//   vi.mock("simple-git");
-//   vi.mock("../worktree-metadata.service", async () =>
-//     (await import("./helpers/metadata-service-mock")).worktreeMetadataServiceModuleMock(),
-//   );
-
 export const MAIN_WORKTREE_PATH = path.join(TEST_PATHS.worktree, "main");
 
 export interface GitServiceFixture {
@@ -45,14 +34,9 @@ export interface GitServiceFixture {
   mockLogger: Logger;
 }
 
-// Call from beforeEach: clears every mock, then builds a GitService whose
-// every simple-git client is the one returned mockGit.
 export const createGitServiceFixture = (): GitServiceFixture => {
-  // Reset all mocks
   vi.clearAllMocks();
 
-  // The git-lfs probe and its "not installed" warning are latched per process;
-  // clearing them keeps every test's LFS expectations independent of order.
   resetGitLfsProbeForTests();
 
   const mockLogger = createMockLogger();
@@ -64,9 +48,6 @@ export const createGitServiceFixture = (): GitServiceFixture => {
       all: ["origin/main", "origin/feature-1", "origin/feature-2", "local-branch"],
       current: "main",
     }) as any,
-    // The default-branch worktree is registered by default, so initialize()
-    // reuses it. Tests that exercise its creation install their own stand-in
-    // with mockInitializeGit.
     raw: vi.fn<any>().mockImplementation((args: unknown) => {
       if (!Array.isArray(args)) return Promise.resolve("");
       if (args[0] === "worktree" && args[1] === "list") {
@@ -87,7 +68,6 @@ export const createGitServiceFixture = (): GitServiceFixture => {
     revparse: vi.fn<any>().mockResolvedValue("abc123") as any,
   }) as Mocked<SimpleGit>;
 
-  // Mock simpleGit factory
   (simpleGit as unknown as Mock).mockReturnValue(mockGit);
 
   return {
@@ -99,11 +79,6 @@ export const createGitServiceFixture = (): GitServiceFixture => {
   };
 };
 
-// Args-keyed stand-in for the bare repository during initialize(). The
-// worktree list reports the default-branch worktree from the start when
-// `mainRegistered`, otherwise only once `worktree add` has run (unless
-// `registersOnAdd` is false), so reuse, creation and a creation that never
-// registered can be told apart. Returns the `worktree add` invocations.
 export const mockInitializeGit = (
   mockGit: Mocked<SimpleGit>,
   opts: {
@@ -148,7 +123,6 @@ export const mockInitializeGit = (
   return { addCalls };
 };
 
-// Everything exists except the default-branch worktree directory.
 export const mockMainWorktreeMissing = (mainPath: string = MAIN_WORKTREE_PATH): void => {
   (fs.access as Mock<any>).mockImplementation(async (p: unknown) => {
     if (typeof p === "string" && (p === mainPath || p.startsWith(mainPath + path.sep))) {
@@ -157,9 +131,6 @@ export const mockMainWorktreeMissing = (mainPath: string = MAIN_WORKTREE_PATH): 
   });
 };
 
-// `localOnlyCommits` answers the `rev-list --count origin/<b>..<b>` probe of
-// the local+remote path: 0 (the default) means the local ref is only behind
-// the remote, "unknown" makes the probe fail.
 export const mockShowRef = (
   mockGit: Mocked<SimpleGit>,
   opts: { local: boolean; remote: boolean; localOnlyCommits?: number | "unknown" },

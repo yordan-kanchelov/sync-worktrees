@@ -65,9 +65,7 @@ export interface AppProps {
   getForceCleanPreview?: () => Promise<ForceCleanRepositoryPreview[]>;
   forceClean?: (selections: ForceCleanRepositorySelection[]) => Promise<ForceCleanRepositoryResult[]>;
   getRunningHookCount?: () => number;
-  /** Sync one repository (the switcher's `s`); absent, the switcher does not offer it. */
   onSyncRepository?: (index: number) => void | Promise<void>;
-  /** Copy text to the system clipboard (the switcher's `y`); absent, the switcher does not offer it. */
   copyToClipboard?: (text: string) => Promise<{ success: boolean; error?: string }>;
 }
 
@@ -81,25 +79,8 @@ export interface LogEntry {
 const MAX_LOG_ENTRIES = 5000;
 const NOTICE_MS = 2500;
 
-// Log lines arrive in bursts -- a sync of many repositories logs dozens a
-// second, each from its own tick -- and every append used to copy the whole
-// buffer (up to MAX_LOG_ENTRIES) and re-render the tree. Lines are collected
-// here and land in one state update per interval instead.
 export const LOG_FLUSH_INTERVAL_MS = 50;
 
-// One entry has to be one row, because that is what the log panel budgets for
-// it. Sync messages carry newlines (`Synchronization finished.\n`, and with
-// `debug` the whole timing table arrives as a single message), and Ink renders
-// each of those as its own row however the entry is wrapped — so the panel drew
-// more rows than it had, the frame outgrew the terminal and Ink repainted the
-// whole screen on every render. Split rather than flatten: the table stays
-// readable and every line stays addressable by the scrollback.
-// A leading or trailing terminator is not a line of its own; a blank line
-// between two rows of a table is, so only the empties at either end go. Both
-// multi-line producers in the codebase open with one -- `Logger.table` wraps
-// its content in newlines on both sides, and the sync failure line starts with
-// one -- so keeping them cost a blank row and an entry off the
-// `📋 Logs (N entries)` count, in the panel where rows are scarcest.
 function splitLogLines(message: string): string[] {
   const lines = message.split(/\r?\n/);
   while (lines.length > 1 && lines[lines.length - 1] === "") {
@@ -142,20 +123,15 @@ const App: React.FC<AppProps> = ({
 }) => {
   const [showHelp, setShowHelp] = useState(false);
   const [showSwitcher, setShowSwitcher] = useState(false);
-  // Set when the switcher hands over to the status view for one worktree.
   const [statusTarget, setStatusTarget] = useState<{ repoIndex: number; branch: string } | null>(null);
   const [showBranchWizard, setShowBranchWizard] = useState(false);
   const [showOpenEditorWizard, setShowOpenEditorWizard] = useState(false);
   const [showWorktreeStatus, setShowWorktreeStatus] = useState(false);
   const [showForceClean, setShowForceClean] = useState(false);
   const [status, setStatusState] = useState<"idle" | "syncing">("idle");
-  // Interactive operations (branch/worktree creation) run independently of sync and
-  // queue behind it. Tracked separately so they don't drive the sync `status` spinner.
   const [activeOps, setActiveOps] = useState<Array<{ id: number; label: string }>>([]);
   const opIdRef = useRef(0);
   const [syncProgressEntries, setSyncProgressEntries] = useState<AppSyncProgress[]>([]);
-  // Read synchronously by the progress listener: rows arriving while idle are
-  // dropped, and each new sync starts with none.
   const statusRef = useRef<"idle" | "syncing">("idle");
   const setStatus = (next: "idle" | "syncing"): void => {
     if (next !== statusRef.current || next === "idle") setSyncProgressEntries([]);
@@ -172,22 +148,16 @@ const App: React.FC<AppProps> = ({
   const reloadGenerationRef = useRef(0);
   const [schedule, setSchedule] = useState<CronScheduleDisplay>(cronSchedule);
   const [dashboardRows, setDashboardRows] = useState<readonly RepositoryDashboardRow[]>([]);
-  // `l` folds the log to one line; `+` / `-` move the line between it and the
-  // repository table. Null rows: the table takes what it needs first.
   const [logSize, setLogSize] = useState<LogSizePreference>({ collapsed: false, rows: null });
   const logScroll = useLogScroll();
-  // A key that cannot act right now says so here, for a moment, in place of
-  // the key legend -- `s` during a sync used to do nothing at all.
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Non-null while `q` waits for a second press because work is still running.
   const [quitWarning, setQuitWarning] = useState<string | null>(null);
   const quitRequestedRef = useRef(false);
 
   const { rows } = useWindowSize();
 
   const terminalRows = rows ?? 24;
-  // No more rows than repositories, nor than leave the smallest log panel.
   const progressLineCap = Math.max(
     1,
     Math.min(progressLineLimit, repoCount, terminalRows - 5 - activeOps.length - LOG_MIN_ROWS),
@@ -196,12 +166,9 @@ const App: React.FC<AppProps> = ({
   const statusBarHeight = 5 + progressLineCount + activeOps.length;
   const showModal =
     showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean || showSwitcher;
-  // What the home screen, or a modal in its place, may take without pushing
-  // the status bar off the screen.
   const availableRows = Math.max(0, terminalRows - statusBarHeight);
   const modalRows = availableRows;
   const home = homeLayout(availableRows, dashboardRows.length, logSize);
-  // `l` only lifts the user's own fold; a log folded for want of room needs `+`.
   const lFoldsOnly =
     logSize.collapsed &&
     !homeLayout(availableRows, dashboardRows.length, { ...logSize, collapsed: false }).logCollapsed;
@@ -223,9 +190,6 @@ const App: React.FC<AppProps> = ({
 
   const addLog = useCallback(
     (message: string, level: LogEntry["level"] = "info") => {
-      // Every log line (service loggers, reload/sync failures, wizard errors)
-      // lands here, so a git error that quotes a credential-bearing remote URL
-      // is scrubbed before it reaches the log buffer.
       const timestamp = new Date();
       for (const line of splitLogLines(redactSecretsInText(message))) {
         pendingLogsRef.current.push({ id: `log-${++logIdRef.current}`, message: line, level, timestamp });
@@ -266,8 +230,6 @@ const App: React.FC<AppProps> = ({
     onQuit().catch((err) => console.error("Quit failed:", err));
   };
 
-  // What a quit right now would cut short. Quitting waits for a sync, but it
-  // terminates running hooks and abandons a worktree still being created.
   const describeRunningWork = (): string | null => {
     const parts: string[] = [];
     if (status === "syncing") parts.push("a sync");
@@ -278,8 +240,6 @@ const App: React.FC<AppProps> = ({
   };
 
   useInput((input, key) => {
-    // Mouse reports reach every useInput; only the scrollable panel acts on
-    // them, and no shortcut here should fire off a stray click.
     if (isMouseSequence(input)) return;
 
     if (showHelp || showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showForceClean || showSwitcher) {
@@ -295,8 +255,6 @@ const App: React.FC<AppProps> = ({
     const syncBusy = status === "syncing";
 
     if (input === "q") {
-      // Once a quit is under way a second `q` is the service's force-quit
-      // shortcut, so it goes straight through rather than asking again.
       const running = quitRequestedRef.current ? null : describeRunningWork();
       if (running) {
         setQuitWarning(`${running} still running — press q again to quit`);
@@ -308,8 +266,6 @@ const App: React.FC<AppProps> = ({
     } else if (input === "l") {
       setLogSize((prev) => ({ ...prev, collapsed: !prev.collapsed }));
     } else if (input === "+" || input === "=") {
-      // A log `l` folded comes back at the size it had; one folded for want
-      // of room comes back as the smallest panel, at the table's expense.
       setLogSize(
         lFoldsOnly
           ? { ...logSize, collapsed: false }
@@ -319,9 +275,6 @@ const App: React.FC<AppProps> = ({
             },
       );
     } else if (input === "-" || input === "_") {
-      // Shrinking past the smallest panel -- or past the point where the
-      // table has every row it wants, so nothing would move -- folds the log
-      // to its one line.
       if (!home.logCollapsed) {
         const rows = home.logRows - LOG_RESIZE_STEP;
         const next = { collapsed: false, rows };
@@ -366,14 +319,6 @@ const App: React.FC<AppProps> = ({
 
   useEffect(() => {
     const unsubscribers = [
-      // A timestamp, and nothing else. This used to end the sync as well, which
-      // made it a second, ungated owner of the status bar: the service stamps
-      // "Last Sync" from inside a cycle (`runSyncCycle` awaits
-      // `recordSyncOutcome` before its `finally`), so the first of two
-      // overlapping cycles to reach it put the bar back to `Idle`, blanked
-      // the other cycle's progress rows and re-armed the `s`/`x`/`r` guards
-      // while that cycle was still fetching. `setStatus` -- which the service
-      // drives from a count of the cycles in flight -- is the one gate.
       events.on("updateLastSyncTime", () => {
         setLastSyncTime(new Date());
       }),
@@ -414,7 +359,6 @@ const App: React.FC<AppProps> = ({
       events.on("updateMaxProgressLines", (lines: number) => {
         setProgressLineLimit(lines);
       }),
-      // An open picker holds indexes into the old list; close it.
       events.on("repositoriesReloaded", (generation: number) => {
         reloadGenerationRef.current = generation;
         setReloadGeneration(generation);
@@ -440,8 +384,6 @@ const App: React.FC<AppProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // The switcher's `s`: the same guard and status handling as the `s` key, for
-  // one repository. Returns why it did not start, for the switcher to show.
   const syncRepository = onSyncRepository
     ? (repoIndex: number): string | null => {
         if (status === "syncing") return "A sync is in progress; try again when it finishes.";
@@ -458,17 +400,12 @@ const App: React.FC<AppProps> = ({
       }
     : undefined;
 
-  // One list per opened modal. Re-reading it on every render handed the modal
-  // a fresh array for every log line and progress event, which re-ran every
-  // effect keyed on it. A reload closes the pickers and re-keys the list.
   const showRepositoryPicker = showBranchWizard || showOpenEditorWizard || showWorktreeStatus || showSwitcher;
   const repositories = useMemo(
     () => (showRepositoryPicker ? getRepositoryList() : []),
-    // `reloadGeneration` is not read, only a signal that a reload changed the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [showRepositoryPicker, getRepositoryList, reloadGeneration],
   );
-  // StatusBar is memoised; a fresh array here would defeat that on every log flush.
   const activeOpLabels = useMemo(() => activeOps.map((op) => op.label), [activeOps]);
 
   return (
@@ -494,9 +431,6 @@ const App: React.FC<AppProps> = ({
           createAndPushBranch={createAndPushBranch}
           onClose={() => setShowBranchWizard(false)}
           onBranchCreated={(context) => {
-            // context.repoIndex indexes the list of this render's generation.
-            // Each step re-resolves it, and after a reload it names another
-            // repository, so stop at the first step that would cross one.
             const generation = reloadGeneration;
             const reloaded = (skipped: string): boolean => {
               if (reloadGenerationRef.current === generation) return false;

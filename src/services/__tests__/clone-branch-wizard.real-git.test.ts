@@ -5,7 +5,6 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Only the terminal renderer is stubbed; the services below it and git are real.
 vi.mock("ink", () => ({
   render: vi.fn(() => ({ unmount: vi.fn(), waitUntilExit: vi.fn(() => new Promise<void>(() => {})) })),
 }));
@@ -15,8 +14,6 @@ import { WorktreeSyncService } from "../worktree-sync.service";
 
 import type { Config } from "../../types";
 
-// The clone-mode branch wizard against real git: how its failures are worded
-// and whether the suffix retry runs on them.
 describe("Clone-mode branch wizard failures (real git)", () => {
   let tempDir: string;
   let remote: string;
@@ -105,9 +102,6 @@ describe("Clone-mode branch wizard failures (real git)", () => {
   });
 
   it("does not suffix past a branch the push rollback could not remove", async () => {
-    // The hook moves the clone's new branch while the push is in flight, so
-    // the compare-and-swap rollback fails, and rejects with wording that
-    // would otherwise send the loop round again.
     const hook = path.join(remote, "hooks", "pre-receive");
     await fs.writeFile(
       hook,
@@ -137,7 +131,6 @@ describe("Clone-mode branch wizard failures (real git)", () => {
     }
   });
 
-  // The wizard's own sequence: create and push, then switch to the new branch.
   it("switches the clone to the branch the wizard just created and narrows the remote to it", async () => {
     const ui = await buildUI();
     try {

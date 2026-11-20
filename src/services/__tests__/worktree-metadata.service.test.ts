@@ -24,7 +24,6 @@ describe("WorktreeMetadataService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     service = new WorktreeMetadataService();
-    // saveMetadata uses atomic write (open .tmp, write + fsync via handle, then rename)
     mockFileHandle = {
       writeFile: vi.fn().mockResolvedValue(undefined),
       sync: vi.fn().mockResolvedValue(undefined),
@@ -273,7 +272,6 @@ describe("WorktreeMetadataService", () => {
       (fs.readFile as Mock<any>).mockResolvedValue(JSON.stringify(existingMetadata));
       (fs.mkdir as Mock<any>).mockResolvedValue(undefined);
 
-      // Mock Date to have consistent timestamps
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2024-01-15T12:00:00Z"));
 
@@ -429,7 +427,6 @@ describe("WorktreeMetadataService", () => {
       (simpleGit as unknown as Mock).mockReturnValue(mockGit);
     });
 
-    // `symbolic-ref -q HEAD` names the checked-out branch; no upstream is configured.
     const headOn = (branch: string): any =>
       vi.fn<any>(async (args: string[]) => {
         if (args[0] === "symbolic-ref") return `refs/heads/${branch}\n`;
@@ -475,9 +472,6 @@ describe("WorktreeMetadataService", () => {
         "fatal: not a git repository",
       );
 
-      // Logger.error prints one scrubbed line (message + inspected error) rather
-      // than handing the raw Error to console.error, so credential-bearing URLs
-      // in git output never reach the terminal unredacted.
       expect(errorSpy).toHaveBeenCalledWith(
         expect.stringContaining("❌ Failed to create metadata Error: fatal: not a git repository"),
       );
@@ -505,9 +499,6 @@ describe("WorktreeMetadataService", () => {
       const writeCallArg = mockFileHandle.writeFile.mock.calls[0][0] as string;
       const savedMetadata = JSON.parse(writeCallArg);
 
-      // Now fixed: uses actual branch name from git branch command
-      // - Old code used `origin/${worktreeDirName}` which was "origin/foo" (basename)
-      // - New code uses actual branch name: "origin/feature/foo"
       expect(savedMetadata.upstreamBranch).toBe("origin/feature/foo");
 
       consoleSpy.mockRestore();

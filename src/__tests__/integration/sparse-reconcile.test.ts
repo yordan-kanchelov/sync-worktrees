@@ -12,9 +12,6 @@ import { createMockLogger } from "../test-utils";
 
 import type { RepositoryConfig, SparseCheckoutConfig, SyncOutcome } from "../../types";
 
-// Worktree-mode sparse reconcile against real git: a mode switch with an
-// unchanged include list must reach existing worktrees, and a directory git
-// C-quotes in `sparse-checkout list` must not be re-applied on every sync.
 describe("Worktree-mode sparse-checkout reconcile (E2E)", () => {
   const pathResolution = new PathResolutionService();
 

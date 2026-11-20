@@ -1,17 +1,8 @@
 const ESC = String.fromCharCode(27);
 
-/**
- * Normal tracking (button press/release) plus SGR extended reporting. Motion
- * tracking is deliberately left off: the wheel is all this needs, and drag
- * reporting would flood stdin and fight the terminal's own text selection more
- * than press/release already does.
- */
 export const MOUSE_TRACKING_ENABLE = `${ESC}[?1000h${ESC}[?1006h`;
 export const MOUSE_TRACKING_DISABLE = `${ESC}[?1006l${ESC}[?1000l`;
 
-// ESC [ < button ; column ; row (M press | m release). Ink hands the sequence
-// to useInput with the leading ESC already stripped, but the raw form is
-// accepted too so this does not silently break if that changes.
 const SGR_MOUSE_PATTERN = new RegExp(`^(?:${ESC})?\\[<(\\d+);(\\d+);(\\d+)[Mm]$`);
 
 const WHEEL_FLAG = 0b100_0000;
@@ -19,25 +10,10 @@ const BUTTON_MASK = 0b11;
 
 export type WheelDirection = "up" | "down";
 
-/**
- * Ink delivers an unrecognized CSI sequence to `useInput` whole, so mouse
- * reports arrive as a single `input` string rather than as loose characters.
- * Any component that appends `input` to text (filters, name fields) has to skip
- * them, or a scroll lands in the box as garbage.
- *
- * Matches the complete report rather than just its prefix: typed characters
- * reach `useInput` one at a time and pasted text goes through `usePaste`, so
- * nothing a person can type is mistaken for a mouse event.
- */
 export function isMouseSequence(input: string): boolean {
   return SGR_MOUSE_PATTERN.test(input);
 }
 
-/**
- * Wheel direction for a scroll report, or null for anything else — clicks,
- * horizontal wheel, and non-mouse input all fall through so the caller's normal
- * key handling still runs.
- */
 export function parseWheelEvent(input: string): WheelDirection | null {
   const match = SGR_MOUSE_PATTERN.exec(input);
   if (!match) return null;
@@ -45,8 +21,6 @@ export function parseWheelEvent(input: string): WheelDirection | null {
   const button = Number.parseInt(match[1], 10);
   if (!Number.isFinite(button) || (button & WHEEL_FLAG) === 0) return null;
 
-  // Modifier bits (shift/meta/ctrl) ride along in the same field, so compare
-  // only the button bits: 0 is wheel up, 1 wheel down, 2/3 horizontal.
   switch (button & BUTTON_MASK) {
     case 0:
       return "up";
@@ -71,19 +45,6 @@ export interface MouseTracking {
   disable(): void;
 }
 
-/**
- * Owns the tracking mode for the lifetime of the interface, outside React.
- *
- * The enable/disable pair cannot live in a component effect: Ink's `unmount()`
- * sets its `isUnmounted` latch *before* it tears the React tree down, and
- * `writeToStdout` returns early once that latch is set, so a cleanup-time write
- * is discarded on every exit path. The shell then inherits DECSET 1000/1006 and
- * turns every click into `[<0;12;7M` garbage.
- *
- * `disable()` is idempotent and is also armed on `process` "exit", so a path
- * that never reaches the service's teardown — an uncaught exception, an
- * explicit `process.exit` — still restores the terminal.
- */
 export function createMouseTracking(
   stream: MouseTrackingStream,
   exitTarget: MouseTrackingExitTarget = process,
@@ -95,9 +56,7 @@ export function createMouseTracking(
     active = false;
     try {
       stream.write(MOUSE_TRACKING_DISABLE);
-    } catch {
-      // Best effort: during teardown the stream may already be destroyed.
-    }
+    } catch {}
   };
 
   const onProcessExit = (): void => restore();
@@ -105,15 +64,11 @@ export function createMouseTracking(
   return {
     enable(): void {
       if (active) return;
-      // Armed before the write, so a stream that throws still gets the
-      // disable attempted on the way out rather than being left tracking.
       active = true;
       exitTarget.once("exit", onProcessExit);
       try {
         stream.write(MOUSE_TRACKING_ENABLE);
-      } catch {
-        // Best effort, as above.
-      }
+      } catch {}
     },
     disable(): void {
       if (!active) return;

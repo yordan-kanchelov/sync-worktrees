@@ -15,11 +15,6 @@ import type { RemovalAuditService } from "../removal-audit.service";
 import type { TrashService } from "../trash.service";
 import type { Config } from "../../types";
 
-// planSyncAttempt is `sync --dry-run`'s worktree-mode half: every decision the
-// sync would take, through the same assessments, and nothing that writes. The
-// GitService here is a proxy that answers only the read-only calls the plan is
-// allowed to make and throws on anything else, so a mutation reintroduced into
-// a shared assessment fails this file rather than a user's repository.
 describe("WorktreeModeSyncRunner.planSyncAttempt", () => {
   const pathResolution = new PathResolutionService();
   let tempDir: string;
@@ -39,7 +34,6 @@ describe("WorktreeModeSyncRunner.planSyncAttempt", () => {
   const wt = (branch: string): string => pathResolution.getBranchWorktreePath(worktreeDir, branch);
 
   function readOnlyGitService(overrides: Record<string, (...args: unknown[]) => unknown>): GitService {
-    // The naming probe every plan runs: both only read.
     const reads: Record<string, (...args: unknown[]) => unknown> = {
       getBareRepoPath: () => path.join(tempDir, ".bare"),
       readWorktreeMetadataOwner: async () => null,
@@ -152,7 +146,6 @@ describe("WorktreeModeSyncRunner.planSyncAttempt", () => {
       ]),
     );
     expect(counts).toMatchObject({ create: 1, update: 1, skip: 1, replace: 1, remove: 1, noop: 1 });
-    // Nothing on disk moved either.
     await expect(fs.access(wt("fresh"))).rejects.toThrow();
     await expect(fs.access(wt("stale"))).resolves.toBeUndefined();
     expect(calls).not.toContain("recordRemoteTip");

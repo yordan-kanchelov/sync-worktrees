@@ -35,10 +35,6 @@ import { configureSingleBranchRemote, deleteRemoteTrackingRef, evaluateOriginMat
 import type { MutatingGitClients } from "./git-clients";
 import type { CloneSyncContext } from "./types";
 
-// The clone-mode branch switch behind CloneSyncService.checkoutBranch, from
-// the origin check through the final remote narrowing. Its one caller is the
-// TUI wizard, right after createAndPushCloneBranch made `branch` locally. The
-// caller records the new branch as tracked once this returns.
 export async function switchCloneBranch(ctx: CloneSyncContext, branch: string): Promise<void> {
   const worktreeDir = ctx.config.worktreeDir;
   const readGit = ctx.clients.localClientFor(worktreeDir);
@@ -51,9 +47,6 @@ export async function switchCloneBranch(ctx: CloneSyncContext, branch: string): 
   }
 
   const currentBranch = (await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-  // On a detached HEAD `git switch` only warns about leaving commits behind,
-  // and the restore path below cannot return to "HEAD" — refuse instead of
-  // stranding commits in the reflog.
   if (currentBranch === "HEAD") {
     throw new GitOperationError(
       "checkout",
@@ -63,9 +56,6 @@ export async function switchCloneBranch(ctx: CloneSyncContext, branch: string): 
   if (!(await localBranchExists(readGit, branch))) {
     throw new GitOperationError("checkout", `'${ctx.repoName}' has no local branch '${branch}' to switch to`);
   }
-  // Nothing above this line writes; everything below does. Refuse a linked
-  // worktree or submodule here, before the first mutation reaches the
-  // repository that actually owns this directory's git dir.
   const clients = await ctx.clients.mutatingClientsFor(worktreeDir);
 
   const isClean = await ctx.gitService.checkWorktreeStatus(worktreeDir);
@@ -73,38 +63,23 @@ export async function switchCloneBranch(ctx: CloneSyncContext, branch: string): 
     throw new WorktreeNotCleanError(worktreeDir, ["working tree has local changes"]);
   }
 
-  // Converge shallow state like the sync tick does: with no configured depth an
-  // existing shallow clone is unshallowed before the branch fetch, so switching
-  // branches doesn't leave the new branch shallow while the rest is full.
   try {
     await unshallowIfDepthRemoved(ctx, clients);
   } catch (error) {
-    // Same classification as the branch fetch below: a deleted tracked
-    // branch fails the narrowed-refspec unshallow with the same error.
     if (isMissingRemoteRefError(getErrorMessage(error))) {
       throw new GitOperationError("checkout", `origin/${branch} is missing for '${ctx.repoName}'`);
     }
     throw error;
   }
 
-  // `branch` already exists locally, so this fetch's `--depth` can re-cut or
-  // deepen the clone rather than merely bound a new ref. See
-  // buildUntrackedBranchFetchArgs.
   const fetchArgs = await buildUntrackedBranchFetchArgs(ctx, clients.git, branch);
   if ((await fetchWithRecovery(ctx, clients, fetchArgs, worktreeDir, branch, false)).skipped) {
     throw new GitOperationError("checkout", `origin/${branch} is missing for '${ctx.repoName}'`);
   }
-  // Same post-fetch verify as the sync tick: a fetch can succeed without
-  // materializing the ref, which would otherwise surface downstream as a
-  // misleading FastForwardError.
   if (!(await hasRemoteBranch(clients.git, branch))) {
     throw new GitOperationError("checkout", `origin/${branch} did not materialize after fetch for '${ctx.repoName}'`);
   }
 
-  // The same classification, and the same deepening budget, a sync tick
-  // spends on this branch — asked about `refs/heads/<branch>` because the
-  // switch has not happened yet, so a shallow clone whose remote moved
-  // further than `depth` is deepened rather than refused.
   const { relationship, deepenedTo } = await classifyWithDeepening(
     ctx,
     clients,
@@ -113,9 +88,6 @@ export async function switchCloneBranch(ctx: CloneSyncContext, branch: string): 
     `refs/heads/${branch}`,
   );
   if (relationship === "indeterminate_shallow") {
-    // Not a FastForwardError: nothing was established about the two
-    // histories, and 'cannot fast-forward' is exactly the wrong thing to
-    // tell a user whose branch may well be fast-forwardable.
     throw new GitOperationError(
       "checkout",
       `cannot tell whether '${branch}' fast-forwards to origin/${branch} in '${ctx.repoName}': the clone is ` +
@@ -136,11 +108,6 @@ export async function switchCloneBranch(ctx: CloneSyncContext, branch: string): 
     await clients.git.merge([`origin/${branch}`, "--ff-only"]);
   } catch (error) {
     if (switched) {
-      // This merge rejects the same way a sync's does, and leaves the same
-      // half-applied checkout behind. It is reported loudly rather than
-      // skipped, but the stray files would still wedge every later tick
-      // with dirty_tree — and `git switch` back would have to carry them
-      // across — so they are undone first.
       await undoRejectedFastForward(ctx, clients, worktreeDir, branch, headBeforeMerge);
       await restoreBranchAfterCheckoutFailure(ctx, clients, currentBranch, branch);
     }
@@ -167,9 +134,6 @@ async function restoreBranchAfterCheckoutFailure(
   }
 }
 
-// resolvedBranch keeps in-session syncs on the new branch, but the config
-// file still names the old one: the next process start will soft-skip with
-// branch_mismatch on every tick until the config is updated.
 export function warnConfigDriftAfterCheckout(ctx: CloneSyncContext, branch: string, targetBranch: string): void {
   if (branch === targetBranch) return;
   ctx.logger.warn(
@@ -179,17 +143,6 @@ export function warnConfigDriftAfterCheckout(ctx: CloneSyncContext, branch: stri
   );
 }
 
-// The clone-mode half of the TUI's branch wizard. Worktree mode creates the
-// branch in the bare repository; a clone-mode repo has none. So the branch is
-// created and published from the clone itself, which is also the only place
-// that can afterwards check it out.
-//
-// Publishing transfers no objects: the new branch points at the tip of
-// origin/<baseBranch>, which the remote already has, so a shallow clone can
-// create and push it exactly like a full one and a sparse one is untouched —
-// neither command reads the working tree. The caller follows with
-// checkoutBranch(branchName), which is where the
-// tree actually switches and where shallow state converges.
 export async function createAndPushCloneBranch(
   ctx: CloneSyncContext,
   baseBranch: string,
@@ -207,18 +160,12 @@ export async function createAndPushCloneBranch(
     );
   }
 
-  // checkoutBranch refuses a dirty tree, so a branch created now could never
-  // be switched to. Refuse here instead, before anything reaches the remote:
-  // the alternative leaves a published branch the user cannot move to.
   if (!(await ctx.gitService.checkWorktreeStatus(worktreeDir))) {
     throw new WorktreeNotCleanError(worktreeDir, [
       `'${ctx.repoName}' has local changes; commit or stash them before creating '${branchName}'`,
     ]);
   }
 
-  // Same reason: checkoutBranch refuses a detached HEAD, so publishing first
-  // would leave a branch on the remote that the switch afterwards cannot
-  // move to.
   const currentBranch = (await readGit.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
   if (currentBranch === "HEAD") {
     throw new GitOperationError(
@@ -227,12 +174,6 @@ export async function createAndPushCloneBranch(
     );
   }
 
-  // Both collision checks say "already exists": the TUI retries the whole
-  // call with a '-1', '-2', ... suffix on exactly that wording, which is how
-  // worktree mode has always behaved. The remote is asked as well as the
-  // clone — a clone tracks one branch, so its refs cannot answer for a name
-  // somebody else already pushed, and a plain push would quietly
-  // fast-forward such a branch whenever it is an ancestor of the base.
   if (await localBranchExists(readGit, branchName)) {
     throw new GitOperationError(
       "branch",
@@ -248,20 +189,8 @@ export async function createAndPushCloneBranch(
     );
   }
 
-  // Nothing above this line writes; everything below does. Refuse a linked
-  // worktree or submodule here, before the fetch's refs land in the
-  // repository that actually owns this directory's git dir.
   const clients = await ctx.clients.mutatingClientsFor(worktreeDir);
 
-  // The clone tracks a single branch, so origin/<baseBranch> is often not
-  // present at all, and when it is it is only as fresh as the last sync.
-  // Fetch it with the same narrowed refspec — and the same shallow depth — a
-  // sync's initial clone would use, so the branch starts at the tip the user
-  // picked without dragging that branch's whole history in. When the pick is
-  // the tracked branch, `--depth` lands on history the clone holds and can
-  // re-cut or deepen it — see buildUntrackedBranchFetchArgs. The stray
-  // origin/<baseBranch> this leaves behind is dropped below, as soon as the
-  // new branch holds its tip.
   const fetchArgs = await buildUntrackedBranchFetchArgs(ctx, clients.git, baseBranch);
   if ((await fetchWithRecovery(ctx, clients, fetchArgs, worktreeDir, baseBranch, false)).skipped) {
     throw new GitOperationError(
@@ -284,25 +213,12 @@ export async function createAndPushCloneBranch(
   const createdAt = await readBranchCommit(clients.git, branchName);
   ctx.logger.info(`Created branch '${branchName}' from 'origin/${baseBranch}' in '${ctx.repoName}'`);
 
-  // The one ref this call added to a single-branch clone, dropped here
-  // rather than by a sweep on some later tick: the local branch now holds
-  // that tip, so nothing becomes unreachable, and every way out from here (a
-  // failed push and its rollback included) leaves the clone with the one
-  // remote-tracking ref it should have. The ref to keep is the TRACKED
-  // branch's, which is what the refspec maintains — not the checked-out
-  // one. They differ on a clone someone switched by hand, and guarding on
-  // the checkout there would delete origin/<tracked>, the single ref the
-  // refspec keeps.
   const trackedBranch = ctx.trackedBranch;
   if (baseBranch !== trackedBranch && baseBranch !== currentBranch) {
     await deleteRemoteTrackingRef(clients, `refs/remotes/origin/${baseBranch}`);
   }
 
   try {
-    // `--force-with-lease` with an empty expected value is git's create-only
-    // push: it requires the remote ref not to exist, closing the window
-    // between the ls-remote above and this push. It can never force-update
-    // anything — an existing ref is rejected with "stale info" instead.
     await clients.networkGit.push([
       "origin",
       `refs/heads/${branchName}:refs/heads/${branchName}`,
@@ -315,10 +231,6 @@ export async function createAndPushCloneBranch(
   ctx.logger.info(`Pushed branch '${branchName}' to the remote of '${ctx.repoName}'`);
 }
 
-// Every client is built on this directory, and simple-git's constructor
-// rejects a missing one with "Cannot use simple-git on a directory that does
-// not exist" — a message that names neither the repository nor a remedy. The
-// absence is reported here instead.
 async function assertCloneDirectoryPresent(
   ctx: CloneSyncContext,
   worktreeDir: string,
@@ -334,8 +246,6 @@ async function assertCloneDirectoryPresent(
   );
 }
 
-// A fully-qualified `ls-remote` pattern matches that one ref and nothing that
-// merely starts with it, so this answers for exactly <branch>.
 async function remoteBranchExists(ctx: CloneSyncContext, worktreeDir: string, branch: string): Promise<boolean> {
   const output = await ctx.clients
     .networkClientFor(path.resolve(worktreeDir))
@@ -343,12 +253,6 @@ async function remoteBranchExists(ctx: CloneSyncContext, worktreeDir: string, br
   return parseLsRemoteHeads(output).includes(branch);
 }
 
-// A push that never landed must not leave the local branch behind: the
-// wizard reports the failure and offers the same name again, and the next
-// attempt would then collide with this repository's own leftover. The delete
-// is a compare-and-swap on the commit the branch was created at, so a ref
-// something else moved in the meantime is left alone — and a leftover that
-// could not be removed is named in the error rather than passed over.
 async function rollbackCreatedBranch(
   ctx: CloneSyncContext,
   clients: MutatingGitClients,
@@ -358,10 +262,6 @@ async function rollbackCreatedBranch(
   pushError: unknown,
 ): Promise<never> {
   const message = redactSecretsInText(getErrorMessage(pushError));
-  // "stale info" is how the create-only lease reports a ref that appeared
-  // between the ls-remote and the push; it reads as a collision, not as a
-  // stale remote-tracking ref, so it is phrased as one — and the "already
-  // exists" wording sends the TUI round again with a suffixed name.
   const detail = message.includes("stale info")
     ? `branch '${branchName}' already exists on the remote of '${ctx.repoName}' — it was pushed while this one ` +
       `was being prepared; choose another name`
@@ -385,8 +285,6 @@ async function rollbackCreatedBranch(
   throw new GitOperationError("push", `${detail}.${leftover}`, cause);
 }
 
-// A ref conflict says "already exists" only when a suffix can resolve it: with
-// 'feat' present, every 'feat/sub-N' is blocked too, so that is not retryable.
 function describeBranchCreateFailure(ctx: CloneSyncContext, branchName: string, message: string): GitOperationError {
   const prefix = `cannot create '${branchName}' in '${ctx.repoName}'`;
   const blocking = /'(refs\/heads\/[^']+)' exists; cannot create/.exec(message)?.[1];
