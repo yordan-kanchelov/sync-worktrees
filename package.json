@@ -22,6 +22,7 @@
     "start": "node bin/sync-worktrees.js",
     "watch": "node esbuild.config.js --watch",
     "lint": "eslint '**/*.{js,cjs,mjs,ts,tsx}' --max-warnings 0",
+    "lint:ratchet": "eslint '**/*.{js,cjs,mjs,ts,tsx}' --prune-suppressions",
     "lint:fix": "eslint '**/*.{js,cjs,mjs,ts,tsx}' --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

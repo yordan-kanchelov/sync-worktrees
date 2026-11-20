@@ -1,0 +1,1777 @@
+{
+  ".pnpmfile.cjs": {
+    "local/no-comments": {
+      "count": 11
+    }
+  },
+  "bin/node-version.js": {
+    "local/no-comments": {
+      "count": 9
+    }
+  },
+  "bin/sync-worktrees-mcp.js": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "bin/sync-worktrees.js": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "demo/launch/render.mjs": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "esbuild.config.js": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "eslint.config.cjs": {
+    "local/no-comments": {
+      "count": 11
+    }
+  },
+  "scripts/coverage-summary.mjs": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
+  "scripts/finalize-declarations.mjs": {
+    "local/no-comments": {
+      "count": 14
+    }
+  },
+  "scripts/smoke-test.mjs": {
+    "local/no-comments": {
+      "count": 101
+    }
+  },
+  "src/__tests__/cli-sync-errors.test.ts": {
+    "local/no-comments": {
+      "count": 29
+    }
+  },
+  "src/__tests__/coverage-summary-script.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/__tests__/e2e/auth-prompt-disabled.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 15
+    }
+  },
+  "src/__tests__/e2e/bare-origin-mismatch.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 14
+    }
+  },
+  "src/__tests__/e2e/clone-init-crash-window.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 32
+    }
+  },
+  "src/__tests__/e2e/clone-mode.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 180
+    }
+  },
+  "src/__tests__/e2e/clone-sparse-initial-checkout.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 5
+    }
+  },
+  "src/__tests__/e2e/clone-sparse-reapply.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 23
+    }
+  },
+  "src/__tests__/e2e/concurrent-runs.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 85
+    }
+  },
+  "src/__tests__/e2e/config-file.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 16
+    }
+  },
+  "src/__tests__/e2e/diverged-branch-reservation.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "src/__tests__/e2e/diverged-copy-detached.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 6
+    }
+  },
+  "src/__tests__/e2e/doctor.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/__tests__/e2e/double-run.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/__tests__/e2e/head-branch-filter.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/__tests__/e2e/headless-cli.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "src/__tests__/e2e/incomplete-clone-checkout.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 36
+    }
+  },
+  "src/__tests__/e2e/insteadof-origin.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
+  "src/__tests__/e2e/lfs-smudge-clone-merge.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 45
+    }
+  },
+  "src/__tests__/e2e/list-json.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
+  "src/__tests__/e2e/lock-unavailable.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/__tests__/e2e/mcp-config-stdout.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 5
+    }
+  },
+  "src/__tests__/e2e/mcp-sync-unreachable-remote.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/__tests__/e2e/node-env-independence.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 11
+    }
+  },
+  "src/__tests__/e2e/repository-name-path-segment.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/__tests__/e2e/run-once-single-fetch.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/__tests__/e2e/skip-lfs-global-ignore.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 14
+    }
+  },
+  "src/__tests__/e2e/sparse-cone-load-validation.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 8
+    }
+  },
+  "src/__tests__/e2e/ssh-prompt-disabled.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 13
+    }
+  },
+  "src/__tests__/e2e/stale-registration.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 5
+    }
+  },
+  "src/__tests__/e2e/symlinked-worktree-dir.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/__tests__/e2e/sync-dry-run.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 33
+    }
+  },
+  "src/__tests__/e2e/trash-unsynced-repo.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/__tests__/e2e/worktree-dir-collision.e2e.test.ts": {
+    "local/no-comments": {
+      "count": 8
+    }
+  },
+  "src/__tests__/helpers/symlink-support.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/__tests__/helpers/undeletable-file.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/__tests__/index.daemon.test.ts": {
+    "local/no-comments": {
+      "count": 43
+    }
+  },
+  "src/__tests__/index.run-once.test.ts": {
+    "local/no-comments": {
+      "count": 28
+    }
+  },
+  "src/__tests__/init-round-trip.test.ts": {
+    "local/no-comments": {
+      "count": 16
+    }
+  },
+  "src/__tests__/integration.test.ts": {
+    "local/no-comments": {
+      "count": 58
+    }
+  },
+  "src/__tests__/integration/branch-wizard-stale-remote.test.ts": {
+    "local/no-comments": {
+      "count": 42
+    }
+  },
+  "src/__tests__/integration/clone-branch-wizard.test.ts": {
+    "local/no-comments": {
+      "count": 23
+    }
+  },
+  "src/__tests__/integration/clone-deleted-recovery.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/__tests__/integration/clone-shallow-branch-switch.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/__tests__/integration/default-branch-anchor-state.test.ts": {
+    "local/no-comments": {
+      "count": 10
+    }
+  },
+  "src/__tests__/integration/default-branch-rename.test.ts": {
+    "local/no-comments": {
+      "count": 26
+    }
+  },
+  "src/__tests__/integration/detached-worktree-create.test.ts": {
+    "local/no-comments": {
+      "count": 11
+    }
+  },
+  "src/__tests__/integration/fast-forward-undo-type-change.test.ts": {
+    "local/no-comments": {
+      "count": 6
+    }
+  },
+  "src/__tests__/integration/fetch-branch-tag-collision.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/__tests__/integration/force-clean-object-reclaim.test.ts": {
+    "local/no-comments": {
+      "count": 26
+    }
+  },
+  "src/__tests__/integration/force-clean-snapshot.test.ts": {
+    "local/no-comments": {
+      "count": 20
+    }
+  },
+  "src/__tests__/integration/foreign-upstream-worktree-update.test.ts": {
+    "local/no-comments": {
+      "count": 27
+    }
+  },
+  "src/__tests__/integration/git-maintenance.test.ts": {
+    "local/no-comments": {
+      "count": 29
+    }
+  },
+  "src/__tests__/integration/head-branch-worktree.test.ts": {
+    "local/no-comments": {
+      "count": 12
+    }
+  },
+  "src/__tests__/integration/inherited-git-dir.test.ts": {
+    "local/no-comments": {
+      "count": 48
+    }
+  },
+  "src/__tests__/integration/lfs-smudge-worktree-create.test.ts": {
+    "local/no-comments": {
+      "count": 28
+    }
+  },
+  "src/__tests__/integration/lfs-smudge-worktree-update.test.ts": {
+    "local/no-comments": {
+      "count": 11
+    }
+  },
+  "src/__tests__/integration/local-op-inactivity-timeout.test.ts": {
+    "local/no-comments": {
+      "count": 34
+    }
+  },
+  "src/__tests__/integration/locked-worktree-diverged.test.ts": {
+    "local/no-comments": {
+      "count": 5
+    }
+  },
+  "src/__tests__/integration/locked-worktree-prune.test.ts": {
+    "local/no-comments": {
+      "count": 16
+    }
+  },
+  "src/__tests__/integration/missing-anchor-worktree.test.ts": {
+    "local/no-comments": {
+      "count": 20
+    }
+  },
+  "src/__tests__/integration/no-upstream-worktree-update.test.ts": {
+    "local/no-comments": {
+      "count": 27
+    }
+  },
+  "src/__tests__/integration/paused-rebase-unpushed.test.ts": {
+    "local/no-comments": {
+      "count": 9
+    }
+  },
+  "src/__tests__/integration/per-worktree-stash.test.ts": {
+    "local/no-comments": {
+      "count": 13
+    }
+  },
+  "src/__tests__/integration/pushed-since-sync-removal.test.ts": {
+    "local/no-comments": {
+      "count": 14
+    }
+  },
+  "src/__tests__/integration/sparse-reconcile.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/__tests__/integration/stale-directory-quarantine.test.ts": {
+    "local/no-comments": {
+      "count": 12
+    }
+  },
+  "src/__tests__/integration/status-probe-spawns.test.ts": {
+    "local/no-comments": {
+      "count": 5
+    }
+  },
+  "src/__tests__/integration/trash-restore-after-gc.test.ts": {
+    "local/no-comments": {
+      "count": 32
+    }
+  },
+  "src/__tests__/integration/uninitialized-submodule-prune.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/__tests__/integration/unshallow-inactivity-timeout.test.ts": {
+    "local/no-comments": {
+      "count": 27
+    }
+  },
+  "src/__tests__/integration/untracked-ignored-status.test.ts": {
+    "local/no-comments": {
+      "count": 31
+    }
+  },
+  "src/__tests__/integration/update-spawn-budget.test.ts": {
+    "local/no-comments": {
+      "count": 28
+    }
+  },
+  "src/__tests__/integration/worktree-client-cache.test.ts": {
+    "local/no-comments": {
+      "count": 13
+    }
+  },
+  "src/__tests__/integration/worktree-divergence.test.ts": {
+    "local/no-comments": {
+      "count": 48
+    }
+  },
+  "src/__tests__/local-ahead-of-remote.test.ts": {
+    "local/no-comments": {
+      "count": 13
+    }
+  },
+  "src/__tests__/node-version.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/__tests__/rebased-branch-handling.test.ts": {
+    "local/no-comments": {
+      "count": 42
+    }
+  },
+  "src/__tests__/setup.ts": {
+    "local/no-comments": {
+      "count": 29
+    }
+  },
+  "src/__tests__/test-utils.ts": {
+    "local/no-comments": {
+      "count": 19
+    }
+  },
+  "src/__tests__/trash-cli.test.ts": {
+    "local/no-comments": {
+      "count": 81
+    }
+  },
+  "src/__tests__/unit-project-build-free.test.ts": {
+    "local/no-comments": {
+      "count": 10
+    }
+  },
+  "src/cli/__tests__/doctor.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/cli/__tests__/list.test.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/cli/doctor.ts": {
+    "local/no-comments": {
+      "count": 26
+    }
+  },
+  "src/cli/dry-run.ts": {
+    "local/no-comments": {
+      "count": 9
+    }
+  },
+  "src/cli/list.ts": {
+    "local/no-comments": {
+      "count": 12
+    }
+  },
+  "src/cli/trash-command.ts": {
+    "local/no-comments": {
+      "count": 92
+    }
+  },
+  "src/components/App.tsx": {
+    "local/no-comments": {
+      "count": 66
+    }
+  },
+  "src/components/BranchCreationWizard.tsx": {
+    "local/no-comments": {
+      "count": 24
+    }
+  },
+  "src/components/ForceCleanModal.tsx": {
+    "local/no-comments": {
+      "count": 22
+    }
+  },
+  "src/components/FuzzySwitcher.tsx": {
+    "local/no-comments": {
+      "count": 26
+    }
+  },
+  "src/components/HelpModal.tsx": {
+    "local/no-comments": {
+      "count": 14
+    }
+  },
+  "src/components/LogPanel.tsx": {
+    "local/no-comments": {
+      "count": 46
+    }
+  },
+  "src/components/OpenEditorWizard.tsx": {
+    "local/no-comments": {
+      "count": 21
+    }
+  },
+  "src/components/RepositoryDashboard.tsx": {
+    "local/no-comments": {
+      "count": 10
+    }
+  },
+  "src/components/StatusBar.tsx": {
+    "local/no-comments": {
+      "count": 14
+    }
+  },
+  "src/components/WorktreeStatusView.tsx": {
+    "local/no-comments": {
+      "count": 57
+    }
+  },
+  "src/components/__tests__/App.test.tsx": {
+    "local/no-comments": {
+      "count": 53
+    }
+  },
+  "src/components/__tests__/BranchCreationWizard.test.tsx": {
+    "local/no-comments": {
+      "count": 42
+    }
+  },
+  "src/components/__tests__/ForceCleanModal.test.tsx": {
+    "local/no-comments": {
+      "count": 16
+    }
+  },
+  "src/components/__tests__/FuzzySwitcher.test.tsx": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/components/__tests__/HelpModal.test.tsx": {
+    "local/no-comments": {
+      "count": 6
+    }
+  },
+  "src/components/__tests__/LogPanel.test.tsx": {
+    "local/no-comments": {
+      "count": 40
+    }
+  },
+  "src/components/__tests__/OpenEditorWizard.test.tsx": {
+    "local/no-comments": {
+      "count": 47
+    }
+  },
+  "src/components/__tests__/RepositoryDashboard.test.tsx": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/components/__tests__/StatusBar.test.tsx": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "src/components/__tests__/WorktreeStatusView.test.tsx": {
+    "local/no-comments": {
+      "count": 55
+    }
+  },
+  "src/components/__tests__/layout.test.tsx": {
+    "local/no-comments": {
+      "count": 10
+    }
+  },
+  "src/components/__tests__/list-keys.test.tsx": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/components/__tests__/terminal-size.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/components/layout.ts": {
+    "local/no-comments": {
+      "count": 44
+    }
+  },
+  "src/constants.ts": {
+    "local/no-comments": {
+      "count": 56
+    }
+  },
+  "src/errors/index.ts": {
+    "local/no-comments": {
+      "count": 12
+    }
+  },
+  "src/index.ts": {
+    "local/no-comments": {
+      "count": 90
+    }
+  },
+  "src/mcp/__tests__/context.broken-config.test.ts": {
+    "local/no-comments": {
+      "count": 30
+    }
+  },
+  "src/mcp/__tests__/context.capability-invariant.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/mcp/__tests__/context.nested-repo.test.ts": {
+    "local/no-comments": {
+      "count": 59
+    }
+  },
+  "src/mcp/__tests__/context.test.ts": {
+    "local/no-comments": {
+      "count": 25
+    }
+  },
+  "src/mcp/__tests__/context.worktree-dir.test.ts": {
+    "local/no-comments": {
+      "count": 62
+    }
+  },
+  "src/mcp/__tests__/create-worktree-offline.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/mcp/__tests__/create-worktree-prune.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/mcp/__tests__/create-worktree-retry.test.ts": {
+    "local/no-comments": {
+      "count": 43
+    }
+  },
+  "src/mcp/__tests__/handlers.capability-gate.test.ts": {
+    "local/no-comments": {
+      "count": 11
+    }
+  },
+  "src/mcp/__tests__/handlers.context-flows.test.ts": {
+    "local/no-comments": {
+      "count": 63
+    }
+  },
+  "src/mcp/__tests__/handlers.test.ts": {
+    "local/no-comments": {
+      "count": 136
+    }
+  },
+  "src/mcp/__tests__/read-only-index.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/mcp/__tests__/server.test.ts": {
+    "local/no-comments": {
+      "count": 27
+    }
+  },
+  "src/mcp/__tests__/symlinked-paths.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/mcp/__tests__/update-worktree-detached.test.ts": {
+    "local/no-comments": {
+      "count": 39
+    }
+  },
+  "src/mcp/__tests__/worktree-shapes.test.ts": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
+  "src/mcp/__tests__/worktree-summary.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/mcp/context.ts": {
+    "local/no-comments": {
+      "count": 230
+    }
+  },
+  "src/mcp/handlers.ts": {
+    "local/no-comments": {
+      "count": 108
+    }
+  },
+  "src/mcp/index.ts": {
+    "local/no-comments": {
+      "count": 9
+    }
+  },
+  "src/mcp/output-schemas.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/mcp/server.ts": {
+    "local/no-comments": {
+      "count": 21
+    }
+  },
+  "src/mcp/utils.ts": {
+    "local/no-comments": {
+      "count": 14
+    }
+  },
+  "src/mcp/worktree-summary.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/public-types.ts": {
+    "local/no-comments": {
+      "count": 6
+    }
+  },
+  "src/services/InteractiveUIService.tsx": {
+    "local/no-comments": {
+      "count": 126
+    }
+  },
+  "src/services/__tests__/bare-repo.interrupted-clone.test.ts": {
+    "local/no-comments": {
+      "count": 24
+    }
+  },
+  "src/services/__tests__/bare-repo.service.test.ts": {
+    "local/no-comments": {
+      "count": 82
+    }
+  },
+  "src/services/__tests__/branch-created-actions.service.test.ts": {
+    "local/no-comments": {
+      "count": 18
+    }
+  },
+  "src/services/__tests__/branch-ref.branch-config-cleanup.test.ts": {
+    "local/no-comments": {
+      "count": 21
+    }
+  },
+  "src/services/__tests__/branch-ref.commit-count-parse.test.ts": {
+    "local/no-comments": {
+      "count": 13
+    }
+  },
+  "src/services/__tests__/branch-ref.commits-not-on-remote.test.ts": {
+    "local/no-comments": {
+      "count": 15
+    }
+  },
+  "src/services/__tests__/branch-ref.ref-argument-separator.test.ts": {
+    "local/no-comments": {
+      "count": 39
+    }
+  },
+  "src/services/__tests__/branch-ref.ref-probes.test.ts": {
+    "local/no-comments": {
+      "count": 8
+    }
+  },
+  "src/services/__tests__/branch-ref.remote-ref-inventory.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/services/__tests__/branch-ref.service.test.ts": {
+    "local/no-comments": {
+      "count": 24
+    }
+  },
+  "src/services/__tests__/clone-branch-wizard.real-git.test.ts": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "src/services/__tests__/clone-mode-no-bare-path.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/services/__tests__/clone-sync.client-timeouts.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/services/__tests__/clone-sync.service.test.ts": {
+    "local/no-comments": {
+      "count": 473
+    }
+  },
+  "src/services/__tests__/clone-sync.unshallow.test.ts": {
+    "local/no-comments": {
+      "count": 25
+    }
+  },
+  "src/services/__tests__/config-loader.deprecated-keys.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/services/__tests__/config-loader.esm-reload.test.ts": {
+    "local/no-comments": {
+      "count": 71
+    }
+  },
+  "src/services/__tests__/config-loader.example-config.test.ts": {
+    "local/no-comments": {
+      "count": 41
+    }
+  },
+  "src/services/__tests__/config-loader.service.test.ts": {
+    "local/no-comments": {
+      "count": 186
+    }
+  },
+  "src/services/__tests__/config-loader.unknown-keys.test.ts": {
+    "local/no-comments": {
+      "count": 8
+    }
+  },
+  "src/services/__tests__/config-schema.test.ts": {
+    "local/no-comments": {
+      "count": 18
+    }
+  },
+  "src/services/__tests__/file-copy.glob-error.test.ts": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
+  "src/services/__tests__/file-copy.service.test.ts": {
+    "local/no-comments": {
+      "count": 70
+    }
+  },
+  "src/services/__tests__/git-maintenance.service.test.ts": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "src/services/__tests__/git-update.test.ts": {
+    "local/no-comments": {
+      "count": 15
+    }
+  },
+  "src/services/__tests__/git.service.anchor-worktree.test.ts": {
+    "local/no-comments": {
+      "count": 10
+    }
+  },
+  "src/services/__tests__/git.service.client-cache.test.ts": {
+    "local/no-comments": {
+      "count": 20
+    }
+  },
+  "src/services/__tests__/git.service.client-timeouts.test.ts": {
+    "local/no-comments": {
+      "count": 31
+    }
+  },
+  "src/services/__tests__/git.service.initialize.test.ts": {
+    "local/no-comments": {
+      "count": 16
+    }
+  },
+  "src/services/__tests__/git.service.logger-propagation.test.ts": {
+    "local/no-comments": {
+      "count": 19
+    }
+  },
+  "src/services/__tests__/git.service.test.ts": {
+    "local/no-comments": {
+      "count": 95
+    }
+  },
+  "src/services/__tests__/helpers/git-service-fixture.ts": {
+    "local/no-comments": {
+      "count": 28
+    }
+  },
+  "src/services/__tests__/helpers/metadata-service-mock.ts": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "src/services/__tests__/hook-execution.service.test.ts": {
+    "local/no-comments": {
+      "count": 55
+    }
+  },
+  "src/services/__tests__/interactive-ui-launcher.real.test.ts": {
+    "local/no-comments": {
+      "count": 39
+    }
+  },
+  "src/services/__tests__/interactive-ui-layers.test.ts": {
+    "local/no-comments": {
+      "count": 5
+    }
+  },
+  "src/services/__tests__/interactive-ui.concurrent-cycles.test.tsx": {
+    "local/no-comments": {
+      "count": 68
+    }
+  },
+  "src/services/__tests__/interactive-ui.exit.test.tsx": {
+    "local/no-comments": {
+      "count": 66
+    }
+  },
+  "src/services/__tests__/interactive-ui.reload-logging.test.ts": {
+    "local/no-comments": {
+      "count": 73
+    }
+  },
+  "src/services/__tests__/interactive-ui.service.test.ts": {
+    "local/no-comments": {
+      "count": 127
+    }
+  },
+  "src/services/__tests__/interactive-ui.startup-sync-overlap.test.ts": {
+    "local/no-comments": {
+      "count": 12
+    }
+  },
+  "src/services/__tests__/interactive-ui.status-fanout-and-disk.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/services/__tests__/lfs-verification.service.test.ts": {
+    "local/no-comments": {
+      "count": 22
+    }
+  },
+  "src/services/__tests__/logger.service.test.ts": {
+    "local/no-comments": {
+      "count": 10
+    }
+  },
+  "src/services/__tests__/path-resolution.service.test.ts": {
+    "local/no-comments": {
+      "count": 9
+    }
+  },
+  "src/services/__tests__/progress-emitter.test.ts": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "src/services/__tests__/removal-audit.service.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/services/__tests__/repo-operation-lock.state-dir.test.ts": {
+    "local/no-comments": {
+      "count": 12
+    }
+  },
+  "src/services/__tests__/repo-operation-lock.test.ts": {
+    "local/no-comments": {
+      "count": 20
+    }
+  },
+  "src/services/__tests__/repository-dashboard.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/services/__tests__/sparse-checkout.service.test.ts": {
+    "local/no-comments": {
+      "count": 15
+    }
+  },
+  "src/services/__tests__/sync-retry-policy.test.ts": {
+    "local/no-comments": {
+      "count": 6
+    }
+  },
+  "src/services/__tests__/trash-migration.service.test.ts": {
+    "local/no-comments": {
+      "count": 35
+    }
+  },
+  "src/services/__tests__/trash-reaper.immutable-payload.test.ts": {
+    "local/no-comments": {
+      "count": 10
+    }
+  },
+  "src/services/__tests__/trash-reaper.service.test.ts": {
+    "local/no-comments": {
+      "count": 104
+    }
+  },
+  "src/services/__tests__/trash.service.branch-config.test.ts": {
+    "local/no-comments": {
+      "count": 35
+    }
+  },
+  "src/services/__tests__/trash.service.payload-size.test.ts": {
+    "local/no-comments": {
+      "count": 37
+    }
+  },
+  "src/services/__tests__/trash.service.restore-rename.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/services/__tests__/trash.service.test.ts": {
+    "local/no-comments": {
+      "count": 189
+    }
+  },
+  "src/services/__tests__/worktree-creation.add-matrix.test.ts": {
+    "local/no-comments": {
+      "count": 6
+    }
+  },
+  "src/services/__tests__/worktree-creation.service.test.ts": {
+    "local/no-comments": {
+      "count": 93
+    }
+  },
+  "src/services/__tests__/worktree-creation.sparse-checkout.test.ts": {
+    "local/no-comments": {
+      "count": 12
+    }
+  },
+  "src/services/__tests__/worktree-creation.stale-branch-copies.test.ts": {
+    "local/no-comments": {
+      "count": 18
+    }
+  },
+  "src/services/__tests__/worktree-creation.stale-directory.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/services/__tests__/worktree-creation.symlinked-path.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/services/__tests__/worktree-metadata.legacy-fields.test.ts": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
+  "src/services/__tests__/worktree-metadata.service.test.ts": {
+    "local/no-comments": {
+      "count": 9
+    }
+  },
+  "src/services/__tests__/worktree-mode-sync-runner.detached-create.test.ts": {
+    "local/no-comments": {
+      "count": 16
+    }
+  },
+  "src/services/__tests__/worktree-mode-sync-runner.lfs.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/services/__tests__/worktree-mode-sync-runner.path-partition.test.ts": {
+    "local/no-comments": {
+      "count": 31
+    }
+  },
+  "src/services/__tests__/worktree-mode-sync-runner.phase-timing.test.ts": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
+  "src/services/__tests__/worktree-mode-sync-runner.plan.test.ts": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "src/services/__tests__/worktree-mode-sync-runner.progress.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/services/__tests__/worktree-naming.test.ts": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "src/services/__tests__/worktree-registry.service.test.ts": {
+    "local/no-comments": {
+      "count": 21
+    }
+  },
+  "src/services/__tests__/worktree-status.ambiguous-ref.test.ts": {
+    "local/no-comments": {
+      "count": 13
+    }
+  },
+  "src/services/__tests__/worktree-status.process-budget.test.ts": {
+    "local/no-comments": {
+      "count": 14
+    }
+  },
+  "src/services/__tests__/worktree-status.service.test.ts": {
+    "local/no-comments": {
+      "count": 86
+    }
+  },
+  "src/services/__tests__/worktree-status.unbucketed-changes.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/services/__tests__/worktree-sync-planner.test.ts": {
+    "local/no-comments": {
+      "count": 11
+    }
+  },
+  "src/services/__tests__/worktree-sync.clone-phase-timing.test.ts": {
+    "local/no-comments": {
+      "count": 31
+    }
+  },
+  "src/services/__tests__/worktree-sync.repo-mutex.test.ts": {
+    "local/no-comments": {
+      "count": 31
+    }
+  },
+  "src/services/__tests__/worktree-sync.service.test.ts": {
+    "local/no-comments": {
+      "count": 259
+    }
+  },
+  "src/services/__tests__/worktree-sync.trash-size-off-lock.test.ts": {
+    "local/no-comments": {
+      "count": 33
+    }
+  },
+  "src/services/__tests__/worktree-update.test.ts": {
+    "local/no-comments": {
+      "count": 89
+    }
+  },
+  "src/services/bare-repo.service.ts": {
+    "local/no-comments": {
+      "count": 129
+    }
+  },
+  "src/services/branch-created-actions.service.ts": {
+    "local/no-comments": {
+      "count": 9
+    }
+  },
+  "src/services/branch-ref.service.ts": {
+    "local/no-comments": {
+      "count": 149
+    }
+  },
+  "src/services/clone-sync.service.ts": {
+    "local/no-comments": {
+      "count": 98
+    }
+  },
+  "src/services/clone-sync/branch-operations.ts": {
+    "local/no-comments": {
+      "count": 102
+    }
+  },
+  "src/services/clone-sync/clone-bootstrap.ts": {
+    "local/no-comments": {
+      "count": 111
+    }
+  },
+  "src/services/clone-sync/clone-markers.ts": {
+    "local/no-comments": {
+      "count": 40
+    }
+  },
+  "src/services/clone-sync/fast-forward-undo.ts": {
+    "local/no-comments": {
+      "count": 96
+    }
+  },
+  "src/services/clone-sync/fetch.ts": {
+    "local/no-comments": {
+      "count": 120
+    }
+  },
+  "src/services/clone-sync/git-clients.ts": {
+    "local/no-comments": {
+      "count": 96
+    }
+  },
+  "src/services/clone-sync/git-helpers.ts": {
+    "local/no-comments": {
+      "count": 22
+    }
+  },
+  "src/services/clone-sync/phases.ts": {
+    "local/no-comments": {
+      "count": 18
+    }
+  },
+  "src/services/clone-sync/remote-config.ts": {
+    "local/no-comments": {
+      "count": 89
+    }
+  },
+  "src/services/clone-sync/sparse.ts": {
+    "local/no-comments": {
+      "count": 34
+    }
+  },
+  "src/services/clone-sync/types.ts": {
+    "local/no-comments": {
+      "count": 12
+    }
+  },
+  "src/services/config-loader.service.ts": {
+    "local/no-comments": {
+      "count": 60
+    }
+  },
+  "src/services/config-schema.ts": {
+    "local/no-comments": {
+      "count": 76
+    }
+  },
+  "src/services/file-copy.service.ts": {
+    "local/no-comments": {
+      "count": 34
+    }
+  },
+  "src/services/git-maintenance.service.ts": {
+    "local/no-comments": {
+      "count": 20
+    }
+  },
+  "src/services/git-service.types.ts": {
+    "local/no-comments": {
+      "count": 31
+    }
+  },
+  "src/services/git.service.ts": {
+    "local/no-comments": {
+      "count": 238
+    }
+  },
+  "src/services/hook-execution.service.ts": {
+    "local/no-comments": {
+      "count": 52
+    }
+  },
+  "src/services/lfs-verification.service.ts": {
+    "local/no-comments": {
+      "count": 54
+    }
+  },
+  "src/services/logger.service.ts": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "src/services/path-resolution.service.ts": {
+    "local/no-comments": {
+      "count": 32
+    }
+  },
+  "src/services/progress-emitter.ts": {
+    "local/no-comments": {
+      "count": 18
+    }
+  },
+  "src/services/removal-audit.service.ts": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
+  "src/services/repo-operation-lock.ts": {
+    "local/no-comments": {
+      "count": 28
+    }
+  },
+  "src/services/repository-dashboard.ts": {
+    "local/no-comments": {
+      "count": 24
+    }
+  },
+  "src/services/repository-operations.ts": {
+    "local/no-comments": {
+      "count": 107
+    }
+  },
+  "src/services/sparse-checkout.service.ts": {
+    "local/no-comments": {
+      "count": 48
+    }
+  },
+  "src/services/sync-cycle-scheduler.ts": {
+    "local/no-comments": {
+      "count": 74
+    }
+  },
+  "src/services/sync-outcome.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/services/sync-plan.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/services/terminal-launcher.ts": {
+    "local/no-comments": {
+      "count": 52
+    }
+  },
+  "src/services/trash-migration.service.ts": {
+    "local/no-comments": {
+      "count": 49
+    }
+  },
+  "src/services/trash-reaper.service.ts": {
+    "local/no-comments": {
+      "count": 93
+    }
+  },
+  "src/services/trash.service.ts": {
+    "local/no-comments": {
+      "count": 213
+    }
+  },
+  "src/services/worktree-creation.service.ts": {
+    "local/no-comments": {
+      "count": 123
+    }
+  },
+  "src/services/worktree-metadata.service.ts": {
+    "local/no-comments": {
+      "count": 12
+    }
+  },
+  "src/services/worktree-mode-sync-runner.ts": {
+    "local/no-comments": {
+      "count": 304
+    }
+  },
+  "src/services/worktree-registry.service.ts": {
+    "local/no-comments": {
+      "count": 43
+    }
+  },
+  "src/services/worktree-status.service.ts": {
+    "local/no-comments": {
+      "count": 210
+    }
+  },
+  "src/services/worktree-sync-planner.ts": {
+    "local/no-comments": {
+      "count": 14
+    }
+  },
+  "src/services/worktree-sync.service.ts": {
+    "local/no-comments": {
+      "count": 230
+    }
+  },
+  "src/types/__tests__/public-config-types.test.ts": {
+    "local/no-comments": {
+      "count": 11
+    }
+  },
+  "src/types/globals.d.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/types/index.ts": {
+    "local/no-comments": {
+      "count": 40
+    }
+  },
+  "src/types/sync-metadata.ts": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
+  "src/utils/__tests__/app-events.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/utils/__tests__/cli.test.ts": {
+    "local/no-comments": {
+      "count": 10
+    }
+  },
+  "src/utils/__tests__/clipboard.test.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/utils/__tests__/config-discovery.test.ts": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
+  "src/utils/__tests__/config-generator.test.ts": {
+    "local/no-comments": {
+      "count": 26
+    }
+  },
+  "src/utils/__tests__/date-filter.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/utils/__tests__/disk-space.test.ts": {
+    "local/no-comments": {
+      "count": 21
+    }
+  },
+  "src/utils/__tests__/disk-usage-cache.test.ts": {
+    "local/no-comments": {
+      "count": 16
+    }
+  },
+  "src/utils/__tests__/fuzzy.test.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/utils/__tests__/git-busy-probe.test.ts": {
+    "local/no-comments": {
+      "count": 25
+    }
+  },
+  "src/utils/__tests__/git-client-cache.test.ts": {
+    "local/no-comments": {
+      "count": 9
+    }
+  },
+  "src/utils/__tests__/git-client.test.ts": {
+    "local/no-comments": {
+      "count": 11
+    }
+  },
+  "src/utils/__tests__/git-env.test.ts": {
+    "local/no-comments": {
+      "count": 27
+    }
+  },
+  "src/utils/__tests__/git-lfs-probe.test.ts": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
+  "src/utils/__tests__/git-progress.test.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/utils/__tests__/git-url.test.ts": {
+    "local/no-comments": {
+      "count": 71
+    }
+  },
+  "src/utils/__tests__/git-validation.test.ts": {
+    "local/no-comments": {
+      "count": 18
+    }
+  },
+  "src/utils/__tests__/interactive.test.ts": {
+    "local/no-comments": {
+      "count": 53
+    }
+  },
+  "src/utils/__tests__/lfs-error.test.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/utils/__tests__/lock-path.test.ts": {
+    "local/no-comments": {
+      "count": 6
+    }
+  },
+  "src/utils/__tests__/mcp-registration.test.ts": {
+    "local/no-comments": {
+      "count": 9
+    }
+  },
+  "src/utils/__tests__/mouse.test.ts": {
+    "local/no-comments": {
+      "count": 19
+    }
+  },
+  "src/utils/__tests__/preserving-copy.test.ts": {
+    "local/no-comments": {
+      "count": 6
+    }
+  },
+  "src/utils/__tests__/retry.test.ts": {
+    "local/no-comments": {
+      "count": 8
+    }
+  },
+  "src/utils/__tests__/sanitize-name.test.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/utils/__tests__/terminal.test.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/utils/__tests__/unknown-config-keys.test.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/utils/__tests__/worktree-list-parser.test.ts": {
+    "local/no-comments": {
+      "count": 5
+    }
+  },
+  "src/utils/app-events.ts": {
+    "local/no-comments": {
+      "count": 16
+    }
+  },
+  "src/utils/atomic-write.ts": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
+  "src/utils/cli.ts": {
+    "local/no-comments": {
+      "count": 23
+    }
+  },
+  "src/utils/clipboard.ts": {
+    "local/no-comments": {
+      "count": 16
+    }
+  },
+  "src/utils/config-discovery.ts": {
+    "local/no-comments": {
+      "count": 8
+    }
+  },
+  "src/utils/config-generator.ts": {
+    "local/no-comments": {
+      "count": 9
+    }
+  },
+  "src/utils/date-filter.ts": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "src/utils/detach-git-link.ts": {
+    "local/no-comments": {
+      "count": 5
+    }
+  },
+  "src/utils/disk-space.ts": {
+    "local/no-comments": {
+      "count": 9
+    }
+  },
+  "src/utils/disk-usage-cache.ts": {
+    "local/no-comments": {
+      "count": 41
+    }
+  },
+  "src/utils/error-summary.ts": {
+    "local/no-comments": {
+      "count": 5
+    }
+  },
+  "src/utils/errors.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/utils/file-exists.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/utils/fuzzy.ts": {
+    "local/no-comments": {
+      "count": 10
+    }
+  },
+  "src/utils/git-auth-error.ts": {
+    "local/no-comments": {
+      "count": 6
+    }
+  },
+  "src/utils/git-busy-probe.ts": {
+    "local/no-comments": {
+      "count": 30
+    }
+  },
+  "src/utils/git-client-cache.ts": {
+    "local/no-comments": {
+      "count": 12
+    }
+  },
+  "src/utils/git-client.ts": {
+    "local/no-comments": {
+      "count": 8
+    }
+  },
+  "src/utils/git-env.ts": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
+  "src/utils/git-lfs-probe.ts": {
+    "local/no-comments": {
+      "count": 6
+    }
+  },
+  "src/utils/git-progress.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/utils/git-url.ts": {
+    "local/no-comments": {
+      "count": 118
+    }
+  },
+  "src/utils/git-validation.ts": {
+    "local/no-comments": {
+      "count": 37
+    }
+  },
+  "src/utils/interactive.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/utils/lfs-error.ts": {
+    "local/no-comments": {
+      "count": 5
+    }
+  },
+  "src/utils/lock-path.ts": {
+    "local/no-comments": {
+      "count": 31
+    }
+  },
+  "src/utils/mcp-registration.ts": {
+    "local/no-comments": {
+      "count": 11
+    }
+  },
+  "src/utils/mouse.ts": {
+    "local/no-comments": {
+      "count": 13
+    }
+  },
+  "src/utils/paste-filter.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/utils/path-compare.ts": {
+    "local/no-comments": {
+      "count": 13
+    }
+  },
+  "src/utils/preserving-copy.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/utils/quarantine.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/utils/repo-lock-format.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/utils/retry.ts": {
+    "local/no-comments": {
+      "count": 17
+    }
+  },
+  "src/utils/sanitize-name.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/utils/shell-escape.ts": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/utils/terminal.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/utils/trash-container.ts": {
+    "local/no-comments": {
+      "count": 35
+    }
+  },
+  "src/utils/unit-test-shortcut.ts": {
+    "local/no-comments": {
+      "count": 12
+    }
+  },
+  "src/utils/unknown-config-keys.ts": {
+    "local/no-comments": {
+      "count": 14
+    }
+  },
+  "src/utils/worktree-list-parser.ts": {
+    "local/no-comments": {
+      "count": 8
+    }
+  },
+  "vitest.config.ts": {
+    "local/no-comments": {
+      "count": 9
+    }
+  }
+}

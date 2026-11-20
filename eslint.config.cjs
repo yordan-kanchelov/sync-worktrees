@@ -4,6 +4,8 @@ const reactHooks = require("eslint-plugin-react-hooks");
 const globals = require("globals");
 const tseslint = require("typescript-eslint");
 
+const noComments = require("./eslint-rules/no-comments.cjs");
+
 const testFiles = ["src/**/__tests__/**/*.{ts,tsx}", "src/**/*.test.{ts,tsx}"];
 
 module.exports = defineConfig([
@@ -21,6 +23,14 @@ module.exports = defineConfig([
     ],
   },
   js.configs.recommended,
+  {
+    plugins: { local: { rules: { "no-comments": noComments } } },
+    rules: { "local/no-comments": "error" },
+  },
+  {
+    files: ["src/types/public-config.ts", "sync-worktrees.config.example.js"],
+    rules: { "local/no-comments": "off" },
+  },
   {
     files: ["**/*.{js,cjs,mjs}"],
     languageOptions: {
